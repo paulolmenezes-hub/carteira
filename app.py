@@ -9,6 +9,8 @@ Toda a lógica de cálculo é reaproveitada do pacote ``carteira_analise``
 (167 testes automatizados) — este arquivo é só a camada de interface.
 """
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -90,6 +92,19 @@ def _heuristica_tipo(ticker: str) -> str:
     return "fii" if numero.startswith("11") else "acao"
 
 
+def _info_horario_analise() -> tuple[str, bool]:
+    """Data/hora da análise (horário de Brasília) e um aviso heurístico de
+    pregão possivelmente em andamento — o preço usado é sempre o mais
+    recente disponível no momento da consulta, não necessariamente o
+    fechamento definitivo do dia (B3: pregão regular ~10h-17h, horário de
+    Brasília, dias úteis)."""
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    texto = agora.strftime("%d/%m/%Y às %H:%M (horário de Brasília)")
+    eh_dia_util = agora.weekday() < 5
+    provavelmente_aberto = eh_dia_util and 10 <= agora.hour < 18
+    return texto, provavelmente_aberto
+
+
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
 st.markdown(
     "Faça upload da sua planilha (Excel) com uma ou duas abas:\n\n"
@@ -161,6 +176,16 @@ if arquivo is not None:
             tipos_confirmados[ticker] = escolha
 
     if st.button("📊 Analisar carteira", type="primary"):
+        texto_horario, pregao_provavelmente_aberto = _info_horario_analise()
+        st.caption(f"🕒 Análise executada em {texto_horario}")
+        if pregao_provavelmente_aberto:
+            st.caption(
+                "📊 Pregão provavelmente em andamento — os preços usados são os mais "
+                "recentes disponíveis agora, não necessariamente o fechamento definitivo "
+                "do dia. Rodar a análise de novo após o fechamento (~18h, horário de "
+                "Brasília) pode trazer números diferentes."
+            )
+
         with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
             linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_yahoo)
 
@@ -218,6 +243,7 @@ if arquivo is not None:
                 "Ticker": l.ticker, "Origem": l.origem,
                 "Quantidade aberta": f"{l.quantidade_aberta:.0f}" if l.quantidade_aberta is not None else "-",
                 "Preço médio": f"{l.moeda} {l.preco_medio_atual:.2f}" if l.preco_medio_atual else "-",
+                "Preço atual": f"{l.moeda} {l.preco_atual:.2f}" if l.preco_atual is not None else "N/D",
                 "Ganho realizado": f"{l.moeda} {l.ganho_realizado:+.2f}" if l.ganho_realizado is not None else "-",
                 "Ganho não realizado": (
                     f"{l.moeda} {l.ganho_nao_realizado:+.2f}" if l.ganho_nao_realizado is not None else "N/A"
