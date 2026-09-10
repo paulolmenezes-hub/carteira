@@ -1,0 +1,261 @@
+"""Painel web de análise de carteira (ações, FIIs, ETFs) — Streamlit.
+
+Interface acessível sem conhecimento técnico de programação (Seção 3.2.2
+do Relatório do Projeto Final de Curso): o usuário faz upload da planilha
+e vê o resultado, sem células de código nem ambiente de notebook.
+
+Toda a lógica de cálculo é reaproveitada do pacote ``carteira_analise``
+(motor de indicadores, pontuação, ganhos e planilha), já testado
+(167 testes automatizados) — este arquivo é só a camada de interface.
+"""
+import re
+
+import pandas as pd
+import streamlit as st
+
+from carteira_analise.carteira import analisar_ativo
+from carteira_analise.fontes import yahoo as fonte_yahoo
+from carteira_analise.planilha import (
+    achar_aba,
+    normalizar_aba_operacoes,
+    normalizar_aba_resumo,
+    normalizar_ticker,
+    processar_carteira_combinada,
+)
+
+st.set_page_config(page_title="Análise de Carteira", page_icon="📊", layout="wide")
+
+
+def _verificar_senha() -> bool:
+    """Bloqueia o acesso ao painel até a senha correta ser informada. A
+    senha fica no gerenciador de Secrets do Streamlit Cloud (Settings →
+    Secrets), nunca no código — mesmo com o repositório público no GitHub,
+    a senha não fica exposta."""
+    if st.session_state.get("autenticado"):
+        return True
+
+    try:
+        senha_esperada = st.secrets.get("senha_painel")
+    except Exception:
+        # st.secrets lança exceção (em vez de devolver None) quando não existe
+        # NENHUM secrets.toml configurado ainda — trata como "sem senha".
+        senha_esperada = None
+    if not senha_esperada:
+        st.title("🔒 Acesso ao Painel")
+        st.error(
+            "Nenhuma senha configurada ainda. Antes de publicar, defina "
+            "'senha_painel' em Settings → Secrets no Streamlit Cloud "
+            "(ou, pra testar localmente, crie um arquivo "
+            ".streamlit/secrets.toml com o conteúdo: "
+            'senha_painel = "sua-senha-aqui").'
+        )
+        return False
+
+    st.title("🔒 Acesso ao Painel")
+    senha_digitada = st.text_input("Senha de acesso", type="password")
+    if st.button("Entrar"):
+        if senha_digitada == senha_esperada:
+            st.session_state["autenticado"] = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta.")
+    return False
+
+
+if not _verificar_senha():
+    st.stop()
+
+NOMES_TIPO = {
+    "acao": "Ação (B3)",
+    "fii": "FII (B3)",
+    "acao_us": "Ação (EUA)",
+    "etf_br": "ETF (B3)",
+    "etf_us": "ETF (EUA)",
+}
+OPCOES_TIPO = list(NOMES_TIPO.keys())
+
+
+def _heuristica_tipo(ticker: str) -> str:
+    """Chute inicial do tipo de ativo, a partir do formato do ticker —
+    o usuário confirma ou corrige antes de rodar a análise. Tickers B3
+    terminados em '11' são frequentemente FIIs ou ETFs (ambíguo só pelo
+    ticker); o padrão aqui é FII, por ser o caso mais comum."""
+    if not ticker.endswith(".SA"):
+        return "acao_us"
+    base = ticker[:-3]
+    m = re.match(r"^([A-Z]+)(\d+)$", base)
+    if not m:
+        return "acao"
+    numero = m.group(2)
+    return "fii" if numero.startswith("11") else "acao"
+
+
+st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
+st.markdown(
+    "Faça upload da sua planilha (Excel) com uma ou duas abas:\n\n"
+    "- **Resumo** — posição inicial de cada ativo: `ticker`, `quantidade`, "
+    "`preco_medio` (ou `valor_investido`), `data_inicio`.\n"
+    "- **Operações** — movimentações feitas a partir dali: `ticker`, `tipo` "
+    "(compra/venda), `quantidade`, `preco`, `data`.\n\n"
+    "Você pode ter só uma das abas, ou as duas — quando tiver as duas, a "
+    "posição inicial entra como o primeiro registro, e cada operação "
+    "lançada depois ajusta quantidade, preço médio e ganho automaticamente, "
+    "igual um extrato."
+)
+
+arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
+
+if arquivo is not None:
+    try:
+        abas = pd.read_excel(arquivo, sheet_name=None)
+    except Exception as e:
+        st.error(f"Não consegui ler o arquivo: {e}")
+        st.stop()
+
+    df_resumo_bruto = achar_aba(abas, ["Resumo", "Resumo da carteira", "Posicao", "Posição"])
+    df_operacoes_bruto = achar_aba(abas, ["Operações", "Operacoes", "Movimentações", "Movimentacoes"])
+
+    if df_resumo_bruto is None and df_operacoes_bruto is None:
+        st.warning(
+            "Não encontrei nenhuma aba chamada 'Resumo' ou 'Operações' (nem variações). "
+            "Renomeie as abas do arquivo e tente de novo."
+        )
+        st.stop()
+
+    try:
+        df_resumo = normalizar_aba_resumo(df_resumo_bruto) if df_resumo_bruto is not None else None
+        df_operacoes = normalizar_aba_operacoes(df_operacoes_bruto) if df_operacoes_bruto is not None else None
+    except ValueError as e:
+        st.error(f"Problema nas colunas da planilha: {e}")
+        st.stop()
+
+    st.success(
+        f"Planilha lida — "
+        f"{'sem aba Resumo' if df_resumo is None else f'{len(df_resumo)} ativo(s) na aba Resumo'}, "
+        f"{'sem aba Operações' if df_operacoes is None else f'{len(df_operacoes)} operação(ões)'}."
+    )
+
+    # Lista de todos os tickers presentes, pra confirmação do tipo de ativo
+    tickers_encontrados: list[str] = []
+    if df_resumo is not None:
+        tickers_encontrados += [normalizar_ticker(t)[0] for t in df_resumo["ticker"]]
+    if df_operacoes is not None:
+        tickers_encontrados += [normalizar_ticker(t)[0] for t in df_operacoes["ticker"]]
+    tickers_encontrados = sorted(set(tickers_encontrados))
+
+    st.subheader("Confirme o tipo de cada ativo")
+    st.caption(
+        "Adivinhamos o tipo pelo formato do ticker — confira se está certo antes de rodar "
+        "a análise, principalmente para tickers terminados em '11' (podem ser FII ou ETF)."
+    )
+
+    tipos_confirmados: dict[str, str] = {}
+    colunas = st.columns(3)
+    for i, ticker in enumerate(tickers_encontrados):
+        chute = _heuristica_tipo(ticker)
+        with colunas[i % 3]:
+            escolha = st.selectbox(
+                ticker, options=OPCOES_TIPO, index=OPCOES_TIPO.index(chute),
+                format_func=lambda t: NOMES_TIPO[t], key=f"tipo_{ticker}",
+            )
+            tipos_confirmados[ticker] = escolha
+
+    if st.button("📊 Analisar carteira", type="primary"):
+        with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
+            linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_yahoo)
+
+            linhas_analise = []
+            for ticker in tickers_encontrados:
+                tipo = tipos_confirmados[ticker]
+                resultado = analisar_ativo(ticker, tipo, "2y", fonte_yahoo)
+                linhas_analise.append((ticker, tipo, resultado))
+
+        # ---- Tabela de análise (sinal de timing / qualidade da renda) ----
+        st.subheader("📈 Análise de cada ativo")
+        linhas_tabela = []
+        detalhes_por_ticker = {}
+        for ticker, tipo, resultado in linhas_analise:
+            if resultado is None:
+                linhas_tabela.append({
+                    "Ticker": ticker, "Tipo": NOMES_TIPO[tipo],
+                    "Sinal de timing": "⚠️ dados insuficientes", "Qualidade da renda": "-",
+                    "Leitura combinada": "-",
+                })
+                continue
+            linhas_tabela.append({
+                "Ticker": ticker, "Tipo": NOMES_TIPO[tipo],
+                "Sinal de timing": resultado.sinal_timing,
+                "Qualidade da renda": resultado.qualidade_renda,
+                "Leitura combinada": resultado.leitura_combinada_texto,
+            })
+            detalhes_por_ticker[ticker] = resultado
+
+        st.dataframe(pd.DataFrame(linhas_tabela), width='stretch', hide_index=True)
+
+        with st.expander("Ver detalhes da pontuação de cada ativo"):
+            for ticker, tipo, resultado in linhas_analise:
+                if resultado is None:
+                    continue
+                st.markdown(f"**{ticker}** ({NOMES_TIPO[tipo]})")
+                if resultado.detalhes_timing:
+                    st.markdown("Timing (compra/venda):")
+                    for d in resultado.detalhes_timing:
+                        st.markdown(f"- {d}")
+                if resultado.detalhes_renda:
+                    st.markdown("Qualidade da renda:")
+                    for d in resultado.detalhes_renda:
+                        st.markdown(f"- {d}")
+                st.divider()
+
+        # ---- Tabela de ganhos (carteira atual + encerradas) ----
+        st.subheader("💰 Ganho da carteira")
+        abertas = [l for l in linhas_ganho if l.situacao == "Aberta"]
+        encerradas = [l for l in linhas_ganho if l.situacao == "Encerrada"]
+        com_erro = [l for l in linhas_ganho if l.situacao == "erro"]
+
+        def _linha_para_dict(l):
+            return {
+                "Ticker": l.ticker, "Origem": l.origem,
+                "Quantidade aberta": f"{l.quantidade_aberta:.0f}" if l.quantidade_aberta is not None else "-",
+                "Preço médio": f"{l.moeda} {l.preco_medio_atual:.2f}" if l.preco_medio_atual else "-",
+                "Ganho realizado": f"{l.moeda} {l.ganho_realizado:+.2f}" if l.ganho_realizado is not None else "-",
+                "Ganho não realizado": (
+                    f"{l.moeda} {l.ganho_nao_realizado:+.2f}" if l.ganho_nao_realizado is not None else "N/A"
+                ),
+                "Renda recebida": f"{l.moeda} {l.renda_recebida:.2f}" if l.renda_recebida is not None else "-",
+                "Ganho total": f"{l.moeda} {l.ganho_total:+.2f}" if l.ganho_total is not None else "-",
+            }
+
+        if abertas:
+            st.markdown(f"**Carteira atual — {len(abertas)} posição(ões) em aberto**")
+            st.dataframe(pd.DataFrame([_linha_para_dict(l) for l in abertas]),
+                         width='stretch', hide_index=True)
+
+        if encerradas:
+            st.markdown(f"**Posições encerradas — {len(encerradas)} ativo(s)**")
+            st.dataframe(pd.DataFrame([_linha_para_dict(l) for l in encerradas]),
+                         width='stretch', hide_index=True)
+
+        if com_erro:
+            st.warning(f"{len(com_erro)} ativo(s) com problema ao calcular o ganho:")
+            for l in com_erro:
+                st.markdown(f"- **{l.ticker}**: {l.erro}")
+                for a in l.avisos:
+                    st.caption(f"  ⚠️ {a}")
+
+        totais_por_moeda: dict[str, float] = {}
+        for l in linhas_ganho:
+            if l.ganho_total is not None:
+                totais_por_moeda[l.moeda] = totais_por_moeda.get(l.moeda, 0.0) + l.ganho_total
+        if totais_por_moeda:
+            st.markdown("**Totais por moeda (sem conversão cambial entre elas):**")
+            for moeda, total in totais_por_moeda.items():
+                st.metric(f"Ganho total ({moeda})", f"{moeda} {total:+,.2f}")
+
+        st.caption(
+            "Este painel não é uma recomendação de investimento nem substitui um "
+            "assessor/consultor licenciado (CVM). Os critérios usados são regras de "
+            "bolso genéricas de mercado, não garantem retorno."
+        )
+else:
+    st.info("Envie um arquivo Excel para começar a análise.")
