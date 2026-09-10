@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -103,6 +104,28 @@ def _info_horario_analise() -> tuple[str, bool]:
     eh_dia_util = agora.weekday() < 5
     provavelmente_aberto = eh_dia_util and 10 <= agora.hour < 18
     return texto, provavelmente_aberto
+
+
+def _grafico_preco_pt_br(historico: pd.Series) -> alt.Chart:
+    """Gráfico de preço com meses abreviados em português (Jan, Fev, Mar...)
+    no eixo — o Vega-Lite (motor por trás do Altair) não tem locale pt-BR
+    embutido, então a tradução é feita via expressão direta no eixo, sem
+    depender de configuração de locale."""
+    df = historico.reset_index()
+    df.columns = ["data", "preco"]
+    expressao_mes_pt = (
+        "['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']"
+        "[month(datum.value)] + '/' + (year(datum.value) % 100)"
+    )
+    return (
+        alt.Chart(df)
+        .mark_line(color="#1f77b4")
+        .encode(
+            x=alt.X("data:T", title=None, axis=alt.Axis(labelExpr=expressao_mes_pt, labelAngle=0)),
+            y=alt.Y("preco:Q", title=None),
+        )
+        .properties(height=300)
+    )
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
@@ -338,4 +361,4 @@ if st.button("🔍 Analisar ativo", type="secondary"):
                         st.markdown(f"- {d}")
 
             st.markdown("**Histórico de preço (últimos 2 anos):**")
-            st.line_chart(resultado.tec.historico)
+            st.altair_chart(_grafico_preco_pt_br(resultado.tec.historico), width='stretch')
