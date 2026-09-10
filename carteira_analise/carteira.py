@@ -1,236 +1,175 @@
-"""Processamento de carteira combinando duas abas (Resumo + Operações) de
-uma planilha — mesmo modelo de dados usado na Seção 9.3 do notebook do
-protótipo, agora testado como parte do pacote (Seção 3.2.2 do Relatório:
-"o usuário faz upload da planilha e vê o resultado").
+"""Orquestração: junta indicadores técnicos, fundamentalistas, dividendos
+e o motor de pontuação para produzir a análise completa de um ativo, ou de
+uma carteira inteira.
 
-Modelo de dados: a aba **Resumo** é o ponto de partida (posição inicial de
-cada ativo — o "saldo de abertura"); a aba **Operações** traz as
-movimentações feitas a partir dali. As duas são combinadas por ativo: a
-posição inicial (se existir) entra como a primeira "compra" sintética, e
-cada operação lançada depois se soma em cima dela — igual um extrato. Um
-ativo pode ter só Resumo, só Operações, ou as duas (mais comum).
+É a única camada, além de ``fontes/``, que conhece a existência de uma
+fonte de dados concreta — por isso recebe o módulo de fonte como parâmetro
+(injeção de dependência simples), o que facilita tanto os testes (usando
+uma fonte falsa/mock) quanto uma futura troca ou combinação de fontes.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
-from .ganhos import Operacao, avaliar_operacoes
+from .fundamentalistas import (
+    HistoricoDividendos,
+    calcular_historico_dividendos,
+    extrair_fundamentalistas_acao,
+    extrair_fundamentalistas_fii,
+)
+from .pontuacao import (
+    avaliar_renda,
+    classificar,
+    classificar_renda,
+    pontuar_acao,
+    pontuar_acao_us,
+    pontuar_etf,
+    pontuar_fii,
+    leitura_combinada,
+)
+from .tecnicos import IndicadoresTecnicos, calcular_indicadores_tecnicos
 
-_PADRAO_TICKER_B3 = re.compile(r"^[A-Z]{4}\d{1,2}$")
-
-
-def normalizar_ticker(ticker_bruto: str) -> tuple[str, bool]:
-    """Limpa espaços e, se o ticker parecer um código B3 (4 letras + 1-2
-    dígitos) sem o sufixo '.SA', completa automaticamente — ex: 'POMO4' ->
-    'POMO4.SA'. Devolve (ticker_normalizado, foi_corrigido)."""
-    t = str(ticker_bruto).strip().upper()
-    if t.endswith(".SA") or "." in t or "-" in t:
-        return t, False
-    if _PADRAO_TICKER_B3.match(t):
-        return t + ".SA", True
-    return t, False
-
-
-def _normalizar_nome_coluna(c: str) -> str:
-    c = str(c).strip().lower()
-    mapa_acentos = (
-        ("á", "a"), ("à", "a"), ("â", "a"), ("ã", "a"),
-        ("é", "e"), ("ê", "e"),
-        ("í", "i"),
-        ("ó", "o"), ("ô", "o"), ("õ", "o"),
-        ("ú", "u"), ("ü", "u"),
-        ("ç", "c"),
-    )
-    for de, para in mapa_acentos:
-        c = c.replace(de, para)
-    return c.replace("_", " ")
+# `fonte` é qualquer objeto (tipicamente um módulo, ex.: carteira_analise.fontes.yahoo)
+# que exponha as três funções abaixo com essa assinatura. Não é um Protocol formal
+# de classe porque, na prática, o valor passado é o próprio módulo — módulos não têm
+# `self` — e forçar um Protocol baseado em classe aqui atrapalharia mais do que ajudaria.
+FonteDados = Any
 
 
-def normalizar_aba_resumo(df: pd.DataFrame) -> pd.DataFrame:
-    """Colunas esperadas: ticker, quantidade, data_inicio, e preco_medio OU
-    valor_investido (pelo menos um dos dois)."""
-    mapa = {}
-    for col in df.columns:
-        c = _normalizar_nome_coluna(col)
-        if c in ("ticker", "ativo", "codigo", "papel"):
-            mapa[col] = "ticker"
-        elif c in ("quantidade", "qtd", "qtde", "quantity"):
-            mapa[col] = "quantidade"
-        elif c in ("preco medio", "pm", "preco medio r$", "preco", "preco entrada", "preco compra"):
-            mapa[col] = "preco_medio"
-        elif c in ("valor investido", "valor total", "valor aplicado", "total investido"):
-            mapa[col] = "valor_investido"
-        elif c in ("data inicio", "data", "data compra", "data aquisicao", "data entrada"):
-            mapa[col] = "data_inicio"
-    df_novo = df.rename(columns=mapa)
-    faltando = [c for c in ("ticker", "quantidade", "data_inicio") if c not in df_novo.columns]
-    if faltando:
-        raise ValueError(f"Colunas obrigatórias não encontradas na aba Resumo: {faltando}.")
-    if "preco_medio" not in df_novo.columns and "valor_investido" not in df_novo.columns:
-        raise ValueError("A aba Resumo precisa ter 'preco_medio' OU 'valor_investido' preenchido.")
-    for opcional in ("preco_medio", "valor_investido"):
-        if opcional not in df_novo.columns:
-            df_novo[opcional] = None
-    return df_novo[["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"]]
+def parse_tickers(texto: str) -> list[str]:
+    """Quebra a lista de tickers por vírgula. Corrige automaticamente um
+    erro de digitação comum: vírgula no lugar do ponto antes do sufixo de
+    bolsa (ex.: 'VALE3, SA' vira, sem querer, dois tokens 'VALE3' e 'SA' —
+    aqui a gente detecta esse padrão e reconstrói como 'VALE3.SA')."""
+    brutos = [t.strip().upper() for t in texto.split(",") if t.strip()]
 
-
-def normalizar_aba_operacoes(df: pd.DataFrame) -> pd.DataFrame:
-    """Colunas esperadas: ticker, tipo (compra/venda), quantidade, preco, data."""
-    mapa = {}
-    for col in df.columns:
-        c = _normalizar_nome_coluna(col)
-        if c in ("ticker", "ativo", "codigo", "papel"):
-            mapa[col] = "ticker"
-        elif c in ("tipo", "operacao", "movimento", "tipo de operacao"):
-            mapa[col] = "tipo"
-        elif c in ("quantidade", "qtd", "qtde", "quantity"):
-            mapa[col] = "quantidade"
-        elif c in ("preco", "preco unitario", "valor", "valor unitario"):
-            mapa[col] = "preco"
-        elif c in ("data", "data operacao", "data da operacao"):
-            mapa[col] = "data"
-    df_novo = df.rename(columns=mapa)
-    faltando = [c for c in ("ticker", "tipo", "quantidade", "preco", "data") if c not in df_novo.columns]
-    if faltando:
-        raise ValueError(f"Colunas obrigatórias não encontradas na aba Operações: {faltando}.")
-    return df_novo[["ticker", "tipo", "quantidade", "preco", "data"]]
-
-
-def _construir_operacao_da_posicao_inicial(row) -> Operacao:
-    quantidade = float(row["quantidade"])
-    preco_medio = row.get("preco_medio")
-    if preco_medio is None or (isinstance(preco_medio, float) and pd.isna(preco_medio)):
-        valor_investido = row.get("valor_investido")
-        if valor_investido is None or (isinstance(valor_investido, float) and pd.isna(valor_investido)):
-            raise ValueError("informe preco_medio ou valor_investido na aba Resumo")
-        preco_medio = float(valor_investido) / quantidade
-    return Operacao(data=pd.Timestamp(row["data_inicio"]).date(), tipo="compra",
-                     quantidade=quantidade, preco=float(preco_medio))
+    tickers: list[str] = []
+    i = 0
+    while i < len(brutos):
+        atual = brutos[i]
+        proximo = brutos[i + 1] if i + 1 < len(brutos) else None
+        if proximo in ("SA", "US") and not atual.endswith("." + proximo):
+            tickers.append(f"{atual}.{proximo}")
+            i += 2
+        else:
+            tickers.append(atual)
+            i += 1
+    return tickers
 
 
 @dataclass
-class LinhaCarteira:
+class AnaliseAtivo:
     ticker: str
-    moeda: str
-    situacao: str  # 'Aberta', 'Encerrada' ou 'erro'
-    origem: str
-    avisos: list[str] = field(default_factory=list)
-    quantidade_aberta: float | None = None
-    preco_medio_atual: float | None = None
-    preco_atual: float | None = None  # cotação de mercado usada no cálculo do ganho não realizado
-    ganho_realizado: float | None = None
-    ganho_nao_realizado: float | None = None
-    renda_recebida: float | None = None
-    ganho_total: float | None = None
-    erro: str | None = None
+    tipo: str  # "acao" | "fii"
+    tec: IndicadoresTecnicos
+    fund: dict
+    div: HistoricoDividendos | None
+    pontos_timing: int
+    detalhes_timing: list[str]
+    pontos_renda: int | str | None
+    detalhes_renda: list[str]
+    sinal_timing: str = field(init=False)
+    qualidade_renda: str = field(init=False)
+    leitura_combinada_texto: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.sinal_timing = classificar(self.pontos_timing)
+        self.qualidade_renda = classificar_renda(self.pontos_renda)
+        self.leitura_combinada_texto = leitura_combinada(self.pontos_timing, self.pontos_renda)
 
 
-def processar_carteira_combinada(
-    df_resumo: pd.DataFrame | None,
-    df_operacoes: pd.DataFrame | None,
-    fonte,
-    periodo: str = "5y",
-) -> list[LinhaCarteira]:
-    """Uma ``LinhaCarteira`` por ativo, combinando a posição inicial (aba
-    Resumo, quando existir) com as movimentações (aba Operações, quando
-    existirem). ``fonte`` precisa expor ``baixar_precos(ticker, periodo)``
-    e ``baixar_dividendos(ticker)`` (mesmo protocolo de ``fontes.yahoo``,
-    usado em ``carteira.analisar_ativo``) — sem I/O de rede direto aqui,
-    o que mantém esta função testável com fonte falsa."""
-    tickers_resumo: dict[str, object] = {}
-    if df_resumo is not None:
-        for _, row in df_resumo.iterrows():
-            ticker, _ = normalizar_ticker(row["ticker"])
-            tickers_resumo[ticker] = row
+def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> AnaliseAtivo | None:
+    """Executa a análise completa de um único ativo. Retorna ``None`` se
+    não houver dados de preço suficientes."""
+    fechamento_bruto = fonte.baixar_precos(ticker, periodo)
+    tec = calcular_indicadores_tecnicos(fechamento_bruto)
+    if tec is None:
+        return None
 
-    tickers_operacoes: dict[str, pd.DataFrame] = {}
-    if df_operacoes is not None and not df_operacoes.empty:
-        tickers_normalizados = df_operacoes["ticker"].apply(lambda t: normalizar_ticker(t)[0])
-        for ticker, grupo in df_operacoes.groupby(tickers_normalizados):
-            tickers_operacoes[ticker] = grupo
+    info = fonte.baixar_info(ticker)
+    dividendos = fonte.baixar_dividendos(ticker)
+    div = calcular_historico_dividendos(dividendos, tec.preco_atual)
 
-    todos_tickers = sorted(set(tickers_resumo) | set(tickers_operacoes))
-    linhas: list[LinhaCarteira] = []
-
-    for ticker in todos_tickers:
-        moeda = "R$" if ticker.endswith(".SA") else "US$"
-        operacoes: list[Operacao] = []
-        avisos: list[str] = []
-
-        if ticker in tickers_resumo:
-            try:
-                operacoes.append(_construir_operacao_da_posicao_inicial(tickers_resumo[ticker]))
-            except (ValueError, TypeError) as e:
-                avisos.append(f"posição inicial (aba Resumo) inválida — {e}")
-
-        n_operacoes_lancadas = 0
-        if ticker in tickers_operacoes:
-            for _, row in tickers_operacoes[ticker].iterrows():
-                tipo_bruto = str(row["tipo"]).strip().lower()
-                if tipo_bruto in ("compra", "buy", "c"):
-                    tipo = "compra"
-                elif tipo_bruto in ("venda", "sell", "v"):
-                    tipo = "venda"
-                else:
-                    avisos.append(f"tipo inválido {row['tipo']!r} numa operação (use compra/venda)")
-                    continue
-                try:
-                    data_op = pd.Timestamp(row["data"]).date()
-                    quantidade_op = float(row["quantidade"])
-                    preco_op = float(row["preco"])
-                except (ValueError, TypeError):
-                    avisos.append(f"operação com data/quantidade/preço ilegível (data={row['data']!r})")
-                    continue
-                operacoes.append(Operacao(data=data_op, tipo=tipo, quantidade=quantidade_op, preco=preco_op))
-                n_operacoes_lancadas += 1
-
-        if not operacoes:
-            linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
-                                         origem="", avisos=avisos,
-                                         erro="nenhuma posição/operação válida"))
-            continue
-
+    if tipo == "fii":
+        fund = extrair_fundamentalistas_fii(info)
+        fund_fundamentus = None
         try:
-            preco_atual = float(fonte.baixar_precos(ticker, periodo).iloc[-1])
+            from .fontes.fundamentus import buscar_fundamentos_fii
+            fund_fundamentus = buscar_fundamentos_fii(ticker)
         except Exception:
-            preco_atual = None
+            fund_fundamentus = None  # Fundamentus indisponível — segue só com Yahoo Finance
+        if fund_fundamentus is not None:
+            # Fundamentus é preferido para P/VP e Dividend Yield de FIIs (o
+            # campo do Yahoo Finance é pouco confiável/ausente para FIIs —
+            # ver Seção 3.2.2 do Relatório). Dados extras (sem equivalente
+            # no Yahoo) também entram no dict, para uso futuro no motor.
+            fund["pvp"] = fund_fundamentus.pvp if fund_fundamentus.pvp is not None else fund.get("pvp")
+            fund["dividend_yield_fundamentus"] = fund_fundamentus.dividend_yield
+            fund["segmento"] = fund_fundamentus.segmento
+            fund["ffo_yield"] = fund_fundamentus.ffo_yield
+            fund["vacancia_media"] = fund_fundamentus.vacancia_media
+            fund["cap_rate"] = fund_fundamentus.cap_rate
+            fund["qtd_imoveis"] = fund_fundamentus.qtd_imoveis
+        resultado_timing = pontuar_fii(tec, fund, div)
+    elif tipo == "acao_us":
+        fund = extrair_fundamentalistas_acao(info)  # mesmos campos do Yahoo servem p/ EUA
+        resultado_timing = pontuar_acao_us(tec, fund, div)
+    elif tipo in ("etf_br", "etf_us"):
+        fund = extrair_fundamentalistas_acao(info)  # geralmente vazio p/ ETF, não quebra nada
+        resultado_timing = pontuar_etf(tec, div, tipo)
+    else:
+        fund = extrair_fundamentalistas_acao(info)
+        fund_fundamentus = None
         try:
-            divs = fonte.baixar_dividendos(ticker)
+            from .fontes.fundamentus import buscar_fundamentos_acao
+            fund_fundamentus = buscar_fundamentos_acao(ticker)
         except Exception:
-            divs = pd.Series(dtype=float)
+            fund_fundamentus = None  # Fundamentus indisponível — segue só com Yahoo Finance
+        if fund_fundamentus is not None:
+            # Fundamentus é preferido para ações B3 (sua base original e
+            # mais consolidada — ver Seção 3.2.2 do Relatório), substituindo
+            # os campos do Yahoo Finance quando disponíveis. Não se aplica
+            # a ações dos EUA (tratadas no ramo "acao_us" acima).
+            if fund_fundamentus.pl is not None:
+                fund["pl"] = fund_fundamentus.pl
+            if fund_fundamentus.pvp is not None:
+                fund["pvp"] = fund_fundamentus.pvp
+            if fund_fundamentus.roe is not None:
+                fund["roe"] = fund_fundamentus.roe
+            fund["roic"] = fund_fundamentus.roic
+            fund["margem_liquida"] = fund_fundamentus.margem_liquida
+            fund["divida_bruta_patrimonio"] = fund_fundamentus.divida_bruta_patrimonio
+            fund["liquidez_corrente"] = fund_fundamentus.liquidez_corrente
+        resultado_timing = pontuar_acao(tec, fund, div)
 
-        try:
-            r = avaliar_operacoes(operacoes, preco_atual=preco_atual, dividendos=divs)
-        except ValueError as e:
-            linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
-                                         origem="", avisos=avisos, erro=str(e)))
-            continue
+    resultado_renda = avaliar_renda(div, tipo)
 
-        situacao = "Aberta" if r.quantidade_aberta > 0 else "Encerrada"
-        origem = []
-        if ticker in tickers_resumo:
-            origem.append("posição inicial")
-        if n_operacoes_lancadas:
-            origem.append(f"{n_operacoes_lancadas} operação(ões)")
-
-        linhas.append(LinhaCarteira(
-            ticker=ticker, moeda=moeda, situacao=situacao, origem=" + ".join(origem), avisos=avisos,
-            quantidade_aberta=r.quantidade_aberta, preco_medio_atual=r.preco_medio_aberto,
-            preco_atual=preco_atual,
-            ganho_realizado=r.ganho_realizado, ganho_nao_realizado=r.ganho_nao_realizado,
-            renda_recebida=r.renda_recebida, ganho_total=r.ganho_total,
-        ))
-
-    return linhas
+    return AnaliseAtivo(
+        ticker=ticker,
+        tipo=tipo,
+        tec=tec,
+        fund=fund,
+        div=div,
+        pontos_timing=resultado_timing.pontos,
+        detalhes_timing=resultado_timing.detalhes,
+        pontos_renda=resultado_renda.pontos,
+        detalhes_renda=resultado_renda.detalhes,
+    )
 
 
-def achar_aba(abas: dict[str, pd.DataFrame], nomes_possiveis: list[str]) -> pd.DataFrame | None:
-    """Procura uma aba pelo nome, tolerando maiúsculas/minúsculas e acento."""
-    alvo = {_normalizar_nome_coluna(n) for n in nomes_possiveis}
-    for nome_real, df in abas.items():
-        if _normalizar_nome_coluna(nome_real) in alvo:
-            return df
-    return None
+def analisar_carteira(
+    tickers: list[str], tipo: str, periodo: str, fonte: FonteDados
+) -> list[AnaliseAtivo]:
+    """Executa a análise de uma lista de tickers do mesmo tipo (todos ação
+    ou todos FII), pulando silenciosamente os que não tiverem dados
+    suficientes (quem chama pode comparar `len(resultado)` com
+    `len(tickers)` para saber se algum foi pulado)."""
+    resultados = []
+    for ticker in tickers:
+        analise = analisar_ativo(ticker, tipo, periodo, fonte)
+        if analise is not None:
+            resultados.append(analise)
+    return resultados
