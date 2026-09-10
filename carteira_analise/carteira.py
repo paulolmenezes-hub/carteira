@@ -135,4 +135,41 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> A
             # a ações dos EUA (tratadas no ramo "acao_us" acima).
             if fund_fundamentus.pl is not None:
                 fund["pl"] = fund_fundamentus.pl
-            if fund_fundamentus.pvp
+            if fund_fundamentus.pvp is not None:
+                fund["pvp"] = fund_fundamentus.pvp
+            if fund_fundamentus.roe is not None:
+                fund["roe"] = fund_fundamentus.roe
+            fund["roic"] = fund_fundamentus.roic
+            fund["margem_liquida"] = fund_fundamentus.margem_liquida
+            fund["divida_bruta_patrimonio"] = fund_fundamentus.divida_bruta_patrimonio
+            fund["liquidez_corrente"] = fund_fundamentus.liquidez_corrente
+        resultado_timing = pontuar_acao(tec, fund, div)
+
+    resultado_renda = avaliar_renda(div, tipo)
+
+    return AnaliseAtivo(
+        ticker=ticker,
+        tipo=tipo,
+        tec=tec,
+        fund=fund,
+        div=div,
+        pontos_timing=resultado_timing.pontos,
+        detalhes_timing=resultado_timing.detalhes,
+        pontos_renda=resultado_renda.pontos,
+        detalhes_renda=resultado_renda.detalhes,
+    )
+
+
+def analisar_carteira(
+    tickers: list[str], tipo: str, periodo: str, fonte: FonteDados
+) -> list[AnaliseAtivo]:
+    """Executa a análise de uma lista de tickers do mesmo tipo (todos ação
+    ou todos FII), pulando silenciosamente os que não tiverem dados
+    suficientes (quem chama pode comparar `len(resultado)` com
+    `len(tickers)` para saber se algum foi pulado)."""
+    resultados = []
+    for ticker in tickers:
+        analise = analisar_ativo(ticker, tipo, periodo, fonte)
+        if analise is not None:
+            resultados.append(analise)
+    return resultados
