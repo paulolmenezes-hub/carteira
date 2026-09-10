@@ -120,6 +120,7 @@ class LinhaCarteira:
     avisos: list[str] = field(default_factory=list)
     quantidade_aberta: float | None = None
     preco_medio_atual: float | None = None
+    preco_atual: float | None = None  # cotação de mercado usada no cálculo do ganho não realizado
     ganho_realizado: float | None = None
     ganho_nao_realizado: float | None = None
     renda_recebida: float | None = None
@@ -218,6 +219,7 @@ def processar_carteira_combinada(
         linhas.append(LinhaCarteira(
             ticker=ticker, moeda=moeda, situacao=situacao, origem=" + ".join(origem), avisos=avisos,
             quantidade_aberta=r.quantidade_aberta, preco_medio_atual=r.preco_medio_aberto,
+            preco_atual=preco_atual,
             ganho_realizado=r.ganho_realizado, ganho_nao_realizado=r.ganho_nao_realizado,
             renda_recebida=r.renda_recebida, ganho_total=r.ganho_total,
         ))
