@@ -85,8 +85,15 @@ def pontuar_acao(
         pontos += 1
         detalhes.append(f"+1 margem líquida saudável ({margem_liquida * 100:.1f}%)")
 
+    # Setor financeiro (bancos, seguradoras) tem estrutura de balanço
+    # diferente de empresas comuns — o Fundamentus mostra "-" (não
+    # aplicável) para dívida bruta/patrimônio e liquidez corrente nesses
+    # casos, o que nossa tabela recebe como 0.00, não como ausente. Trata
+    # exatamente 0.0 como dado ausente aqui: nenhuma empresa real tem
+    # endividamento ou liquidez corrente exatamente zero (mesmo padrão do
+    # caso RECR11/FII de papel — ver Seção 4.2 do Relatório).
     divida_patrim = fund.get("divida_bruta_patrimonio")
-    if divida_patrim is not None:
+    if divida_patrim is not None and divida_patrim > 0:
         if divida_patrim < 0.5:
             pontos += 1
             detalhes.append(f"+1 baixo endividamento (dívida/patrimônio {divida_patrim:.2f})")
@@ -95,7 +102,7 @@ def pontuar_acao(
             detalhes.append(f"-1 alto endividamento (dívida/patrimônio {divida_patrim:.2f})")
 
     liquidez_corrente = fund.get("liquidez_corrente")
-    if liquidez_corrente is not None:
+    if liquidez_corrente is not None and liquidez_corrente > 0:
         if liquidez_corrente > 1.5:
             pontos += 1
             detalhes.append(f"+1 liquidez de curto prazo saudável ({liquidez_corrente:.2f})")
