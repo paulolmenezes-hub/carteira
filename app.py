@@ -6,7 +6,12 @@ e vê o resultado, sem células de código nem ambiente de notebook.
 
 Toda a lógica de cálculo é reaproveitada do pacote ``carteira_analise``
 (motor de indicadores, pontuação, ganhos e planilha), já testado
-(167 testes automatizados) — este arquivo é só a camada de interface.
+(169 testes automatizados) — este arquivo é só a camada de interface.
+
+Resultados ficam guardados em ``st.session_state`` (não só dentro do
+`if st.button(...)`) para que rodar UMA análise não apague a outra — todo
+clique reexecuta o script inteiro do zero, e sem essa persistência o
+resultado anterior desapareceria da tela.
 """
 import re
 from datetime import datetime
@@ -107,14 +112,14 @@ def _info_horario_analise() -> tuple[str, bool]:
 
 
 def _grafico_preco_pt_br(historico: pd.Series) -> alt.Chart:
-    """Gráfico de preço com meses abreviados em português (Jan, Fev, Mar...)
+    """Gráfico de preço com meses abreviados em português (JAN, FEV, MAR...)
     no eixo — o Vega-Lite (motor por trás do Altair) não tem locale pt-BR
     embutido, então a tradução é feita via expressão direta no eixo, sem
     depender de configuração de locale."""
     df = historico.reset_index()
     df.columns = ["data", "preco"]
     expressao_mes_pt = (
-        "['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']"
+        "['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ']"
         "[month(datum.value)] + '/' + (year(datum.value) % 100)"
     )
     return (
@@ -126,6 +131,21 @@ def _grafico_preco_pt_br(historico: pd.Series) -> alt.Chart:
         )
         .properties(height=300)
     )
+
+
+def _linha_ganho_para_dict(l) -> dict:
+    return {
+        "Ticker": l.ticker, "Origem": l.origem,
+        "Quantidade aberta": f"{l.quantidade_aberta:.0f}" if l.quantidade_aberta is not None else "-",
+        "Preço médio": f"{l.moeda} {l.preco_medio_atual:.2f}" if l.preco_medio_atual else "-",
+        "Preço atual": f"{l.moeda} {l.preco_atual:.2f}" if l.preco_atual is not None else "N/D",
+        "Ganho realizado": f"{l.moeda} {l.ganho_realizado:+.2f}" if l.ganho_realizado is not None else "-",
+        "Ganho não realizado": (
+            f"{l.moeda} {l.ganho_nao_realizado:+.2f}" if l.ganho_nao_realizado is not None else "N/A"
+        ),
+        "Renda recebida": f"{l.moeda} {l.renda_recebida:.2f}" if l.renda_recebida is not None else "-",
+        "Ganho total": f"{l.moeda} {l.ganho_total:+.2f}" if l.ganho_total is not None else "-",
+    }
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
@@ -142,6 +162,7 @@ st.markdown(
 )
 
 arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
+
 if arquivo is not None:
     try:
         abas = pd.read_excel(arquivo, sheet_name=None)
@@ -172,7 +193,6 @@ if arquivo is not None:
         f"{'sem aba Operações' if df_operacoes is None else f'{len(df_operacoes)} operação(ões)'}."
     )
 
-    # Lista de todos os tickers presentes, pra confirmação do tipo de ativo
     tickers_encontrados: list[str] = []
     if df_resumo is not None:
         tickers_encontrados += [normalizar_ticker(t)[0] for t in df_resumo["ticker"]]
@@ -199,8 +219,27 @@ if arquivo is not None:
 
     if st.button("📊 Analisar carteira", type="primary"):
         texto_horario, pregao_provavelmente_aberto = _info_horario_analise()
-        st.caption(f"🕒 Análise executada em {texto_horario}")
-        if pregao_provavelmente_aberto:
+
+        with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
+            linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_yahoo)
+            linhas_analise = []
+            for ticker in tickers_encontrados:
+                tipo = tipos_confirmados[ticker]
+                resultado = analisar_ativo(ticker, tipo, "2y", fonte_yahoo)
+                linhas_analise.append((ticker, tipo, resultado))
+
+        # Guarda tudo na sessão — é isso que faz o resultado sobreviver a um
+        # clique posterior no botão "Analisar ativo" (ver docstring do arquivo).
+        st.session_state["carteira_horario"] = texto_horario
+        st.session_state["carteira_pregao_aberto"] = pregao_provavelmente_aberto
+        st.session_state["carteira_linhas_ganho"] = linhas_ganho
+        st.session_state["carteira_linhas_analise"] = linhas_analise
+
+    # ---- Exibição: roda sempre que houver resultado guardado, mesmo que o
+    # rerun atual tenha sido disparado pelo outro botão (ativo específico). ----
+    if "carteira_linhas_analise" in st.session_state:
+        st.caption(f"🕒 Análise executada em {st.session_state['carteira_horario']}")
+        if st.session_state["carteira_pregao_aberto"]:
             st.caption(
                 "📊 Pregão provavelmente em andamento — os preços usados são os mais "
                 "recentes disponíveis agora, não necessariamente o fechamento definitivo "
@@ -208,19 +247,11 @@ if arquivo is not None:
                 "Brasília) pode trazer números diferentes."
             )
 
-        with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
-            linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_yahoo)
+        linhas_analise = st.session_state["carteira_linhas_analise"]
+        linhas_ganho = st.session_state["carteira_linhas_ganho"]
 
-            linhas_analise = []
-            for ticker in tickers_encontrados:
-                tipo = tipos_confirmados[ticker]
-                resultado = analisar_ativo(ticker, tipo, "2y", fonte_yahoo)
-                linhas_analise.append((ticker, tipo, resultado))
-
-        # ---- Tabela de análise (sinal de timing / qualidade da renda) ----
         st.subheader("📈 Análise de cada ativo")
         linhas_tabela = []
-        detalhes_por_ticker = {}
         for ticker, tipo, resultado in linhas_analise:
             if resultado is None:
                 linhas_tabela.append({
@@ -235,7 +266,6 @@ if arquivo is not None:
                 "Qualidade da renda": resultado.qualidade_renda,
                 "Leitura combinada": resultado.leitura_combinada_texto,
             })
-            detalhes_por_ticker[ticker] = resultado
 
         st.dataframe(pd.DataFrame(linhas_tabela), width='stretch', hide_index=True)
 
@@ -254,34 +284,19 @@ if arquivo is not None:
                         st.markdown(f"- {d}")
                 st.divider()
 
-        # ---- Tabela de ganhos (carteira atual + encerradas) ----
         st.subheader("💰 Ganho da carteira")
         abertas = [l for l in linhas_ganho if l.situacao == "Aberta"]
         encerradas = [l for l in linhas_ganho if l.situacao == "Encerrada"]
         com_erro = [l for l in linhas_ganho if l.situacao == "erro"]
 
-        def _linha_para_dict(l):
-            return {
-                "Ticker": l.ticker, "Origem": l.origem,
-                "Quantidade aberta": f"{l.quantidade_aberta:.0f}" if l.quantidade_aberta is not None else "-",
-                "Preço médio": f"{l.moeda} {l.preco_medio_atual:.2f}" if l.preco_medio_atual else "-",
-                "Preço atual": f"{l.moeda} {l.preco_atual:.2f}" if l.preco_atual is not None else "N/D",
-                "Ganho realizado": f"{l.moeda} {l.ganho_realizado:+.2f}" if l.ganho_realizado is not None else "-",
-                "Ganho não realizado": (
-                    f"{l.moeda} {l.ganho_nao_realizado:+.2f}" if l.ganho_nao_realizado is not None else "N/A"
-                ),
-                "Renda recebida": f"{l.moeda} {l.renda_recebida:.2f}" if l.renda_recebida is not None else "-",
-                "Ganho total": f"{l.moeda} {l.ganho_total:+.2f}" if l.ganho_total is not None else "-",
-            }
-
         if abertas:
             st.markdown(f"**Carteira atual — {len(abertas)} posição(ões) em aberto**")
-            st.dataframe(pd.DataFrame([_linha_para_dict(l) for l in abertas]),
+            st.dataframe(pd.DataFrame([_linha_ganho_para_dict(l) for l in abertas]),
                          width='stretch', hide_index=True)
 
         if encerradas:
             st.markdown(f"**Posições encerradas — {len(encerradas)} ativo(s)**")
-            st.dataframe(pd.DataFrame([_linha_para_dict(l) for l in encerradas]),
+            st.dataframe(pd.DataFrame([_linha_ganho_para_dict(l) for l in encerradas]),
                          width='stretch', hide_index=True)
 
         if com_erro:
@@ -330,35 +345,47 @@ if st.button("🔍 Analisar ativo", type="secondary"):
     if not ticker_limpo:
         st.warning("Digite um ticker antes de analisar.")
     else:
-        texto_horario, pregao_aberto = _info_horario_analise()
-        st.caption(f"🕒 Análise executada em {texto_horario}")
+        texto_horario, _ = _info_horario_analise()
         with st.spinner(f"Buscando dados de {ticker_limpo}..."):
             resultado = analisar_ativo(ticker_limpo, tipo_individual, "2y", fonte_yahoo)
 
-        if resultado is None:
-            st.error(
-                f"Não foi possível obter dados suficientes para {ticker_limpo}. "
-                "Confira se o ticker está certo (tickers da B3 precisam do sufixo '.SA')."
-            )
-        else:
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Sinal de timing", resultado.sinal_timing)
-            col_b.metric("Qualidade da renda", resultado.qualidade_renda)
-            col_c.metric("Preço atual", f"{resultado.tec.preco_atual:.2f}")
+        # Guarda na sessão — mesmo motivo do bloco da carteira acima.
+        st.session_state["individual_ticker"] = ticker_limpo
+        st.session_state["individual_tipo"] = tipo_individual
+        st.session_state["individual_horario"] = texto_horario
+        st.session_state["individual_resultado"] = resultado
 
-            st.markdown(f"**Leitura combinada:** {resultado.leitura_combinada_texto}")
+if "individual_resultado" in st.session_state:
+    ticker_limpo = st.session_state["individual_ticker"]
+    tipo_individual_salvo = st.session_state["individual_tipo"]
+    resultado = st.session_state["individual_resultado"]
 
-            col_det1, col_det2 = st.columns(2)
-            with col_det1:
-                if resultado.detalhes_timing:
-                    st.markdown("**Timing (compra/venda):**")
-                    for d in resultado.detalhes_timing:
-                        st.markdown(f"- {d}")
-            with col_det2:
-                if resultado.detalhes_renda:
-                    st.markdown("**Qualidade da renda:**")
-                    for d in resultado.detalhes_renda:
-                        st.markdown(f"- {d}")
+    st.caption(f"🕒 Análise executada em {st.session_state['individual_horario']}")
 
-            st.markdown("**Histórico de preço (últimos 2 anos):**")
-            st.altair_chart(_grafico_preco_pt_br(resultado.tec.historico), width='stretch')
+    if resultado is None:
+        st.error(
+            f"Não foi possível obter dados suficientes para {ticker_limpo}. "
+            "Confira se o ticker está certo (tickers da B3 precisam do sufixo '.SA')."
+        )
+    else:
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Sinal de timing", resultado.sinal_timing)
+        col_b.metric("Qualidade da renda", resultado.qualidade_renda)
+        col_c.metric("Preço atual", f"{resultado.tec.preco_atual:.2f}")
+
+        st.markdown(f"**Leitura combinada:** {resultado.leitura_combinada_texto}")
+
+        col_det1, col_det2 = st.columns(2)
+        with col_det1:
+            if resultado.detalhes_timing:
+                st.markdown("**Timing (compra/venda):**")
+                for d in resultado.detalhes_timing:
+                    st.markdown(f"- {d}")
+        with col_det2:
+            if resultado.detalhes_renda:
+                st.markdown("**Qualidade da renda:**")
+                for d in resultado.detalhes_renda:
+                    st.markdown(f"- {d}")
+
+        st.markdown("**Histórico de preço (últimos 2 anos):**")
+        st.altair_chart(_grafico_preco_pt_br(resultado.tec.historico), width='stretch')
