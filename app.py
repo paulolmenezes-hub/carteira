@@ -119,7 +119,6 @@ st.markdown(
 )
 
 arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
-
 if arquivo is not None:
     try:
         abas = pd.read_excel(arquivo, sheet_name=None)
@@ -285,3 +284,58 @@ if arquivo is not None:
         )
 else:
     st.info("Envie um arquivo Excel para começar a análise.")
+
+st.divider()
+st.subheader("🔍 Analisar um ativo específico")
+st.caption(
+    "Quer olhar um ativo que não está na sua carteira, ou só conferir um antes de "
+    "decidir? Digite o ticker abaixo — não precisa estar em nenhuma planilha."
+)
+
+col_ticker, col_tipo = st.columns([2, 1])
+with col_ticker:
+    ticker_individual = st.text_input("Ticker", placeholder="ex: PETR4.SA, MXRF11.SA, AAPL", key="ticker_individual")
+with col_tipo:
+    chute_individual = _heuristica_tipo(ticker_individual.strip().upper()) if ticker_individual.strip() else "acao"
+    tipo_individual = st.selectbox(
+        "Tipo", options=OPCOES_TIPO, index=OPCOES_TIPO.index(chute_individual),
+        format_func=lambda t: NOMES_TIPO[t], key="tipo_individual",
+    )
+
+if st.button("🔍 Analisar ativo", type="secondary"):
+    ticker_limpo = ticker_individual.strip().upper()
+    if not ticker_limpo:
+        st.warning("Digite um ticker antes de analisar.")
+    else:
+        texto_horario, pregao_aberto = _info_horario_analise()
+        st.caption(f"🕒 Análise executada em {texto_horario}")
+        with st.spinner(f"Buscando dados de {ticker_limpo}..."):
+            resultado = analisar_ativo(ticker_limpo, tipo_individual, "2y", fonte_yahoo)
+
+        if resultado is None:
+            st.error(
+                f"Não foi possível obter dados suficientes para {ticker_limpo}. "
+                "Confira se o ticker está certo (tickers da B3 precisam do sufixo '.SA')."
+            )
+        else:
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Sinal de timing", resultado.sinal_timing)
+            col_b.metric("Qualidade da renda", resultado.qualidade_renda)
+            col_c.metric("Preço atual", f"{resultado.tec.preco_atual:.2f}")
+
+            st.markdown(f"**Leitura combinada:** {resultado.leitura_combinada_texto}")
+
+            col_det1, col_det2 = st.columns(2)
+            with col_det1:
+                if resultado.detalhes_timing:
+                    st.markdown("**Timing (compra/venda):**")
+                    for d in resultado.detalhes_timing:
+                        st.markdown(f"- {d}")
+            with col_det2:
+                if resultado.detalhes_renda:
+                    st.markdown("**Qualidade da renda:**")
+                    for d in resultado.detalhes_renda:
+                        st.markdown(f"- {d}")
+
+            st.markdown("**Histórico de preço (últimos 2 anos):**")
+            st.line_chart(resultado.tec.historico)
