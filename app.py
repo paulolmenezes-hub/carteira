@@ -131,7 +131,19 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
     faixa de mínima/máxima do período + marcadores de dividendo pago, com
     um painel de RSI(14) logo abaixo — mesmo conteúdo do gráfico do
     notebook (Seção 8), agora no painel web. Meses abreviados em português
-    no eixo (ver _EXPRESSAO_MES_PT)."""
+    no eixo (ver _EXPRESSAO_MES_PT).
+
+    Normaliza fuso horário antes de comparar as duas séries: o Yahoo
+    Finance devolve preço (``yf.download``) sem fuso, mas dividendos
+    (``yf.Ticker(...).dividends``) COM fuso — comparar as duas datas
+    direto, sem isso, derruba o gráfico com TypeError."""
+    historico = historico.copy()
+    if historico.index.tz is not None:
+        historico.index = historico.index.tz_localize(None)
+    if dividendos is not None and not dividendos.empty and dividendos.index.tz is not None:
+        dividendos = dividendos.copy()
+        dividendos.index = dividendos.index.tz_localize(None)
+
     df_preco = historico.reset_index()
     df_preco.columns = ["data", "preco"]
 
