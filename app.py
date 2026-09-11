@@ -83,6 +83,14 @@ NOMES_TIPO = {
 OPCOES_TIPO = list(NOMES_TIPO.keys())
 
 
+OPCOES_PERIODO = {
+    "6mo": "6 meses",
+    "1y": "1 ano",
+    "2y": "2 anos",
+    "5y": "5 anos",
+}
+
+
 def _heuristica_tipo(ticker: str) -> str:
     """Chute inicial do tipo de ativo, a partir do formato do ticker —
     o usuário confirma ou corrige antes de rodar a análise. Tickers B3
@@ -228,6 +236,12 @@ if arquivo is not None:
             )
             tipos_confirmados[ticker] = escolha
 
+    periodo_carteira = st.selectbox(
+        "Histórico para análise técnica", options=list(OPCOES_PERIODO.keys()),
+        format_func=lambda p: OPCOES_PERIODO[p], index=list(OPCOES_PERIODO.keys()).index("2y"),
+        key="periodo_carteira",
+    )
+
     if st.button("📊 Analisar carteira", type="primary"):
         texto_horario, pregao_provavelmente_aberto = _info_horario_analise()
 
@@ -236,7 +250,7 @@ if arquivo is not None:
             linhas_analise = []
             for ticker in tickers_encontrados:
                 tipo = tipos_confirmados[ticker]
-                resultado = analisar_ativo(ticker, tipo, "2y", fonte_yahoo)
+                resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_yahoo)
                 linhas_analise.append((ticker, tipo, resultado))
 
         # Guarda tudo na sessão — é isso que faz o resultado sobreviver a um
@@ -354,6 +368,12 @@ with col_tipo:
         format_func=lambda t: NOMES_TIPO[t], key="tipo_individual",
     )
 
+periodo_individual = st.selectbox(
+    "Histórico para análise técnica", options=list(OPCOES_PERIODO.keys()),
+    format_func=lambda p: OPCOES_PERIODO[p], index=list(OPCOES_PERIODO.keys()).index("2y"),
+    key="periodo_individual",
+)
+
 if st.button("🔍 Analisar ativo", type="secondary"):
     ticker_limpo = ticker_individual.strip().upper()
     if not ticker_limpo:
@@ -361,11 +381,12 @@ if st.button("🔍 Analisar ativo", type="secondary"):
     else:
         texto_horario, _ = _info_horario_analise()
         with st.spinner(f"Buscando dados de {ticker_limpo}..."):
-            resultado = analisar_ativo(ticker_limpo, tipo_individual, "2y", fonte_yahoo)
+            resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_yahoo)
 
         # Guarda na sessão — mesmo motivo do bloco da carteira acima.
         st.session_state["individual_ticker"] = ticker_limpo
         st.session_state["individual_tipo"] = tipo_individual
+        st.session_state["individual_periodo"] = periodo_individual
         st.session_state["individual_horario"] = texto_horario
         st.session_state["individual_resultado"] = resultado
 
@@ -401,5 +422,5 @@ if "individual_resultado" in st.session_state:
                 for d in resultado.detalhes_renda:
                     st.markdown(f"{_renderizar_detalhe(d)}")
 
-        st.markdown("**Histórico de preço (últimos 2 anos):**")
+        st.markdown(f"**Histórico de preço ({OPCOES_PERIODO[st.session_state['individual_periodo']]}):**")
         st.altair_chart(_grafico_preco_pt_br(resultado.tec.historico), width='stretch')
