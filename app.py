@@ -148,6 +148,17 @@ def _linha_ganho_para_dict(l) -> dict:
     }
 
 
+def _renderizar_detalhe(d: str) -> str:
+    """Colore o indicador (verde/vermelho) de acordo com o sinal do
+    detalhe, mesma convenção da tabela de análise (🟢/🔴) — os detalhes
+    sempre começam com '+1' ou '-1' (ver pontuacao.py)."""
+    if d.startswith("+1"):
+        return f"🟢 {d[3:].strip()}"
+    if d.startswith("-1"):
+        return f"🔴 {d[3:].strip()}"
+    return f"🟡 {d}"
+
+
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
 st.markdown(
     "Faça upload da sua planilha (Excel) com uma ou duas abas:\n\n"
@@ -270,19 +281,22 @@ if arquivo is not None:
         st.dataframe(pd.DataFrame(linhas_tabela), width='stretch', hide_index=True)
 
         with st.expander("Ver detalhes da pontuação de cada ativo"):
-            for ticker, tipo, resultado in linhas_analise:
-                if resultado is None:
-                    continue
-                st.markdown(f"**{ticker}** ({NOMES_TIPO[tipo]})")
-                if resultado.detalhes_timing:
-                    st.markdown("Timing (compra/venda):")
-                    for d in resultado.detalhes_timing:
-                        st.markdown(f"- {d}")
-                if resultado.detalhes_renda:
-                    st.markdown("Qualidade da renda:")
-                    for d in resultado.detalhes_renda:
-                        st.markdown(f"- {d}")
-                st.divider()
+            ativos_com_resultado = [(t, tp, r) for t, tp, r in linhas_analise if r is not None]
+            n_colunas = min(4, len(ativos_com_resultado)) or 1
+            for inicio in range(0, len(ativos_com_resultado), n_colunas):
+                bloco = ativos_com_resultado[inicio:inicio + n_colunas]
+                colunas_detalhe = st.columns(len(bloco))
+                for coluna, (ticker, tipo, resultado) in zip(colunas_detalhe, bloco):
+                    with coluna:
+                        st.markdown(f"**{ticker}** ({NOMES_TIPO[tipo]})")
+                        if resultado.detalhes_timing:
+                            st.markdown("*Timing:*")
+                            for d in resultado.detalhes_timing:
+                                st.markdown(f"{_renderizar_detalhe(d)}")
+                        if resultado.detalhes_renda:
+                            st.markdown("*Qualidade da renda:*")
+                            for d in resultado.detalhes_renda:
+                                st.markdown(f"{_renderizar_detalhe(d)}")
 
         st.subheader("💰 Ganho da carteira")
         abertas = [l for l in linhas_ganho if l.situacao == "Aberta"]
@@ -380,12 +394,12 @@ if "individual_resultado" in st.session_state:
             if resultado.detalhes_timing:
                 st.markdown("**Timing (compra/venda):**")
                 for d in resultado.detalhes_timing:
-                    st.markdown(f"- {d}")
+                    st.markdown(f"{_renderizar_detalhe(d)}")
         with col_det2:
             if resultado.detalhes_renda:
                 st.markdown("**Qualidade da renda:**")
                 for d in resultado.detalhes_renda:
-                    st.markdown(f"- {d}")
+                    st.markdown(f"{_renderizar_detalhe(d)}")
 
         st.markdown("**Histórico de preço (últimos 2 anos):**")
         st.altair_chart(_grafico_preco_pt_br(resultado.tec.historico), width='stretch')
