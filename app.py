@@ -30,6 +30,7 @@ from carteira_analise.planilha import (
     normalizar_ticker,
     processar_carteira_combinada,
 )
+from carteira_analise.tecnicos import calcular_rsi
 
 st.set_page_config(page_title="Análise de Carteira", page_icon="📊", layout="wide")
 
@@ -119,26 +120,79 @@ def _info_horario_analise() -> tuple[str, bool]:
     return texto, provavelmente_aberto
 
 
-def _grafico_preco_pt_br(historico: pd.Series) -> alt.Chart:
-    """Gráfico de preço com meses abreviados em português (JAN, FEV, MAR...)
-    no eixo — o Vega-Lite (motor por trás do Altair) não tem locale pt-BR
-    embutido, então a tradução é feita via expressão direta no eixo, sem
-    depender de configuração de locale."""
-    df = historico.reset_index()
-    df.columns = ["data", "preco"]
-    expressao_mes_pt = (
-        "['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ']"
-        "[month(datum.value)] + '/' + (year(datum.value) % 100)"
+_EXPRESSAO_MES_PT = (
+    "['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ']"
+    "[month(datum.value)] + '/' + (year(datum.value) % 100)"
+)
+
+
+def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.VConcatChart:
+    """Gráfico completo de um ativo: preço + médias móveis (MM50/MM200) +
+    faixa de mínima/máxima do período + marcadores de dividendo pago, com
+    um painel de RSI(14) logo abaixo — mesmo conteúdo do gráfico do
+    notebook (Seção 8), agora no painel web. Meses abreviados em português
+    no eixo (ver _EXPRESSAO_MES_PT)."""
+    df_preco = historico.reset_index()
+    df_preco.columns = ["data", "preco"]
+
+    sma50 = historico.rolling(50).mean()
+    sma200 = historico.rolling(200).mean()
+    df_medias = pd.DataFrame({
+        "data": historico.index,
+        "MM50": sma50.values,
+        "MM200": sma200.values,
+    }).melt("data", var_name="média", value_name="valor").dropna()
+
+    minima_periodo = float(historico.quantile(0.05))
+    maxima_periodo = float(historico.quantile(0.95))
+
+    # Marcador de cada dividendo pago, posicionado no preço mais próximo
+    # daquela data (a série de dividendos raramente cai num dia de pregão
+    # exato) — vira um "rug" de pontos sobre a linha de preço.
+    df_dividendos = pd.DataFrame(columns=["data", "preco"])
+    if dividendos is not None and not dividendos.empty:
+        datas_div = dividendos.index[
+            (dividendos.index >= historico.index.min()) & (dividendos.index <= historico.index.max())
+        ]
+        if len(datas_div) > 0:
+            pos = historico.index.get_indexer(datas_div, method="nearest")
+            df_dividendos = pd.DataFrame({
+                "data": datas_div,
+                "preco": historico.iloc[pos].values,
+            })
+
+    eixo_x_topo = alt.Axis(labelExpr=_EXPRESSAO_MES_PT, labelAngle=0)
+
+    linha_preco = alt.Chart(df_preco).mark_line(color="#1f77b4").encode(
+        x=alt.X("data:T", title=None, axis=eixo_x_topo),
+        y=alt.Y("preco:Q", title=None),
     )
-    return (
-        alt.Chart(df)
-        .mark_line(color="#1f77b4")
-        .encode(
-            x=alt.X("data:T", title=None, axis=alt.Axis(labelExpr=expressao_mes_pt, labelAngle=0)),
-            y=alt.Y("preco:Q", title=None),
-        )
-        .properties(height=300)
+    linhas_medias = alt.Chart(df_medias).mark_line(strokeWidth=1.2).encode(
+        x=alt.X("data:T", title=None),
+        y=alt.Y("valor:Q", title=None),
+        color=alt.Color("média:N", scale=alt.Scale(range=["#ff7f0e", "#d62728"]), legend=alt.Legend(title=None)),
     )
+    faixa_min_max = alt.Chart(pd.DataFrame({"y": [minima_periodo, maxima_periodo]})).mark_rule(
+        strokeDash=[4, 4], color="gray", opacity=0.6
+    ).encode(y="y:Q")
+    marcadores_dividendo = alt.Chart(df_dividendos).mark_point(
+        shape="triangle-up", color="#2ca02c", size=60, filled=True
+    ).encode(x="data:T", y="preco:Q", tooltip=["data:T", "preco:Q"])
+
+    painel_preco = (linha_preco + linhas_medias + faixa_min_max + marcadores_dividendo).properties(height=280)
+
+    rsi_series = calcular_rsi(historico, 14)
+    df_rsi = pd.DataFrame({"data": historico.index, "rsi": rsi_series.values}).dropna()
+    linha_rsi = alt.Chart(df_rsi).mark_line(color="#9467bd").encode(
+        x=alt.X("data:T", title=None, axis=alt.Axis(labelExpr=_EXPRESSAO_MES_PT, labelAngle=0)),
+        y=alt.Y("rsi:Q", title="RSI(14)", scale=alt.Scale(domain=[0, 100])),
+    )
+    faixa_rsi = alt.Chart(pd.DataFrame({"y": [30, 70]})).mark_rule(
+        strokeDash=[4, 4], color="gray", opacity=0.6
+    ).encode(y="y:Q")
+    painel_rsi = (linha_rsi + faixa_rsi).properties(height=120)
+
+    return alt.vconcat(painel_preco, painel_rsi).resolve_scale(x="shared")
 
 
 def _linha_ganho_para_dict(l) -> dict:
@@ -248,10 +302,15 @@ if arquivo is not None:
         with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
             linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_yahoo)
             linhas_analise = []
+            dividendos_por_ticker = {}
             for ticker in tickers_encontrados:
                 tipo = tipos_confirmados[ticker]
                 resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_yahoo)
                 linhas_analise.append((ticker, tipo, resultado))
+                try:
+                    dividendos_por_ticker[ticker] = fonte_yahoo.baixar_dividendos(ticker)
+                except Exception:
+                    dividendos_por_ticker[ticker] = pd.Series(dtype=float)
 
         # Guarda tudo na sessão — é isso que faz o resultado sobreviver a um
         # clique posterior no botão "Analisar ativo" (ver docstring do arquivo).
@@ -259,6 +318,7 @@ if arquivo is not None:
         st.session_state["carteira_pregao_aberto"] = pregao_provavelmente_aberto
         st.session_state["carteira_linhas_ganho"] = linhas_ganho
         st.session_state["carteira_linhas_analise"] = linhas_analise
+        st.session_state["carteira_dividendos"] = dividendos_por_ticker
 
     # ---- Exibição: roda sempre que houver resultado guardado, mesmo que o
     # rerun atual tenha sido disparado pelo outro botão (ativo específico). ----
@@ -311,6 +371,24 @@ if arquivo is not None:
                             st.markdown("*Qualidade da renda:*")
                             for d in resultado.detalhes_renda:
                                 st.markdown(f"{_renderizar_detalhe(d)}")
+
+        # ---- Gráfico de preço: seletor à parte, não mexe na comparação em
+        # colunas acima — só mostra o ativo escolhido, um de cada vez. ----
+        if ativos_com_resultado:
+            st.markdown("**Ver gráfico de preço de um ativo**")
+            ticker_grafico = st.selectbox(
+                "Escolha o ativo", options=[t for t, tp, r in ativos_com_resultado],
+                key="ticker_grafico_carteira",
+            )
+            resultado_grafico = next(r for t, tp, r in ativos_com_resultado if t == ticker_grafico)
+            dividendos_grafico = st.session_state["carteira_dividendos"].get(ticker_grafico, pd.Series(dtype=float))
+            st.caption(
+                "Linha azul = preço · laranja = MM50 · vermelho = MM200 · linhas tracejadas = "
+                "mínima/máxima do período (percentil 5%/95%) · triângulos verdes = dividendo "
+                "pago. Painel de baixo: RSI(14), com faixas de referência em 30 e 70."
+            )
+            grafico = _grafico_preco_completo(resultado_grafico.tec.historico, dividendos_grafico)
+            st.altair_chart(grafico, width='stretch')
 
         st.subheader("💰 Ganho da carteira")
         abertas = [l for l in linhas_ganho if l.situacao == "Aberta"]
@@ -382,6 +460,10 @@ if st.button("🔍 Analisar ativo", type="secondary"):
         texto_horario, _ = _info_horario_analise()
         with st.spinner(f"Buscando dados de {ticker_limpo}..."):
             resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_yahoo)
+            try:
+                dividendos_individual = fonte_yahoo.baixar_dividendos(ticker_limpo)
+            except Exception:
+                dividendos_individual = pd.Series(dtype=float)
 
         # Guarda na sessão — mesmo motivo do bloco da carteira acima.
         st.session_state["individual_ticker"] = ticker_limpo
@@ -389,6 +471,7 @@ if st.button("🔍 Analisar ativo", type="secondary"):
         st.session_state["individual_periodo"] = periodo_individual
         st.session_state["individual_horario"] = texto_horario
         st.session_state["individual_resultado"] = resultado
+        st.session_state["individual_dividendos"] = dividendos_individual
 
 if "individual_resultado" in st.session_state:
     ticker_limpo = st.session_state["individual_ticker"]
@@ -423,4 +506,10 @@ if "individual_resultado" in st.session_state:
                     st.markdown(f"{_renderizar_detalhe(d)}")
 
         st.markdown(f"**Histórico de preço ({OPCOES_PERIODO[st.session_state['individual_periodo']]}):**")
-        st.altair_chart(_grafico_preco_pt_br(resultado.tec.historico), width='stretch')
+        st.caption(
+            "Linha azul = preço · laranja = MM50 · vermelho = MM200 · linhas tracejadas = "
+            "mínima/máxima do período (percentil 5%/95%) · triângulos verdes = dividendo pago. "
+            "Painel de baixo: RSI(14), com faixas de referência em 30 e 70."
+        )
+        grafico = _grafico_preco_completo(resultado.tec.historico, st.session_state["individual_dividendos"])
+        st.altair_chart(grafico, width='stretch')
