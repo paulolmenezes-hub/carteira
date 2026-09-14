@@ -100,13 +100,29 @@ _EXPRESSAO_MES_PT = (
 )
 
 
+_ETFS_EUA_CONHECIDOS = {
+    # Grandes índices e setoriais mais comuns — lista de melhor esforço,
+    # não exaustiva (não há um padrão estrutural no ticker americano que
+    # distinga ETF de ação, diferente da B3); por isso a confirmação manual
+    # continua disponível pra qualquer ticker fora dessa lista.
+    "SPY", "QQQ", "IVV", "VOO", "VTI", "VEA", "VWO", "IEF", "TLT", "AGG",
+    "BND", "GLD", "SLV", "IAU", "XLE", "XLF", "XLK", "XLV", "XLI", "XLY",
+    "XLP", "XLU", "XLB", "XLRE", "XLC", "EEM", "EFA", "IWM", "DIA", "ARKK",
+    "EMXC", "REMX", "XME", "IXG", "MCHI", "FXI", "EWZ", "EWJ", "HYG", "LQD",
+    "VNQ", "SCHD", "JEPI", "JEPQ", "SPYD", "VIG", "VYM",
+}
+
+
 def _heuristica_tipo(ticker: str) -> str:
     """Chute inicial do tipo de ativo, a partir do formato do ticker —
     o usuário confirma ou corrige antes de rodar a análise. Tickers B3
     terminados em '11' são frequentemente FIIs ou ETFs (ambíguo só pelo
-    ticker); o padrão aqui é FII, por ser o caso mais comum."""
+    ticker); o padrão aqui é FII, por ser o caso mais comum. Tickers dos
+    EUA não têm um padrão estrutural equivalente pra distinguir ETF de
+    ação — usa uma lista de ETFs americanos conhecidos (_ETFS_EUA_CONHECIDOS);
+    fora dela, o chute cai pra ação, e o usuário confirma/corrige."""
     if not ticker.endswith(".SA"):
-        return "acao_us"
+        return "etf_us" if ticker in _ETFS_EUA_CONHECIDOS else "acao_us"
     base = ticker[:-3]
     m = re.match(r"^([A-Z]+)(\d+)$", base)
     if not m:
