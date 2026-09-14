@@ -219,6 +219,35 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
     )
 
 
+def _renderizar_tabela_alinhada(df: pd.DataFrame, colunas_moeda: list[str]) -> None:
+    """Renderiza uma tabela em HTML com alinhamento específico — coluna
+    'Ticker' à esquerda, colunas de valor monetário (R$/US$) à direita, as
+    demais ao centro, cabeçalho sempre centralizado. O `st.dataframe`
+    nativo do Streamlit não permite esse nível de controle por coluna, daí
+    o HTML próprio em vez do componente nativo (troca: perde ordenação por
+    clique no cabeçalho, ganha o alinhamento exato pedido)."""
+    styler = df.style.hide(axis="index")
+    estilos = [
+        {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%")]},
+        {"selector": "th, td", "props": [
+            ("border", "1px solid rgba(255,255,255,0.2)"), ("padding", "6px 10px"),
+        ]},
+        {"selector": "th", "props": [
+            ("text-align", "center"), ("background-color", "rgba(255,255,255,0.08)"),
+        ]},
+    ]
+    for i, col in enumerate(df.columns):
+        if col == "Ticker":
+            alinhamento = "left"
+        elif col in colunas_moeda:
+            alinhamento = "right"
+        else:
+            alinhamento = "center"
+        estilos.append({"selector": f"td.col{i}", "props": [("text-align", alinhamento)]})
+    styler = styler.set_table_styles(estilos)
+    st.markdown(styler.to_html(), unsafe_allow_html=True)
+
+
 def _linha_ganho_para_dict(l) -> dict:
     return {
         "Ticker": l.ticker, "Origem": l.origem,
@@ -390,7 +419,7 @@ with tab_carteira:
                     "Leitura combinada": resultado.leitura_combinada_texto,
                 })
 
-            st.dataframe(pd.DataFrame(linhas_tabela), width='stretch', hide_index=True)
+            _renderizar_tabela_alinhada(pd.DataFrame(linhas_tabela), colunas_moeda=[])
 
             with st.expander("Ver detalhes da pontuação de cada ativo"):
                 ativos_com_resultado = [(t, tp, r) for t, tp, r in linhas_analise if r is not None]
@@ -434,15 +463,22 @@ with tab_carteira:
             encerradas = [l for l in linhas_ganho if l.situacao == "Encerrada"]
             com_erro = [l for l in linhas_ganho if l.situacao == "erro"]
 
+            colunas_moeda_ganho = [
+                "Preço médio", "Preço atual", "Ganho realizado",
+                "Ganho não realizado", "Renda recebida", "Ganho total",
+            ]
+
             if abertas:
                 st.markdown(f"**Carteira atual — {len(abertas)} posição(ões) em aberto**")
-                st.dataframe(pd.DataFrame([_linha_ganho_para_dict(l) for l in abertas]),
-                             width='stretch', hide_index=True)
+                _renderizar_tabela_alinhada(
+                    pd.DataFrame([_linha_ganho_para_dict(l) for l in abertas]), colunas_moeda_ganho
+                )
 
             if encerradas:
                 st.markdown(f"**Posições encerradas — {len(encerradas)} ativo(s)**")
-                st.dataframe(pd.DataFrame([_linha_ganho_para_dict(l) for l in encerradas]),
-                             width='stretch', hide_index=True)
+                _renderizar_tabela_alinhada(
+                    pd.DataFrame([_linha_ganho_para_dict(l) for l in encerradas]), colunas_moeda_ganho
+                )
 
             if com_erro:
                 st.warning(f"{len(com_erro)} ativo(s) com problema ao calcular o ganho:")
@@ -604,7 +640,12 @@ with tab_dashboard:
             })
 
         if linhas_tabela_dash:
-            st.dataframe(pd.DataFrame(linhas_tabela_dash), width='stretch', hide_index=True)
+            nome_coluna_renda = linhas_dashboard[0].rotulo_renda if linhas_dashboard else "Renda"
+            colunas_moeda_dash = [
+                "Saldo Inicial (valor)", "Compras (valor)", "Vendas (valor)",
+                "Saldo Final (valor)", nome_coluna_renda,
+            ]
+            _renderizar_tabela_alinhada(pd.DataFrame(linhas_tabela_dash), colunas_moeda_dash)
         else:
             st.info("Nenhum ativo encontrado na planilha.")
 
