@@ -186,7 +186,10 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
     linhas_medias = alt.Chart(df_medias).mark_line(strokeWidth=1.2).encode(
         x=alt.X("data:T", title=None),
         y=alt.Y("valor:Q", title=None),
-        color=alt.Color("média:N", scale=alt.Scale(range=["#ff7f0e", "#d62728"]), legend=alt.Legend(title=None)),
+        color=alt.Color(
+            "média:N", scale=alt.Scale(range=["#ff7f0e", "#d62728"]),
+            legend=alt.Legend(title=None, orient="bottom", direction="horizontal"),
+        ),
     )
     faixa_min_max = alt.Chart(pd.DataFrame({"y": [minima_periodo, maxima_periodo]})).mark_rule(
         strokeDash=[4, 4], color="gray", opacity=0.6
@@ -211,7 +214,9 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
     ).encode(y="y:Q")
     painel_rsi = (linha_rsi + faixa_rsi).properties(height=120, width="container")
 
-    return alt.vconcat(painel_preco, painel_rsi).resolve_scale(x="shared")
+    return alt.vconcat(painel_preco, painel_rsi).resolve_scale(x="shared").properties(
+        autosize=alt.AutoSizeParams(type="fit-x", contains="padding")
+    )
 
 
 def _linha_ganho_para_dict(l) -> dict:
