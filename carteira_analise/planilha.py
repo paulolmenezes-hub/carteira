@@ -234,3 +234,102 @@ def achar_aba(abas: dict[str, pd.DataFrame], nomes_possiveis: list[str]) -> pd.D
         if _normalizar_nome_coluna(nome_real) in alvo:
             return df
     return None
+
+
+@dataclass
+class LinhaDashboardAtivo:
+    """Uma linha do dashboard da carteira: posição inicial, compras e
+    vendas feitas depois, posição final e renda recebida — tudo separado
+    por ativo, pra dar uma visão de extrato completo (Seção 4.2 do
+    Relatório: "dashboard com dados da carteira, por ativo")."""
+    ticker: str
+    moeda: str
+    saldo_inicial_valor: float | None = None
+    saldo_inicial_data: object = None  # date ou None, se o ativo não tiver aba Resumo
+    compras_valor: float = 0.0
+    compras_quantidade: float = 0.0
+    vendas_valor: float = 0.0
+    vendas_quantidade: float = 0.0
+    saldo_final_valor: float | None = None
+    saldo_final_data: object = None  # date da análise, ou None se ainda não foi calculado
+    renda_recebida: float | None = None
+    rotulo_renda: str = "Dividendos/JCP"  # ou "Rendimentos", se FII
+
+
+def construir_dashboard_por_ativo(
+    df_resumo: pd.DataFrame | None,
+    df_operacoes: pd.DataFrame | None,
+    linhas_ganho: dict[str, "LinhaCarteira"] | None = None,
+    tipos: dict[str, str] | None = None,
+    data_analise=None,
+) -> list[LinhaDashboardAtivo]:
+    """Monta o dashboard por ativo, combinando as mesmas duas abas usadas em
+    ``processar_carteira_combinada`` — mas aqui SEPARANDO posição inicial de
+    compras/vendas feitas depois (em vez de tratar tudo como um extrato
+    fundido), porque o dashboard quer mostrar cada etapa isolada. Saldo
+    final e renda recebida só aparecem se ``linhas_ganho`` for informado
+    (resultado já calculado de ``processar_carteira_combinada``) — sem
+    isso, o dashboard mostra só o que dá pra saber direto da planilha, sem
+    precisar de preço de mercado ao vivo."""
+    tipos = tipos or {}
+    linhas_ganho_por_ticker = {l.ticker: l for l in (linhas_ganho or [])}
+
+    tickers_resumo: dict[str, object] = {}
+    if df_resumo is not None:
+        for _, row in df_resumo.iterrows():
+            ticker, _ = normalizar_ticker(row["ticker"])
+            tickers_resumo[ticker] = row
+
+    tickers_operacoes: dict[str, pd.DataFrame] = {}
+    if df_operacoes is not None and not df_operacoes.empty:
+        tickers_normalizados = df_operacoes["ticker"].apply(lambda t: normalizar_ticker(t)[0])
+        for ticker, grupo in df_operacoes.groupby(tickers_normalizados):
+            tickers_operacoes[ticker] = grupo
+
+    todos_tickers = sorted(set(tickers_resumo) | set(tickers_operacoes))
+    linhas: list[LinhaDashboardAtivo] = []
+
+    for ticker in todos_tickers:
+        moeda = "R$" if ticker.endswith(".SA") else "US$"
+        linha = LinhaDashboardAtivo(ticker=ticker, moeda=moeda)
+
+        if ticker in tickers_resumo:
+            row = tickers_resumo[ticker]
+            try:
+                quantidade = float(row["quantidade"])
+                preco_medio = row.get("preco_medio")
+                if preco_medio is None or (isinstance(preco_medio, float) and pd.isna(preco_medio)):
+                    preco_medio = float(row["valor_investido"]) / quantidade
+                linha.saldo_inicial_valor = quantidade * float(preco_medio)
+                linha.saldo_inicial_data = pd.Timestamp(row["data_inicio"]).date()
+            except (ValueError, TypeError, KeyError):
+                pass  # posição inicial inválida — dashboard mostra em branco, sem quebrar
+
+        if ticker in tickers_operacoes:
+            for _, row in tickers_operacoes[ticker].iterrows():
+                tipo_bruto = str(row["tipo"]).strip().lower()
+                try:
+                    quantidade_op = float(row["quantidade"])
+                    preco_op = float(row["preco"])
+                except (ValueError, TypeError):
+                    continue  # linha ilegível — mesma tolerância de processar_carteira_combinada
+                if tipo_bruto in ("compra", "buy", "c"):
+                    linha.compras_quantidade += quantidade_op
+                    linha.compras_valor += quantidade_op * preco_op
+                elif tipo_bruto in ("venda", "sell", "v"):
+                    linha.vendas_quantidade += quantidade_op
+                    linha.vendas_valor += quantidade_op * preco_op
+
+        resultado_ganho = linhas_ganho_por_ticker.get(ticker)
+        if resultado_ganho is not None:
+            if resultado_ganho.quantidade_aberta and resultado_ganho.preco_atual is not None:
+                linha.saldo_final_valor = resultado_ganho.quantidade_aberta * resultado_ganho.preco_atual
+                linha.saldo_final_data = data_analise
+            linha.renda_recebida = resultado_ganho.renda_recebida
+
+        tipo_ativo = tipos.get(ticker)
+        linha.rotulo_renda = "Rendimentos" if tipo_ativo == "fii" else "Dividendos/JCP"
+
+        linhas.append(linha)
+
+    return linhas
