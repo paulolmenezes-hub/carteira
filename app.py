@@ -357,11 +357,11 @@ _CABECALHOS_DUAS_LINHAS = {
     "Saldo Final (qtde)": "Saldo Final<br>(qtde)",
     "Saldo Final (data)": "Saldo Final<br>(data)",
     "Preço Final": "Preço<br>Final",
-    "Ganho Realizado": "Ganho<br>Realizado",
-    "Ganho/Prejuízo não Realizado": "Ganho/Prejuízo<br>não Realizado",
-    "Dividendos/Rendimentos": "Dividendos/<br>Rendimentos",
-    "Rentabilidade Total": "Rentabilidade<br>Total",
-    "Rentabilidade %": "Rentabilidade<br>%",
+    "Ganho Realizado": "Resultado<br>Obtido",
+    "Ganho/Prejuízo não Realizado": "Resultado<br>ñ Realizado",
+    "Dividendos/Rendimentos": "Divid/Rend",
+    "Rentabilidade Total": "Rentab<br>Total",
+    "Rentabilidade %": "Rentab%",
 }
 _COLUNAS_DASHBOARD_MOEDA = {
     "Saldo Inicial (valor)", "Preço Médio (PM)", "Compras (valor)", "Vendas (valor)",
@@ -501,7 +501,14 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
             })
 
     styler = styler.set_table_styles(estilos)
-    st.markdown(styler.to_html(), unsafe_allow_html=True)
+    # Rolagem contida só nesta tabela (não na página inteira) — com 17
+    # colunas, é esperado que a tabela seja mais larga que a tela em
+    # monitores comuns; o padrão usual pra tabela financeira larga é
+    # rolar só ela, com uma barra visível logo abaixo dela mesma.
+    st.markdown(
+        f'<div style="overflow-x: auto; width: 100%;">{styler.to_html()}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
