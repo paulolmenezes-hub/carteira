@@ -265,17 +265,18 @@ def _renderizar_tabela_alinhada(df: pd.DataFrame, colunas_moeda: list[str]) -> N
 
 
 def _fmt_moeda(valor: float | None, moeda: str, forcar_sinal: bool = False) -> str:
-    """Formata em padrão brasileiro — ponto no milhar, vírgula no decimal
-    (ex.: R$ 1.234,56) — em vez do padrão americano usado por padrão pelo
-    Python (1,234.56)."""
+    """Formata no padrão de cada moeda: R$ no padrão brasileiro (ponto no
+    milhar, vírgula no decimal — ex.: R$ 1.234,56); US$ no padrão
+    americano nativo (vírgula no milhar, ponto no decimal — ex.: US$
+    1,234.56), sem trocar separadores."""
     if valor is None:
         return "-"
     sinal = "+" if forcar_sinal and valor >= 0 else ""
-    # Trunque intermediário: formata em padrão americano primeiro, depois
-    # troca os separadores — mais simples e confiável que um format spec
-    # customizado pra vírgula/ponto brasileiro.
     texto = f"{abs(valor):,.2f}"
-    texto = texto.replace(",", "_").replace(".", ",").replace("_", ".")
+    if moeda == "R$":
+        # Padrão americano é o formato nativo do Python — troca pro
+        # brasileiro só quando a moeda pede isso.
+        texto = texto.replace(",", "_").replace(".", ",").replace("_", ".")
     prefixo = "-" if valor < 0 else sinal
     return f"{moeda} {prefixo}{texto}"
 
@@ -340,6 +341,28 @@ _COLUNAS_DASHBOARD = [
     "Ganho Realizado", "Ganho/Prejuízo não Realizado", "Dividendos/Rendimentos", "Rentabilidade Total",
     "Rentabilidade %",
 ]
+# Cabeçalho quebrado em 2 linhas na exibição (colunas estreitas + texto
+# longo forçavam a tabela a ultrapassar a largura da tela). Só afeta o
+# rótulo mostrado — as chaves internas dos dicts continuam as de cima.
+_CABECALHOS_DUAS_LINHAS = {
+    "Saldo Inicial (data)": "Saldo Inicial<br>(data)",
+    "Saldo Inicial (valor)": "Saldo Inicial<br>(valor)",
+    "Preço Médio (PM)": "Preço Médio<br>(PM)",
+    "Qtde Inicial": "Qtde<br>Inicial",
+    "Compras (qtde)": "Compras<br>(qtde)",
+    "Compras (valor)": "Compras<br>(valor)",
+    "Vendas (qtde)": "Vendas<br>(qtde)",
+    "Vendas (valor)": "Vendas<br>(valor)",
+    "Saldo Final (valor)": "Saldo Final<br>(valor)",
+    "Saldo Final (qtde)": "Saldo Final<br>(qtde)",
+    "Saldo Final (data)": "Saldo Final<br>(data)",
+    "Preço Final": "Preço<br>Final",
+    "Ganho Realizado": "Ganho<br>Realizado",
+    "Ganho/Prejuízo não Realizado": "Ganho/Prejuízo<br>não Realizado",
+    "Dividendos/Rendimentos": "Dividendos/<br>Rendimentos",
+    "Rentabilidade Total": "Rentabilidade<br>Total",
+    "Rentabilidade %": "Rentabilidade<br>%",
+}
 _COLUNAS_DASHBOARD_MOEDA = {
     "Saldo Inicial (valor)", "Preço Médio (PM)", "Compras (valor)", "Vendas (valor)",
     "Saldo Final (valor)", "Preço Final", "Ganho Realizado", "Ganho/Prejuízo não Realizado",
@@ -441,14 +464,17 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
         return
 
     df = pd.DataFrame(linhas_html).reindex(columns=_COLUNAS_DASHBOARD).fillna("")
+    df = df.rename(columns=_CABECALHOS_DUAS_LINHAS)
     styler = df.style.hide(axis="index")
     estilos = [
         {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%"), ("font-size", "0.85em")]},
-        {"selector": "th, td", "props": [
+        {"selector": "td", "props": [
             ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 8px"), ("white-space", "nowrap"),
         ]},
         {"selector": "th", "props": [
+            ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 6px"),
             ("text-align", "center"), ("background-color", "rgba(255,255,255,0.08)"),
+            ("white-space", "normal"), ("max-width", "80px"), ("line-height", "1.2"),
         ]},
     ]
     for i, col in enumerate(_COLUNAS_DASHBOARD):
