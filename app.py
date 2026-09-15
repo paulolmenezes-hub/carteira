@@ -264,19 +264,62 @@ def _renderizar_tabela_alinhada(df: pd.DataFrame, colunas_moeda: list[str]) -> N
     st.markdown(styler.to_html(), unsafe_allow_html=True)
 
 
-def _linha_ganho_para_dict(l) -> dict:
-    return {
-        "Ticker": l.ticker, "Origem": l.origem,
-        "Quantidade aberta": f"{l.quantidade_aberta:.0f}" if l.quantidade_aberta is not None else "-",
-        "Preço médio": f"{l.moeda} {l.preco_medio_atual:.2f}" if l.preco_medio_atual else "-",
-        "Preço atual": f"{l.moeda} {l.preco_atual:.2f}" if l.preco_atual is not None else "N/D",
-        "Ganho realizado": f"{l.moeda} {l.ganho_realizado:+.2f}" if l.ganho_realizado is not None else "-",
-        "Ganho não realizado": (
-            f"{l.moeda} {l.ganho_nao_realizado:+.2f}" if l.ganho_nao_realizado is not None else "N/A"
-        ),
-        "Renda recebida": f"{l.moeda} {l.renda_recebida:.2f}" if l.renda_recebida is not None else "-",
-        "Ganho total": f"{l.moeda} {l.ganho_total:+.2f}" if l.ganho_total is not None else "-",
-    }
+def _fmt_moeda(valor: float | None, moeda: str, forcar_sinal: bool = False) -> str:
+    """Formata em padrão brasileiro — ponto no milhar, vírgula no decimal
+    (ex.: R$ 1.234,56) — em vez do padrão americano usado por padrão pelo
+    Python (1,234.56)."""
+    if valor is None:
+        return "-"
+    sinal = "+" if forcar_sinal and valor >= 0 else ""
+    # Trunque intermediário: formata em padrão americano primeiro, depois
+    # troca os separadores — mais simples e confiável que um format spec
+    # customizado pra vírgula/ponto brasileiro.
+    texto = f"{abs(valor):,.2f}"
+    texto = texto.replace(",", "_").replace(".", ",").replace("_", ".")
+    prefixo = "-" if valor < 0 else sinal
+    return f"{moeda} {prefixo}{texto}"
+
+
+def _fmt_pct(valor: float | None) -> str:
+    if valor is None:
+        return "-"
+    texto = f"{valor * 100:,.2f}"
+    texto = texto.replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"{texto}%"
+
+
+def _fmt_qtde(valor: float | None) -> str:
+    if valor is None:
+        return "-"
+    if float(valor).is_integer():
+        return f"{valor:.0f}"
+    texto = f"{valor:,.2f}"
+    return texto.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _fmt_data(d) -> str:
+    return d.strftime("%d/%m/%Y") if d else "-"
+
+
+_ORDEM_TIPO_GRUPO = {"Ações": 0, "FIIs": 1, "ETF": 2}
+_ORDEM_MERCADO = {"B3": 0, "EUA": 1}
+
+
+def _ordem_agrupada(ticker: str, tipo: str) -> tuple:
+    """Chave de ordenação: B3 antes de EUA e, dentro de cada mercado,
+    Ações → FIIs → ETF — pedido explícito do orientador, pra manter a
+    leitura por classe de ativo (importante inclusive pra validação restrita
+    a FIIs, Seção 3.3 do Relatório)."""
+    mercado = "B3" if ticker.endswith(".SA") else "EUA"
+    grupo = _TIPO_PARA_GRUPO_APP.get(tipo, "Ações")
+    return (_ORDEM_MERCADO[mercado], _ORDEM_TIPO_GRUPO[grupo], ticker)
+
+
+_TIPO_PARA_GRUPO_APP = {
+    "acao": "Ações", "acao_us": "Ações",
+    "fii": "FIIs",
+    "etf_br": "ETF", "etf_us": "ETF",
+}
 
 
 def _renderizar_detalhe(d: str) -> str:
@@ -288,6 +331,151 @@ def _renderizar_detalhe(d: str) -> str:
     if d.startswith("-1"):
         return f"🔴 {d[3:].strip()}"
     return f"🟡 {d}"
+
+
+_COLUNAS_DASHBOARD = [
+    "Ticker", "Saldo Inicial (data)", "Saldo Inicial (valor)", "Preço Médio (PM)",
+    "Qtde Inicial", "Compras (qtde)", "Compras (valor)", "Vendas (qtde)", "Vendas (valor)",
+    "Saldo Final (valor)", "Saldo Final (qtde)", "Saldo Final (data)", "Preço Final",
+    "Ganho Realizado", "Ganho/Prejuízo não Realizado", "Dividendos/Rendimentos", "Rentabilidade Total",
+    "Rentabilidade %",
+]
+_COLUNAS_DASHBOARD_MOEDA = {
+    "Saldo Inicial (valor)", "Preço Médio (PM)", "Compras (valor)", "Vendas (valor)",
+    "Saldo Final (valor)", "Preço Final", "Ganho Realizado", "Ganho/Prejuízo não Realizado",
+    "Dividendos/Rendimentos", "Rentabilidade Total",
+}
+
+
+def _linha_dashboard_para_dict(l) -> dict:
+    return {
+        "Ticker": l.ticker,
+        "Saldo Inicial (data)": _fmt_data(l.saldo_inicial_data),
+        "Saldo Inicial (valor)": _fmt_moeda(l.saldo_inicial_valor, l.moeda),
+        "Preço Médio (PM)": _fmt_moeda(l.preco_medio, l.moeda),
+        "Qtde Inicial": _fmt_qtde(l.qtde_inicial),
+        "Compras (qtde)": _fmt_qtde(l.compras_quantidade) if l.compras_quantidade else "-",
+        "Compras (valor)": _fmt_moeda(l.compras_valor, l.moeda) if l.compras_valor else "-",
+        "Vendas (qtde)": _fmt_qtde(l.vendas_quantidade) if l.vendas_quantidade else "-",
+        "Vendas (valor)": _fmt_moeda(l.vendas_valor, l.moeda) if l.vendas_valor else "-",
+        "Saldo Final (valor)": _fmt_moeda(l.saldo_final_valor, l.moeda),
+        "Saldo Final (qtde)": _fmt_qtde(l.saldo_final_qtde),
+        "Saldo Final (data)": _fmt_data(l.saldo_final_data),
+        "Preço Final": _fmt_moeda(l.preco_final, l.moeda),
+        "Ganho Realizado": _fmt_moeda(l.ganho_realizado, l.moeda, forcar_sinal=True),
+        "Ganho/Prejuízo não Realizado": _fmt_moeda(l.ganho_nao_realizado, l.moeda, forcar_sinal=True),
+        "Dividendos/Rendimentos": _fmt_moeda(l.renda_recebida, l.moeda),
+        "Rentabilidade Total": _fmt_moeda(l.rentabilidade_total, l.moeda, forcar_sinal=True),
+        "Rentabilidade %": _fmt_pct(l.rentabilidade_pct),
+    }
+
+
+def _linha_subtotal_para_dict(rotulo: str, linhas_grupo: list, moeda: str) -> dict:
+    """Soma as colunas de valor (não as de data/preço unitário/percentual,
+    que não fazem sentido somados) pra uma linha 'Total X'."""
+    def soma(attr):
+        valores = [getattr(l, attr) for l in linhas_grupo if getattr(l, attr) is not None]
+        return sum(valores) if valores else None
+
+    saldo_inicial = soma("saldo_inicial_valor")
+    compras = soma("compras_valor")
+    vendas = soma("vendas_valor")
+    saldo_final = soma("saldo_final_valor")
+    ganho_realizado = soma("ganho_realizado")
+    ganho_nao_realizado = soma("ganho_nao_realizado")
+    renda = soma("renda_recebida")
+    rentabilidade = soma("rentabilidade_total")
+    base_pct = (saldo_inicial or 0.0) + (compras or 0.0)
+    rentabilidade_pct = rentabilidade / base_pct if rentabilidade is not None and base_pct > 0 else None
+
+    return {
+        "Ticker": f"**{rotulo}**",
+        "Saldo Inicial (data)": "", "Preço Médio (PM)": "", "Qtde Inicial": "",
+        "Saldo Inicial (valor)": _fmt_moeda(saldo_inicial, moeda),
+        "Compras (qtde)": "", "Compras (valor)": _fmt_moeda(compras, moeda) if compras else "-",
+        "Vendas (qtde)": "", "Vendas (valor)": _fmt_moeda(vendas, moeda) if vendas else "-",
+        "Saldo Final (valor)": _fmt_moeda(saldo_final, moeda),
+        "Saldo Final (qtde)": "", "Saldo Final (data)": "", "Preço Final": "",
+        "Ganho Realizado": _fmt_moeda(ganho_realizado, moeda, forcar_sinal=True),
+        "Ganho/Prejuízo não Realizado": _fmt_moeda(ganho_nao_realizado, moeda, forcar_sinal=True),
+        "Dividendos/Rendimentos": _fmt_moeda(renda, moeda),
+        "Rentabilidade Total": _fmt_moeda(rentabilidade, moeda, forcar_sinal=True),
+        "Rentabilidade %": _fmt_pct(rentabilidade_pct),
+    }
+
+
+def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
+    """Renderiza o Dashboard da Carteira nos 4 blocos pedidos — Ativas B3,
+    Ativas EUA, Encerradas B3, Encerradas EUA —, cada um agrupado por tipo
+    de ativo (Ações, FIIs, ETF) com linha de subtotal, e total geral por
+    mercado ao final do bloco. Blocos e grupos sem nenhum ativo são
+    omitidos (não mostra 'Total FIIs: -' quando não há FII nenhum)."""
+    linhas_html: list[dict] = []
+    tipos_marcador: list[str] = []  # 'secao' | 'subtotal' | 'total_geral' | 'dado', paralelo a linhas_html
+
+    for situacao, rotulo_situacao in [("Ativa", "OPERAÇÕES ATIVAS"), ("Encerrada", "OPERAÇÕES ENCERRADAS")]:
+        for mercado in ("B3", "EUA"):
+            linhas_bloco = [l for l in linhas_dashboard if l.situacao == situacao and l.mercado == mercado]
+            if not linhas_bloco:
+                continue
+
+            linhas_html.append({"Ticker": f"### {rotulo_situacao} {mercado}"})
+            tipos_marcador.append("secao")
+
+            moeda_bloco = linhas_bloco[0].moeda
+            for tipo_grupo in ("Ações", "FIIs", "ETF"):
+                linhas_grupo = [l for l in linhas_bloco if l.tipo_grupo == tipo_grupo]
+                if not linhas_grupo:
+                    continue
+                for l in sorted(linhas_grupo, key=lambda x: x.ticker):
+                    linhas_html.append(_linha_dashboard_para_dict(l))
+                    tipos_marcador.append("dado")
+                linhas_html.append(_linha_subtotal_para_dict(f"Total {tipo_grupo}", linhas_grupo, moeda_bloco))
+                tipos_marcador.append("subtotal")
+
+            linhas_html.append(_linha_subtotal_para_dict(f"Total {mercado}", linhas_bloco, moeda_bloco))
+            tipos_marcador.append("total_geral")
+
+    if not linhas_html:
+        st.info("Nenhum ativo encontrado na planilha.")
+        return
+
+    df = pd.DataFrame(linhas_html).reindex(columns=_COLUNAS_DASHBOARD).fillna("")
+    styler = df.style.hide(axis="index")
+    estilos = [
+        {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%"), ("font-size", "0.85em")]},
+        {"selector": "th, td", "props": [
+            ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 8px"), ("white-space", "nowrap"),
+        ]},
+        {"selector": "th", "props": [
+            ("text-align", "center"), ("background-color", "rgba(255,255,255,0.08)"),
+        ]},
+    ]
+    for i, col in enumerate(_COLUNAS_DASHBOARD):
+        alinhamento = "left" if col == "Ticker" else ("right" if col in _COLUNAS_DASHBOARD_MOEDA else "center")
+        estilos.append({"selector": f"td.col{i}", "props": [("text-align", alinhamento)]})
+
+    # Linhas de seção e subtotal em negrito/destaque — pela posição da linha,
+    # já que o Styler não sabe de conteúdo "de negócio", só índice.
+    for row_idx, tipo in enumerate(tipos_marcador):
+        if tipo == "secao":
+            estilos.append({
+                "selector": f"tr:nth-child({row_idx + 1})",
+                "props": [("background-color", "rgba(31,119,180,0.25)"), ("font-weight", "bold")],
+            })
+        elif tipo == "subtotal":
+            estilos.append({
+                "selector": f"tr:nth-child({row_idx + 1})",
+                "props": [("background-color", "rgba(255,255,255,0.06)"), ("font-style", "italic")],
+            })
+        elif tipo == "total_geral":
+            estilos.append({
+                "selector": f"tr:nth-child({row_idx + 1})",
+                "props": [("background-color", "rgba(255,255,255,0.14)"), ("font-weight", "bold")],
+            })
+
+    styler = styler.set_table_styles(estilos)
+    st.markdown(styler.to_html(), unsafe_allow_html=True)
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
@@ -416,9 +604,10 @@ with tab_carteira:
                 )
 
             linhas_analise = st.session_state["carteira_linhas_analise"]
-            linhas_ganho = st.session_state["carteira_linhas_ganho"]
+            linhas_analise = sorted(linhas_analise, key=lambda x: _ordem_agrupada(x[0], x[1]))
 
             st.subheader("📈 Análise de cada ativo")
+            st.caption("Ordenado por mercado (B3, depois EUA) e tipo de ativo (Ações, FIIs, ETF).")
             linhas_tabela = []
             for ticker, tipo, resultado in linhas_analise:
                 if resultado is None:
@@ -474,48 +663,11 @@ with tab_carteira:
                 grafico = _grafico_preco_completo(resultado_grafico.tec.historico, dividendos_grafico)
                 st.altair_chart(grafico, width='stretch')
 
-            st.subheader("💰 Ganho da carteira")
-            abertas = [l for l in linhas_ganho if l.situacao == "Aberta"]
-            encerradas = [l for l in linhas_ganho if l.situacao == "Encerrada"]
-            com_erro = [l for l in linhas_ganho if l.situacao == "erro"]
-
-            colunas_moeda_ganho = [
-                "Preço médio", "Preço atual", "Ganho realizado",
-                "Ganho não realizado", "Renda recebida", "Ganho total",
-            ]
-
-            if abertas:
-                st.markdown(f"**Carteira atual — {len(abertas)} posição(ões) em aberto**")
-                _renderizar_tabela_alinhada(
-                    pd.DataFrame([_linha_ganho_para_dict(l) for l in abertas]), colunas_moeda_ganho
-                )
-
-            if encerradas:
-                st.markdown(f"**Posições encerradas — {len(encerradas)} ativo(s)**")
-                _renderizar_tabela_alinhada(
-                    pd.DataFrame([_linha_ganho_para_dict(l) for l in encerradas]), colunas_moeda_ganho
-                )
-
-            if com_erro:
-                st.warning(f"{len(com_erro)} ativo(s) com problema ao calcular o ganho:")
-                for l in com_erro:
-                    st.markdown(f"- **{l.ticker}**: {l.erro}")
-                    for a in l.avisos:
-                        st.caption(f"  ⚠️ {a}")
-
-            totais_por_moeda: dict[str, float] = {}
-            for l in linhas_ganho:
-                if l.ganho_total is not None:
-                    totais_por_moeda[l.moeda] = totais_por_moeda.get(l.moeda, 0.0) + l.ganho_total
-            if totais_por_moeda:
-                st.markdown("**Totais por moeda (sem conversão cambial entre elas):**")
-                for moeda, total in totais_por_moeda.items():
-                    st.metric(f"Ganho total ({moeda})", f"{moeda} {total:+,.2f}")
-
             st.caption(
                 "Este painel não é uma recomendação de investimento nem substitui um "
                 "assessor/consultor licenciado (CVM). Os critérios usados são regras de "
-                "bolso genéricas de mercado, não garantem retorno."
+                "bolso genéricas de mercado, não garantem retorno. Ganho e rentabilidade "
+                "financeira ficam na aba 'Dashboard da Carteira'."
             )
 
 # =============================================================================
@@ -612,8 +764,8 @@ with tab_ativo:
 with tab_dashboard:
     st.subheader("💼 Dashboard da Carteira")
     st.caption(
-        "Extrato por ativo: posição inicial (planilha), compras e vendas feitas depois, "
-        "posição final (com preço de mercado atual) e renda recebida."
+        "Extrato por ativo, agrupado por situação (ativa/encerrada), mercado (B3/EUA) e "
+        "tipo de ativo (Ações, FIIs, ETF), com subtotal por grupo e total por mercado."
     )
 
     if arquivo is None:
@@ -622,9 +774,9 @@ with tab_dashboard:
         tem_saldo_final = "carteira_linhas_ganho" in st.session_state
         if not tem_saldo_final:
             st.caption(
-                "⚠️ Saldo final e renda recebida dependem de preço de mercado atual — clique em "
-                "'Analisar carteira' na aba 'Análise de Carteira' pra completar essas colunas. "
-                "Posição inicial, compras e vendas já aparecem abaixo, direto da planilha."
+                "⚠️ Saldo final, ganho e rentabilidade dependem de preço de mercado atual — "
+                "clique em 'Analisar carteira' na aba 'Análise de Carteira' pra completar essas "
+                "colunas. Posição inicial, compras e vendas já aparecem abaixo, direto da planilha."
             )
 
         linhas_dashboard = construir_dashboard_por_ativo(
@@ -634,36 +786,7 @@ with tab_dashboard:
             data_analise=st.session_state.get("carteira_data_analise"),
         )
 
-        linhas_tabela_dash = []
-        for l in linhas_dashboard:
-            linhas_tabela_dash.append({
-                "Ticker": l.ticker,
-                "Saldo Inicial (valor)": (
-                    f"{l.moeda} {l.saldo_inicial_valor:,.2f}" if l.saldo_inicial_valor is not None else "-"
-                ),
-                "Saldo Inicial (data)": l.saldo_inicial_data.strftime("%d/%m/%Y") if l.saldo_inicial_data else "-",
-                "Compras (qtde)": f"{l.compras_quantidade:.0f}" if l.compras_quantidade else "-",
-                "Compras (valor)": f"{l.moeda} {l.compras_valor:,.2f}" if l.compras_valor else "-",
-                "Vendas (qtde)": f"{l.vendas_quantidade:.0f}" if l.vendas_quantidade else "-",
-                "Vendas (valor)": f"{l.moeda} {l.vendas_valor:,.2f}" if l.vendas_valor else "-",
-                "Saldo Final (valor)": (
-                    f"{l.moeda} {l.saldo_final_valor:,.2f}" if l.saldo_final_valor is not None else "-"
-                ),
-                "Saldo Final (data)": l.saldo_final_data.strftime("%d/%m/%Y") if l.saldo_final_data else "-",
-                f"{linhas_dashboard[0].rotulo_renda if linhas_dashboard else 'Renda'}": (
-                    f"{l.moeda} {l.renda_recebida:,.2f}" if l.renda_recebida is not None else "-"
-                ),
-            })
-
-        if linhas_tabela_dash:
-            nome_coluna_renda = linhas_dashboard[0].rotulo_renda if linhas_dashboard else "Renda"
-            colunas_moeda_dash = [
-                "Saldo Inicial (valor)", "Compras (valor)", "Vendas (valor)",
-                "Saldo Final (valor)", nome_coluna_renda,
-            ]
-            _renderizar_tabela_alinhada(pd.DataFrame(linhas_tabela_dash), colunas_moeda_dash)
-        else:
-            st.info("Nenhum ativo encontrado na planilha.")
+        _renderizar_dashboard_agrupado(linhas_dashboard)
 
 # =============================================================================
 # ABA 4 — Guia de Indicadores
