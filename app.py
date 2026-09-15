@@ -299,7 +299,7 @@ def _fmt_qtde(valor: float | None) -> str:
 
 
 def _fmt_data(d) -> str:
-    return d.strftime("%d/%m/%Y") if d else "-"
+    return d.strftime("%d/%m/%y") if d else "-"
 
 
 _ORDEM_TIPO_GRUPO = {"Ações": 0, "FIIs": 1, "ETF": 2}
@@ -436,7 +436,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
     linhas_html: list[dict] = []
     tipos_marcador: list[str] = []  # 'secao' | 'subtotal' | 'total_geral' | 'dado', paralelo a linhas_html
 
-    for situacao, rotulo_situacao in [("Ativa", "OPERAÇÕES ATIVAS"), ("Encerrada", "OPERAÇÕES ENCERRADAS")]:
+    for situacao, rotulo_situacao in [("Ativa", "OP. ATIVAS"), ("Encerrada", "OP. ENCERRADAS")]:
         for mercado in ("B3", "EUA"):
             linhas_bloco = [l for l in linhas_dashboard if l.situacao == situacao and l.mercado == mercado]
             if not linhas_bloco:
@@ -467,7 +467,11 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
     df = df.rename(columns=_CABECALHOS_DUAS_LINHAS)
     styler = df.style.hide(axis="index")
     estilos = [
-        {"selector": "table", "props": [("border-collapse", "collapse"), ("width", "100%"), ("font-size", "0.85em")]},
+        # Sem "width: 100%" na tabela de propósito — a tabela precisa poder
+        # crescer além do container (17 colunas com texto sem quebra) pra
+        # disparar a rolagem do <div> em volta; travar a tabela em 100%
+        # espremia as células em vez de rolar.
+        {"selector": "table", "props": [("border-collapse", "collapse"), ("font-size", "0.85em")]},
         {"selector": "td", "props": [
             ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 8px"), ("white-space", "nowrap"),
         ]},
@@ -506,7 +510,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
     # monitores comuns; o padrão usual pra tabela financeira larga é
     # rolar só ela, com uma barra visível logo abaixo dela mesma.
     st.markdown(
-        f'<div style="overflow-x: auto; width: 100%;">{styler.to_html()}</div>',
+        f'<div style="overflow-x: auto; max-width: 100%; display: block;">{styler.to_html()}</div>',
         unsafe_allow_html=True,
     )
 
