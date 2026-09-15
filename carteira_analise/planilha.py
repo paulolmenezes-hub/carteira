@@ -239,27 +239,47 @@ def achar_aba(abas: dict[str, pd.DataFrame], nomes_possiveis: list[str]) -> pd.D
 @dataclass
 class LinhaDashboardAtivo:
     """Uma linha do dashboard da carteira: posição inicial, compras e
-    vendas feitas depois, posição final e renda recebida — tudo separado
-    por ativo, pra dar uma visão de extrato completo (Seção 4.2 do
-    Relatório: "dashboard com dados da carteira, por ativo")."""
+    vendas feitas depois, posição final, ganho e rentabilidade — tudo
+    separado por ativo, pra dar uma visão de extrato completo (Seção 4.2
+    do Relatório: "dashboard com dados da carteira, por ativo"). Também
+    carrega mercado/tipo/situação, usados pra agrupar a exibição (B3 antes
+    de EUA, por tipo de ativo, ativas separadas de encerradas)."""
     ticker: str
     moeda: str
+    mercado: str = "B3"  # "B3" ou "EUA"
+    tipo_grupo: str = "Ações"  # "Ações", "FIIs" ou "ETF" — agrupamento amplo p/ exibição
+    situacao: str = "Ativa"  # "Ativa" ou "Encerrada"
     saldo_inicial_valor: float | None = None
     saldo_inicial_data: object = None  # date ou None, se o ativo não tiver aba Resumo
+    qtde_inicial: float | None = None
+    preco_medio: float | None = None  # custo médio ponderado de tudo que já foi comprado
     compras_valor: float = 0.0
     compras_quantidade: float = 0.0
     vendas_valor: float = 0.0
     vendas_quantidade: float = 0.0
     saldo_final_valor: float | None = None
+    saldo_final_qtde: float | None = None
     saldo_final_data: object = None  # date da análise, ou None se ainda não foi calculado
+    preco_final: float | None = None
+    ganho_realizado: float | None = None
+    ganho_nao_realizado: float | None = None
     renda_recebida: float | None = None
     rotulo_renda: str = "Dividendos/JCP"  # ou "Rendimentos", se FII
+    rentabilidade_total: float | None = None
+    rentabilidade_pct: float | None = None
+
+
+_TIPO_PARA_GRUPO = {
+    "acao": "Ações", "acao_us": "Ações",
+    "fii": "FIIs",
+    "etf_br": "ETF", "etf_us": "ETF",
+}
 
 
 def construir_dashboard_por_ativo(
     df_resumo: pd.DataFrame | None,
     df_operacoes: pd.DataFrame | None,
-    linhas_ganho: dict[str, "LinhaCarteira"] | None = None,
+    linhas_ganho: "list[LinhaCarteira] | None" = None,
     tipos: dict[str, str] | None = None,
     data_analise=None,
 ) -> list[LinhaDashboardAtivo]:
@@ -270,7 +290,12 @@ def construir_dashboard_por_ativo(
     final e renda recebida só aparecem se ``linhas_ganho`` for informado
     (resultado já calculado de ``processar_carteira_combinada``) — sem
     isso, o dashboard mostra só o que dá pra saber direto da planilha, sem
-    precisar de preço de mercado ao vivo."""
+    precisar de preço de mercado ao vivo.
+
+    Custo médio ponderado (mesmo método usado pela Receita Federal): uma
+    venda parcial não separa a posição em "lote aberto" e "lote fechado"
+    — o ativo aparece numa linha só, em "Ativa", com o ganho já realizado
+    daquela venda somado ao ganho não realizado do que sobrou."""
     tipos = tipos or {}
     linhas_ganho_por_ticker = {l.ticker: l for l in (linhas_ganho or [])}
 
@@ -291,17 +316,26 @@ def construir_dashboard_por_ativo(
 
     for ticker in todos_tickers:
         moeda = "R$" if ticker.endswith(".SA") else "US$"
-        linha = LinhaDashboardAtivo(ticker=ticker, moeda=moeda)
+        tipo_ativo = tipos.get(ticker)
+        linha = LinhaDashboardAtivo(
+            ticker=ticker, moeda=moeda,
+            mercado="B3" if ticker.endswith(".SA") else "EUA",
+            tipo_grupo=_TIPO_PARA_GRUPO.get(tipo_ativo, "Ações"),
+            rotulo_renda="Rendimentos" if tipo_ativo == "fii" else "Dividendos/JCP",
+        )
 
         if ticker in tickers_resumo:
             row = tickers_resumo[ticker]
             try:
                 quantidade = float(row["quantidade"])
-                preco_medio = row.get("preco_medio")
-                if preco_medio is None or (isinstance(preco_medio, float) and pd.isna(preco_medio)):
-                    preco_medio = float(row["valor_investido"]) / quantidade
-                linha.saldo_inicial_valor = quantidade * float(preco_medio)
+                preco_medio_resumo = row.get("preco_medio")
+                if preco_medio_resumo is None or (
+                    isinstance(preco_medio_resumo, float) and pd.isna(preco_medio_resumo)
+                ):
+                    preco_medio_resumo = float(row["valor_investido"]) / quantidade
+                linha.saldo_inicial_valor = quantidade * float(preco_medio_resumo)
                 linha.saldo_inicial_data = pd.Timestamp(row["data_inicio"]).date()
+                linha.qtde_inicial = quantidade
             except (ValueError, TypeError, KeyError):
                 pass  # posição inicial inválida — dashboard mostra em branco, sem quebrar
 
@@ -320,15 +354,40 @@ def construir_dashboard_por_ativo(
                     linha.vendas_quantidade += quantidade_op
                     linha.vendas_valor += quantidade_op * preco_op
 
+        # Custo médio ponderado de TUDO que já foi comprado (posição inicial
+        # + compras), independente do ativo ainda estar aberto ou não —
+        # não depende do estado transitório do ganhos.py, então funciona
+        # igual pra posição aberta ou já totalmente encerrada.
+        qtde_total_comprada = (linha.qtde_inicial or 0.0) + linha.compras_quantidade
+        valor_total_comprado = (linha.saldo_inicial_valor or 0.0) + linha.compras_valor
+        if qtde_total_comprada > 0:
+            linha.preco_medio = valor_total_comprado / qtde_total_comprada
+
         resultado_ganho = linhas_ganho_por_ticker.get(ticker)
         if resultado_ganho is not None:
+            linha.situacao = "Ativa" if resultado_ganho.quantidade_aberta else "Encerrada"
+            linha.saldo_final_qtde = resultado_ganho.quantidade_aberta
+            linha.preco_final = resultado_ganho.preco_atual
             if resultado_ganho.quantidade_aberta and resultado_ganho.preco_atual is not None:
                 linha.saldo_final_valor = resultado_ganho.quantidade_aberta * resultado_ganho.preco_atual
                 linha.saldo_final_data = data_analise
+            linha.ganho_realizado = resultado_ganho.ganho_realizado
+            linha.ganho_nao_realizado = resultado_ganho.ganho_nao_realizado
             linha.renda_recebida = resultado_ganho.renda_recebida
 
-        tipo_ativo = tipos.get(ticker)
-        linha.rotulo_renda = "Rendimentos" if tipo_ativo == "fii" else "Dividendos/JCP"
+            partes_rentabilidade = [
+                v for v in (resultado_ganho.ganho_realizado, resultado_ganho.ganho_nao_realizado,
+                            resultado_ganho.renda_recebida) if v is not None
+            ]
+            if partes_rentabilidade:
+                linha.rentabilidade_total = sum(partes_rentabilidade)
+                if valor_total_comprado > 0:
+                    linha.rentabilidade_pct = linha.rentabilidade_total / valor_total_comprado
+        else:
+            # Sem linhas_ganho ainda (usuário não clicou "Analisar carteira") —
+            # só dá pra saber se está aberta olhando compra vs. venda acumulada.
+            qtde_liquida = qtde_total_comprada - linha.vendas_quantidade
+            linha.situacao = "Ativa" if qtde_liquida > 1e-9 else "Encerrada"
 
         linhas.append(linha)
 
