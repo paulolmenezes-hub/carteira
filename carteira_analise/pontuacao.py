@@ -21,6 +21,39 @@ class ResultadoPontuacao:
     detalhes: list[str] = field(default_factory=list)
 
 
+def _valores_extremos_periodo(tec: IndicadoresTecnicos) -> tuple[float, float]:
+    """Recalcula o valor de preço da mínima e da máxima do período (não só
+    a distância percentual já guardada em IndicadoresTecnicos) — pra poder
+    mostrar os números reais nos detalhes de pontuação, não só o sinal de
+    '+1/-1 próximo da mínima/máxima', que sozinho pode parecer contraditório
+    quando os dois disparam ao mesmo tempo (ativo pouco volátil, intervalo
+    estreito entre mínima e máxima — ver Seção 4.2 do Relatório)."""
+    minima = tec.preco_atual / (1 + tec.dist_minima_pct / 100)
+    maxima = tec.preco_atual / (1 + tec.dist_maxima_pct / 100)
+    return minima, maxima
+
+
+def _detalhes_extremos(tec: IndicadoresTecnicos) -> tuple[str | None, str | None]:
+    """Monta as duas mensagens de detalhe (mínima e máxima), com os valores
+    reais entre parênteses — devolve (None, None) pra quem não deveria
+    pontuar. Compartilhada pelas quatro funções de pontuação (ação, ação
+    EUA, FII, ETF), que usam o mesmo critério técnico de distância do
+    período."""
+    minima, maxima = _valores_extremos_periodo(tec)
+    detalhe_minima = detalhe_maxima = None
+    if tec.dist_minima_pct < 15:
+        detalhe_minima = (
+            f"+1 próximo da mínima do período (atual {tec.preco_atual:.2f}, "
+            f"mínima {minima:.2f})"
+        )
+    if tec.dist_maxima_pct > -5:
+        detalhe_maxima = (
+            f"-1 próximo da máxima do período (atual {tec.preco_atual:.2f}, "
+            f"máxima {maxima:.2f})"
+        )
+    return detalhe_minima, detalhe_maxima
+
+
 def pontuar_acao(
     tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None
 ) -> ResultadoPontuacao:
@@ -43,12 +76,13 @@ def pontuar_acao(
             pontos -= 1
             detalhes.append("-1 RSI > 70 (sobrecomprado)")
 
-    if tec.dist_minima_pct < 15:
+    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
+    if detalhe_minima:
         pontos += 1
-        detalhes.append("+1 próximo da mínima do período")
-    if tec.dist_maxima_pct > -5:
+        detalhes.append(detalhe_minima)
+    if detalhe_maxima:
         pontos -= 1
-        detalhes.append("-1 próximo da máxima do período")
+        detalhes.append(detalhe_maxima)
 
     pl = fund.get("pl")
     if pl is not None and pl > 0:
@@ -143,12 +177,13 @@ def pontuar_acao_us(
             pontos -= 1
             detalhes.append("-1 RSI > 70 (sobrecomprado)")
 
-    if tec.dist_minima_pct < 15:
+    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
+    if detalhe_minima:
         pontos += 1
-        detalhes.append("+1 próximo da mínima do período")
-    if tec.dist_maxima_pct > -5:
+        detalhes.append(detalhe_minima)
+    if detalhe_maxima:
         pontos -= 1
-        detalhes.append("-1 próximo da máxima do período")
+        detalhes.append(detalhe_maxima)
 
     pl = fund.get("pl")
     if pl is not None and pl > 0:
@@ -206,12 +241,13 @@ def pontuar_etf(
             pontos -= 1
             detalhes.append("-1 RSI > 70 (sobrecomprado)")
 
-    if tec.dist_minima_pct < 15:
+    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
+    if detalhe_minima:
         pontos += 1
-        detalhes.append("+1 próximo da mínima do período")
-    if tec.dist_maxima_pct > -5:
+        detalhes.append(detalhe_minima)
+    if detalhe_maxima:
         pontos -= 1
-        detalhes.append("-1 próximo da máxima do período")
+        detalhes.append(detalhe_maxima)
 
     limite_dy = 0.04 if tipo == "etf_br" else 0.015
     dy = div.dy_12m_real if div else None
@@ -244,12 +280,13 @@ def pontuar_fii(
             pontos -= 1
             detalhes.append("-1 RSI > 70 (sobrecomprado)")
 
-    if tec.dist_minima_pct < 15:
+    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
+    if detalhe_minima:
         pontos += 1
-        detalhes.append("+1 próxima da mínima do período")
-    if tec.dist_maxima_pct > -5:
+        detalhes.append(detalhe_minima)
+    if detalhe_maxima:
         pontos -= 1
-        detalhes.append("-1 próxima da máxima do período")
+        detalhes.append(detalhe_maxima)
 
     pvp = fund.get("pvp")
     if pvp is not None:
