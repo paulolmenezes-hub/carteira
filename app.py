@@ -184,7 +184,7 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
     minima_periodo = float(historico.quantile(0.05))
     maxima_periodo = float(historico.quantile(0.95))
 
-    df_dividendos = pd.DataFrame(columns=["data", "preco"])
+    df_dividendos = pd.DataFrame(columns=["data", "preco", "valor_dividendo"])
     if dividendos is not None and not dividendos.empty:
         datas_div = dividendos.index[
             (dividendos.index >= historico.index.min()) & (dividendos.index <= historico.index.max())
@@ -194,6 +194,7 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
             df_dividendos = pd.DataFrame({
                 "data": datas_div,
                 "preco": historico.iloc[pos].values,
+                "valor_dividendo": dividendos.loc[datas_div].values,
             })
 
     eixo_x_topo = alt.Axis(labelExpr=_EXPRESSAO_MES_PT, labelAngle=0)
@@ -216,7 +217,13 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
     marcadores_dividendo = alt.Chart(df_dividendos).mark_point(
         shape="triangle-up", color="#2ca02c", size=180, filled=True,
         stroke="black", strokeWidth=0.5,
-    ).encode(x="data:T", y="preco:Q", tooltip=["data:T", "preco:Q"])
+    ).encode(
+        x="data:T", y="preco:Q",
+        tooltip=[
+            alt.Tooltip("data:T", title="Data do pagamento"),
+            alt.Tooltip("valor_dividendo:Q", title="Valor pago", format=".2f"),
+        ],
+    )
 
     painel_preco = (
         (linha_preco + linhas_medias + faixa_min_max + marcadores_dividendo)
