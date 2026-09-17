@@ -16,8 +16,11 @@ resultado anterior desapareceria da tela.
 Organizado em 4 abas: Análise de Carteira, Ativo Específico, Dashboard da
 Carteira (extrato por ativo) e Guia de Indicadores (glossário).
 """
+import io
 import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import altair as alt
@@ -211,7 +214,8 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
         strokeDash=[4, 4], color="gray", opacity=0.6
     ).encode(y="y:Q")
     marcadores_dividendo = alt.Chart(df_dividendos).mark_point(
-        shape="triangle-up", color="#2ca02c", size=60, filled=True
+        shape="triangle-up", color="#2ca02c", size=180, filled=True,
+        stroke="black", strokeWidth=0.5,
     ).encode(x="data:T", y="preco:Q", tooltip=["data:T", "preco:Q"])
 
     painel_preco = (
@@ -279,6 +283,17 @@ def _fmt_moeda(valor: float | None, moeda: str, forcar_sinal: bool = False) -> s
         texto = texto.replace(",", "_").replace(".", ",").replace("_", ".")
     prefixo = "-" if valor < 0 else sinal
     return f"{moeda} {prefixo}{texto}"
+
+
+def _fmt_moeda_contabil(valor: float | None, moeda: str) -> str:
+    """Formato contábil — sem sinal de +/- na frente; negativo entre
+    parênteses (ex.: R$ 1.234,56 / (R$ 1.234,56)) — convenção comum em
+    relatório financeiro, usada nas colunas mais estreitas do Dashboard
+    (Resultado Obtido, Resultado ñ Realizado, Rentab Total)."""
+    if valor is None:
+        return "-"
+    texto_positivo = _fmt_moeda(abs(valor), moeda)
+    return f"({texto_positivo})" if valor < 0 else texto_positivo
 
 
 def _fmt_pct(valor: float | None) -> str:
@@ -385,10 +400,10 @@ def _linha_dashboard_para_dict(l) -> dict:
         "Saldo Final (qtde)": _fmt_qtde(l.saldo_final_qtde),
         "Saldo Final (data)": _fmt_data(l.saldo_final_data),
         "Preço Final": _fmt_moeda(l.preco_final, l.moeda),
-        "Ganho Realizado": _fmt_moeda(l.ganho_realizado, l.moeda, forcar_sinal=True),
-        "Ganho/Prejuízo não Realizado": _fmt_moeda(l.ganho_nao_realizado, l.moeda, forcar_sinal=True),
+        "Ganho Realizado": _fmt_moeda_contabil(l.ganho_realizado, l.moeda),
+        "Ganho/Prejuízo não Realizado": _fmt_moeda_contabil(l.ganho_nao_realizado, l.moeda),
         "Dividendos/Rendimentos": _fmt_moeda(l.renda_recebida, l.moeda),
-        "Rentabilidade Total": _fmt_moeda(l.rentabilidade_total, l.moeda, forcar_sinal=True),
+        "Rentabilidade Total": _fmt_moeda_contabil(l.rentabilidade_total, l.moeda),
         "Rentabilidade %": _fmt_pct(l.rentabilidade_pct),
     }
 
@@ -419,10 +434,10 @@ def _linha_subtotal_para_dict(rotulo: str, linhas_grupo: list, moeda: str) -> di
         "Vendas (qtde)": "", "Vendas (valor)": _fmt_moeda(vendas, moeda) if vendas else "-",
         "Saldo Final (valor)": _fmt_moeda(saldo_final, moeda),
         "Saldo Final (qtde)": "", "Saldo Final (data)": "", "Preço Final": "",
-        "Ganho Realizado": _fmt_moeda(ganho_realizado, moeda, forcar_sinal=True),
-        "Ganho/Prejuízo não Realizado": _fmt_moeda(ganho_nao_realizado, moeda, forcar_sinal=True),
+        "Ganho Realizado": _fmt_moeda_contabil(ganho_realizado, moeda),
+        "Ganho/Prejuízo não Realizado": _fmt_moeda_contabil(ganho_nao_realizado, moeda),
         "Dividendos/Rendimentos": _fmt_moeda(renda, moeda),
-        "Rentabilidade Total": _fmt_moeda(rentabilidade, moeda, forcar_sinal=True),
+        "Rentabilidade Total": _fmt_moeda_contabil(rentabilidade, moeda),
         "Rentabilidade %": _fmt_pct(rentabilidade_pct),
     }
 
@@ -528,15 +543,42 @@ st.markdown(
     "igual um extrato."
 )
 
+_CAMINHO_CACHE_PLANILHA = Path(tempfile.gettempdir()) / "carteira_analise_ultima_planilha.xlsx"
+
 arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
 
 df_resumo = None
 df_operacoes = None
 tickers_encontrados: list[str] = []
+bytes_planilha = None
 
 if arquivo is not None:
+    bytes_planilha = arquivo.getvalue()
     try:
-        abas = pd.read_excel(arquivo, sheet_name=None)
+        _CAMINHO_CACHE_PLANILHA.write_bytes(bytes_planilha)
+    except Exception:
+        pass  # sem persistência nesta sessão, mas não impede o uso normal
+elif _CAMINHO_CACHE_PLANILHA.exists():
+    # Menor fricção: reabre a última planilha enviada, sem exigir novo
+    # upload a cada vez que o painel é aberto — dura enquanto o servidor do
+    # Streamlit Cloud não reiniciar (ex.: a cada nova publicação de código).
+    bytes_planilha = _CAMINHO_CACHE_PLANILHA.read_bytes()
+    _mtime = datetime.fromtimestamp(_CAMINHO_CACHE_PLANILHA.stat().st_mtime, tz=ZoneInfo("America/Sao_Paulo"))
+    col_info, col_limpar = st.columns([5, 1])
+    with col_info:
+        st.info(
+            f"📎 Usando a última planilha carregada, enviada em "
+            f"{_mtime.strftime('%d/%m/%Y às %H:%M')} (horário de Brasília). "
+            "Envie um novo arquivo acima pra substituir."
+        )
+    with col_limpar:
+        if st.button("🗑️ Limpar"):
+            _CAMINHO_CACHE_PLANILHA.unlink(missing_ok=True)
+            st.rerun()
+
+if bytes_planilha is not None:
+    try:
+        abas = pd.read_excel(io.BytesIO(bytes_planilha), sheet_name=None)
     except Exception as e:
         st.error(f"Não consegui ler o arquivo: {e}")
         st.stop()
@@ -578,7 +620,7 @@ tab_carteira, tab_ativo, tab_dashboard, tab_guia = st.tabs([
 # ABA 1 — Análise de Carteira
 # =============================================================================
 with tab_carteira:
-    if arquivo is None:
+    if bytes_planilha is None:
         st.info("Envie um arquivo Excel acima para começar a análise.")
     else:
         st.subheader("Confirme o tipo de cada ativo")
@@ -805,7 +847,7 @@ with tab_dashboard:
         "tipo de ativo (Ações, FIIs, ETF), com subtotal por grupo e total por mercado."
     )
 
-    if arquivo is None:
+    if bytes_planilha is None:
         st.info("Envie um arquivo Excel na aba 'Análise de Carteira' para ver o dashboard.")
     else:
         tem_saldo_final = "carteira_linhas_ganho" in st.session_state
