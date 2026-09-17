@@ -38,17 +38,26 @@ def _detalhes_extremos(tec: IndicadoresTecnicos) -> tuple[str | None, str | None
     reais entre parênteses — devolve (None, None) pra quem não deveria
     pontuar. Compartilhada pelas quatro funções de pontuação (ação, ação
     EUA, FII, ETF), que usam o mesmo critério técnico de distância do
-    período."""
+    período.
+
+    "Mínima"/"máxima" aqui são, na verdade, o percentil 5%/95% do período
+    (ver tecnicos.py), não o menor/maior preço já visto — por isso o preço
+    atual pode ficar ABAIXO da "mínima" (ou ACIMA da "máxima"), e não só
+    perto dela. Nesse caso o texto muda de "próximo de" para "abaixo de"/
+    "acima de", pra não sugerir que o preço está só se aproximando de um
+    patamar que na verdade ele já ultrapassou."""
     minima, maxima = _valores_extremos_periodo(tec)
     detalhe_minima = detalhe_maxima = None
     if tec.dist_minima_pct < 15:
+        verbo = "abaixo da" if tec.preco_atual < minima else "próximo da"
         detalhe_minima = (
-            f"+1 próximo da mínima do período (atual {tec.preco_atual:.2f}, "
+            f"+1 {verbo} mínima do período (atual {tec.preco_atual:.2f}, "
             f"mínima {minima:.2f})"
         )
     if tec.dist_maxima_pct > -5:
+        verbo = "acima da" if tec.preco_atual > maxima else "próximo da"
         detalhe_maxima = (
-            f"-1 próximo da máxima do período (atual {tec.preco_atual:.2f}, "
+            f"-1 {verbo} máxima do período (atual {tec.preco_atual:.2f}, "
             f"máxima {maxima:.2f})"
         )
     return detalhe_minima, detalhe_maxima
