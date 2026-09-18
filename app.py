@@ -29,6 +29,7 @@ import streamlit as st
 
 from carteira_analise.carteira import analisar_ativo
 from carteira_analise.fontes import yahoo as fonte_yahoo
+from carteira_analise.fontes.cache import FonteComCache
 from carteira_analise.planilha import (
     achar_aba,
     construir_dashboard_por_ativo,
@@ -40,6 +41,20 @@ from carteira_analise.planilha import (
 from carteira_analise.tecnicos import calcular_rsi
 
 st.set_page_config(page_title="Análise de Carteira", page_icon="📊", layout="wide")
+
+
+@st.cache_resource
+def _obter_fonte_com_cache() -> FonteComCache:
+    """Uma única instância de cache (SQLite local ao servidor) reaproveitada
+    entre execuções do script — evita repetir chamadas de rede pro mesmo
+    ticker/período dentro do TTL (12h por padrão). `st.cache_resource` é o
+    jeito certo do Streamlit de manter um recurso com estado (aqui, a
+    conexão SQLite) vivo entre reruns, em vez de recriar a cada clique."""
+    caminho_cache = Path(tempfile.gettempdir()) / "carteira_analise_cache.sqlite"
+    return FonteComCache(fonte_yahoo, caminho_db=caminho_cache)
+
+
+fonte_dados = _obter_fonte_com_cache()
 
 
 def _verificar_senha() -> bool:
@@ -657,15 +672,15 @@ with tab_carteira:
             texto_horario, pregao_provavelmente_aberto = _info_horario_analise()
 
             with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
-                linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_yahoo, periodo_carteira)
+                linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_dados, periodo_carteira)
                 linhas_analise = []
                 dividendos_por_ticker = {}
                 for ticker in tickers_encontrados:
                     tipo = tipos_confirmados[ticker]
-                    resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_yahoo)
+                    resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_dados)
                     linhas_analise.append((ticker, tipo, resultado))
                     try:
-                        dividendos_por_ticker[ticker] = fonte_yahoo.baixar_dividendos(ticker)
+                        dividendos_por_ticker[ticker] = fonte_dados.baixar_dividendos(ticker)
                     except Exception:
                         dividendos_por_ticker[ticker] = pd.Series(dtype=float)
 
@@ -791,9 +806,9 @@ with tab_ativo:
         else:
             texto_horario, _ = _info_horario_analise()
             with st.spinner(f"Buscando dados de {ticker_limpo}..."):
-                resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_yahoo)
+                resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_dados)
                 try:
-                    dividendos_individual = fonte_yahoo.baixar_dividendos(ticker_limpo)
+                    dividendos_individual = fonte_dados.baixar_dividendos(ticker_limpo)
                 except Exception:
                     dividendos_individual = pd.Series(dtype=float)
 
