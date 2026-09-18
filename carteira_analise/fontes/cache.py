@@ -40,7 +40,13 @@ class FonteComCache:
     ) -> None:
         self._fonte = fonte_original
         self._ttl_segundos = ttl_horas * 3600
-        self._conn = sqlite3.connect(str(caminho_db))
+        # check_same_thread=False: o Streamlit (e outros frameworks web)
+        # reexecuta o script em threads diferentes entre uma chamada e
+        # outra — sem isso, o SQLite recusa reaproveitar a conexão criada
+        # na primeira thread, com "SQLite objects created in a thread can
+        # only be used in that same thread". Seguro aqui porque o acesso é
+        # sequencial (uma requisição por vez), não concorrente de verdade.
+        self._conn = sqlite3.connect(str(caminho_db), check_same_thread=False)
         self._criar_tabelas()
 
     def _criar_tabelas(self) -> None:
