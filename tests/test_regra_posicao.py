@@ -289,8 +289,8 @@ def test_card_venda_com_renda():
     d = decidir_posicao(127, e)
     c = montar_card_posicao('HGLG11.SA', e, 127, d, quantidade_para_acao(e, d), renda_12m_por_cota=12.0)
     assert c['posicao'] == '💰 Vender 4 cota(s)' and c['prioridade'] == 0
-    assert 'Lucro estimado nesta venda: R$ 108.00' in c['linhas'][0]
-    assert 'R$ 40.00 por mês' in c['linhas'][1] and 'R$ 36.00' in c['linhas'][1]
+    assert 'Lucro estimado nesta venda: R$ 108,00' in c['linhas'][0]
+    assert 'R$ 40,00 por mês' in c['linhas'][1] and 'R$ 36,00' in c['linhas'][1]
     assert '+27%' in c['titulo']
 
 def test_card_vender_tudo():
@@ -318,3 +318,9 @@ def test_card_manter_e_nao_aumente_e_sem_posicao():
     assert c['posicao'] == '🟡 Manter, sem aumentar' and c['prioridade'] == 1
     z = novo_estado(0, 0)
     assert montar_card_posicao('X', z, 10, decidir_posicao(10, z), 0)['prioridade'] == 2
+
+
+def test_formatar_valor():
+    assert formatar_valor(1234.5) == 'R$ 1.234,50'
+    assert formatar_valor(1234.5, 'US$') == 'US$ 1,234.50'
+    assert formatar_valor(-10) == 'R$ -10,00'
