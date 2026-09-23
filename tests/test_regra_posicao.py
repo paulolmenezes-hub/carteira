@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
-from regra_posicao import *
+from carteira_analise.regra_posicao import *
 
 
 def est(q=100, pm=100.0):
