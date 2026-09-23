@@ -14,7 +14,8 @@ clique reexecuta o script inteiro do zero, e sem essa persistência o
 resultado anterior desapareceria da tela.
 
 Organizado em 4 abas: Análise de Carteira, Ativo Específico, Dashboard da
-Carteira (extrato por ativo) e Guia de Indicadores (glossário).
+Carteira (posição sugerida por ativo + extrato por ativo) e Guia de
+Indicadores (glossário).
 """
 import io
 import re
@@ -30,6 +31,7 @@ import streamlit as st
 from carteira_analise.carteira import analisar_ativo
 from carteira_analise.fontes import yahoo as fonte_yahoo
 from carteira_analise.fontes.cache import FonteComCache
+from carteira_analise.posicoes import fundamentos_de_resultado, gerar_posicoes
 from carteira_analise.planilha import (
     achar_aba,
     construir_dashboard_por_ativo,
@@ -634,6 +636,51 @@ if bytes_planilha is not None:
         tickers_encontrados += [normalizar_ticker(t)[0] for t in df_operacoes["ticker"]]
     tickers_encontrados = sorted(set(tickers_encontrados))
 
+
+def _renderizar_posicoes(posicoes) -> None:
+    """Posição sugerida por ativo (regra de faixas de preço sobre o preço
+    médio) em cards de linguagem simples — quem pede ação hoje aparece
+    primeiro. ``posicoes`` é o par (cards, avisos) de ``gerar_posicoes``,
+    guardado na sessão ao clicar em 'Analisar carteira'."""
+    st.markdown("#### 🧭 O que fazer com cada ativo hoje")
+    if posicoes is None:
+        st.caption(
+            "Clique em 'Analisar carteira' na aba 'Análise de Carteira' para ver a posição "
+            "sugerida de cada ativo (comprar mais, manter ou vender parte)."
+        )
+        return
+    cards, avisos = posicoes
+    if cards:
+        n_compra = sum(1 for c in cards if c["acao"] == "comprar")
+        n_venda = sum(1 for c in cards if c["acao"] == "vender")
+        if n_compra or n_venda:
+            st.markdown(
+                f"**{n_compra + n_venda} ativo(s) pedem ação hoje:** {n_venda} venda(s) e "
+                f"{n_compra} compra(s). Os demais: manter."
+            )
+        else:
+            st.markdown("**Nenhum ativo pede ação hoje** — mantenha a carteira como está.")
+        n_colunas = 2
+        for inicio in range(0, len(cards), n_colunas):
+            colunas_cards = st.columns(n_colunas)
+            for coluna, card in zip(colunas_cards, cards[inicio:inicio + n_colunas]):
+                with coluna, st.container(border=True):
+                    st.caption(card["titulo"])
+                    st.markdown(f"**{card['posicao']}**")
+                    for linha in card["linhas"]:
+                        st.markdown(linha)
+    else:
+        st.info("Nenhuma posição aberta encontrada na planilha.")
+    for aviso in avisos:
+        st.caption(f"⚠️ {aviso}")
+    st.caption(
+        "A regra compara o preço de hoje com o seu preço médio: compra mais na queda (a partir "
+        "de −15%, no máximo 2 vezes até o ativo voltar a subir, e só se os fundamentos e os "
+        "rendimentos estiverem saudáveis) e vende aos poucos na alta (a partir de +25%). "
+        "Detalhes no 'Guia de Indicadores'. Regra de bolso — não é recomendação de investimento."
+    )
+
+
 tab_carteira, tab_ativo, tab_dashboard, tab_guia = st.tabs([
     "📊 Análise de Carteira", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
 ])
@@ -684,6 +731,17 @@ with tab_carteira:
                     except Exception:
                         dividendos_por_ticker[ticker] = pd.Series(dtype=float)
 
+                # Posição sugerida por ativo (regra de faixas de preço) — mostrada na
+                # aba Dashboard. Falha aqui não pode derrubar o resto da análise.
+                try:
+                    fundamentos_por_ticker = {
+                        t: fundamentos_de_resultado(r) for t, tp, r in linhas_analise
+                    }
+                    posicoes = gerar_posicoes(df_resumo, df_operacoes, fonte_dados,
+                                              tipos_confirmados, fundamentos_por_ticker)
+                except Exception as e:
+                    posicoes = ([], [f"não foi possível calcular as posições sugeridas ({e})"])
+
             # Guarda tudo na sessão — sobrevive a um clique posterior noutra aba/botão
             # (ver docstring do arquivo) e alimenta também a aba Dashboard.
             st.session_state["carteira_horario"] = texto_horario
@@ -693,6 +751,7 @@ with tab_carteira:
             st.session_state["carteira_dividendos"] = dividendos_por_ticker
             st.session_state["carteira_tipos_confirmados"] = tipos_confirmados
             st.session_state["carteira_data_analise"] = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+            st.session_state["carteira_posicoes"] = posicoes
 
         if "carteira_linhas_analise" in st.session_state:
             st.caption(f"🕒 Análise executada em {st.session_state['carteira_horario']}")
@@ -880,6 +939,10 @@ with tab_dashboard:
                 "colunas. Posição inicial, compras e vendas já aparecem abaixo, direto da planilha."
             )
 
+        _renderizar_posicoes(st.session_state.get("carteira_posicoes"))
+        st.divider()
+        st.markdown("#### 📒 Extrato por ativo")
+
         linhas_dashboard = construir_dashboard_por_ativo(
             df_resumo, df_operacoes,
             linhas_ganho=st.session_state.get("carteira_linhas_ganho"),
@@ -982,6 +1045,32 @@ with tab_guia:
             "últimos 12 meses. FIIs costumam pagar mensalmente (limiar: 10+ pagamentos "
             "pra ser considerado regular); ações costumam pagar com menos frequência "
             "(limiar: 2+)."
+        )
+
+    with st.expander("🧭 Posição sugerida por ativo (regra de faixas de preço)"):
+        st.markdown(
+            "O painel compara o preço de hoje com o **seu preço médio** e sugere uma posição "
+            "clara para cada ativo:\n\n"
+            "| Variação sobre o preço médio | Posição sugerida |\n"
+            "|---|---|\n"
+            "| Queda de até 15% | Manter |\n"
+            "| Queda de 15% ou mais | Comprar mais 10% da posição |\n"
+            "| Queda de 25% ou mais | Comprar mais 25% da posição |\n"
+            "| Alta de até 25% | Manter |\n"
+            "| Alta de 25% / 35% / 45% / 60% | Vender 10% / 20% / 30% / 40% da posição |\n"
+            "| Alta de 100% ou mais | Vender tudo |\n\n"
+            "**Proteções:**\n\n"
+            "- **No máximo 2 compras na queda** por ativo. O contador zera quando o preço volta "
+            "a ficar pelo menos 5% acima do seu preço médio.\n"
+            "- **Só compra mais se o ativo estiver saudável.** Ações: sem prejuízo, dívida "
+            "bruta/patrimônio até 1,5 e liquidez corrente de pelo menos 1,0. FIIs: P/VP até 1,10 "
+            "e, nos FIIs de tijolo, vacância até 15%. Todos os tipos: rendimentos sem queda de "
+            "mais de 15% no último ano. ETFs não passam por esse filtro (são cestas "
+            "diversificadas). Se o filtro barrar, a posição vira **manter, sem aumentar**.\n"
+            "- **Cada faixa de venda vale uma vez**; volta a valer depois de uma nova compra ou "
+            "se o preço voltar ao seu preço médio.\n\n"
+            "O preço médio segue a regra da Receita Federal: compras mudam o preço médio, vendas "
+            "não. A renda por mês é estimada pelos proventos pagos nos últimos 12 meses."
         )
 
     st.info(
