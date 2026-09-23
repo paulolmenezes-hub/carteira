@@ -439,6 +439,15 @@ def texto_simples_por_tipo(df_resumo, referencia='Só segurar', principal='Regra
 # Card em linguagem simples (Seção 11)
 # ---------------------------------------------------------------------------
 
+def formatar_valor(valor, moeda='R$'):
+    """R$ no padrão brasileiro (R$ 1.234,56); US$ no americano (US$ 1,234.56)
+    — mesma convenção do painel."""
+    texto = f"{abs(valor):,.2f}"
+    if moeda == 'R$':
+        texto = texto.replace(',', '_').replace('.', ',').replace('_', '.')
+    return f"{moeda} {'-' if valor < 0 else ''}{texto}"
+
+
 def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, renda_12m_por_cota=None,
                         moeda='R$'):
     """Monta o conteúdo do card de um ativo, em linguagem simples.
@@ -453,8 +462,8 @@ def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, rend
                 'linhas': ['Você não tem mais este ativo na carteira.'], 'prioridade': 2}
 
     var = decisao['variacao']
-    titulo = (f"{ticker} — {q:.0f} cota(s) · preço médio {moeda} {pm:.2f} · "
-              f"hoje {moeda} {preco_atual:.2f} ({var*100:+.0f}%)")
+    titulo = (f"{ticker} — {q:.0f} cota(s) · preço médio {formatar_valor(pm, moeda)} · "
+              f"hoje {formatar_valor(preco_atual, moeda)} ({var*100:+.0f}%)")
 
     if acao in ('comprar', 'vender') and qtd_sugerida <= 0:
         rotulo = '⚪ Manter'
@@ -465,7 +474,7 @@ def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, rend
     elif acao == 'comprar':
         rotulo = f"🟢 Comprar mais {qtd_sugerida:.0f} cota(s)"
         linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:] +
-                      f" (cerca de {moeda} {qtd_sugerida * preco_atual:,.2f}).")
+                      f" (cerca de {formatar_valor(qtd_sugerida * preco_atual, moeda)}).")
         acao_final, prioridade = acao, 0
     elif acao == 'vender':
         tudo = decisao['fracao'] >= 1.0
@@ -473,7 +482,7 @@ def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, rend
                   else f"💰 Vender {qtd_sugerida:.0f} cota(s)")
         lucro = (preco_atual - pm) * qtd_sugerida
         linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:] +
-                      f". Lucro estimado nesta venda: {moeda} {lucro:,.2f}.")
+                      f". Lucro estimado nesta venda: {formatar_valor(lucro, moeda)}.")
         acao_final, prioridade = acao, 0
     elif acao == 'manter_nao_aumente':
         rotulo = '🟡 Manter, sem aumentar'
@@ -486,12 +495,12 @@ def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, rend
 
     if renda_12m_por_cota is not None and renda_12m_por_cota > 0:
         renda_mes = renda_12m_por_cota / 12 * q
-        frase = f"Renda estimada: cerca de {moeda} {renda_mes:,.2f} por mês com as suas {q:.0f} cota(s)"
+        frase = f"Renda estimada: cerca de {formatar_valor(renda_mes, moeda)} por mês com as suas {q:.0f} cota(s)"
         if acao_final == 'vender':
             restante = max(q - qtd_sugerida, 0)
-            frase += f"; depois da venda, cerca de {moeda} {renda_12m_por_cota / 12 * restante:,.2f}"
+            frase += f"; depois da venda, cerca de {formatar_valor(renda_12m_por_cota / 12 * restante, moeda)}"
         elif acao_final == 'comprar':
-            frase += f"; depois da compra, cerca de {moeda} {renda_12m_por_cota / 12 * (q + qtd_sugerida):,.2f}"
+            frase += f"; depois da compra, cerca de {formatar_valor(renda_12m_por_cota / 12 * (q + qtd_sugerida), moeda)}"
         linhas.append(frase + '.')
 
     return {'titulo': titulo, 'posicao': rotulo, 'acao': acao_final, 'linhas': linhas, 'prioridade': prioridade}
