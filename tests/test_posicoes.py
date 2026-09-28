@@ -117,6 +117,10 @@ def test_gerar_posicoes_cenario_completo():
     assert por["VALE3.SA"]["acao"] == "manter_nao_aumente" and "rendimentos" in por["VALE3.SA"]["linhas"][0]
     assert por["BOVA11.SA"]["acao"] == "comprar"
     assert por["QQQ"]["acao"] == "manter" and "US$" in por["QQQ"]["titulo"]
+    assert por["QQQ"]["moeda"] == "US$" and por["HGLG11.SA"]["moeda"] == "R$"
+    assert por["HGLG11.SA"]["preco_medio"] == 100.0 and por["HGLG11.SA"]["preco_atual"] == pytest.approx(130.0)
+    assert por["HGLG11.SA"]["variacao"] == pytest.approx(0.30)
+    assert len(por["HGLG11.SA"]["serie_recente"]) == 126
     assert [c["prioridade"] for c in cards] == sorted(c["prioridade"] for c in cards)
     assert any("SEMP3.SA" in a for a in avisos) and any("ERRO3.SA" in a for a in avisos)
 
