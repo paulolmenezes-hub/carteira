@@ -151,6 +151,12 @@ def gerar_posicoes(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
                                    quantidade_para_acao(estado, decisao),
                                    renda_12m_por_cota(dividendos, data_ref), moeda)
         card["ticker"] = ticker
+        # Campos numéricos para o card visual do painel (a regra só usa texto)
+        card["moeda"] = moeda
+        card["preco_medio"] = estado["preco_medio"]
+        card["preco_atual"] = preco
+        card["variacao"] = decisao.get("variacao")
+        card["serie_recente"] = [float(v) for v in precos.iloc[-126:].values]  # ~6 meses
         cards.append(card)
 
     cards.sort(key=lambda c: (c["prioridade"], c["ticker"]))
