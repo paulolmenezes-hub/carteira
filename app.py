@@ -17,6 +17,7 @@ Organizado em 4 abas: Análise de Carteira, Ativo Específico, Dashboard da
 Carteira (posição sugerida por ativo + extrato por ativo) e Guia de
 Indicadores (glossário).
 """
+import html
 import io
 import re
 import tempfile
@@ -32,6 +33,7 @@ from carteira_analise.carteira import analisar_ativo
 from carteira_analise.fontes import yahoo as fonte_yahoo
 from carteira_analise.fontes.cache import FonteComCache
 from carteira_analise.posicoes import fundamentos_de_resultado, gerar_posicoes
+from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
     achar_aba,
     construir_dashboard_por_ativo,
@@ -637,11 +639,131 @@ if bytes_planilha is not None:
     tickers_encontrados = sorted(set(tickers_encontrados))
 
 
+def _sem_formula(texto: str) -> str:
+    """Escapa o cifrão para o Markdown do Streamlit: dois '$' na mesma linha
+    (ex.: 'R$ 45,83 · hoje R$ 57,44') viram fórmula matemática e somem."""
+    return texto.replace("$", "\\$")
+
+
+# Visual de cada posição: cor de fundo (gradiente), ícone e rótulo curto
+_ESTILO_POSICAO = {
+    "vender": ("linear-gradient(135deg, #4f6bff 0%, #2f45e0 100%)", "💰", "Vender"),
+    "comprar": ("linear-gradient(135deg, #5fbf6a 0%, #3a9a47 100%)", "🛒", "Comprar mais"),
+    "manter_nao_aumente": ("linear-gradient(135deg, #f5b942 0%, #e0901f 100%)", "✋", "Manter, sem aumentar"),
+    "manter": ("linear-gradient(135deg, #b3aaa6 0%, #8f8783 100%)", "⏸️", "Manter"),
+}
+
+
+def _sparkline_svg(serie: list, preco_medio: float | None) -> str:
+    """Mini-gráfico (SVG) dos últimos ~6 meses de preço, com o preço médio
+    do usuário em linha tracejada quando ele cabe na escala."""
+    if not serie or len(serie) < 2:
+        return ""
+    largura, altura = 130, 42
+    valores = list(serie)
+    referencia = [v for v in valores] + ([preco_medio] if preco_medio else [])
+    minimo, maximo = min(referencia), max(referencia)
+    amplitude = (maximo - minimo) or 1.0
+
+    def y(v):
+        return altura - 3 - (v - minimo) / amplitude * (altura - 6)
+
+    passo = largura / (len(valores) - 1)
+    pontos = " ".join(f"{i * passo:.1f},{y(v):.1f}" for i, v in enumerate(valores))
+    linha_pm = ""
+    if preco_medio:
+        yp = y(preco_medio)
+        linha_pm = (f"<line x1='0' y1='{yp:.1f}' x2='{largura}' y2='{yp:.1f}' stroke='white' "
+                    f"stroke-opacity='0.55' stroke-width='1' stroke-dasharray='3 3'/>")
+    return (f"<svg width='{largura}' height='{altura}' viewBox='0 0 {largura} {altura}' "
+            f"xmlns='http://www.w3.org/2000/svg'>{linha_pm}"
+            f"<polyline points='{pontos}' fill='none' stroke='white' stroke-width='2' "
+            f"stroke-linecap='round' stroke-linejoin='round'/></svg>")
+
+
+def _html_card_posicao(card: dict) -> str:
+    """Um card colorido por ativo, no estilo 'dashboard': ícone, variação,
+    ação em destaque, mini-gráfico, motivo e renda estimada."""
+    fundo, icone, rotulo = _ESTILO_POSICAO.get(card["acao"], _ESTILO_POSICAO["manter"])
+    moeda = card.get("moeda", "R$")
+    var = card.get("variacao")
+    chip = f"{var * 100:+.0f}%" if var is not None else ""
+
+    # Destaque: quantidade a negociar (ou o rótulo, quando é manter)
+    destaque = html.escape(rotulo)
+    detalhe_destaque = ""
+    tamanho_destaque = "1.5em"
+    m = re.search(r"(\d+) cota", card["posicao"])
+    if card["acao"] in ("vender", "comprar") and m:
+        destaque = m.group(1)
+        tamanho_destaque = "2.1em"
+        detalhe_destaque = "cota(s) — " + ("vender tudo" if "tudo" in card["posicao"] else
+                                           ("vender" if card["acao"] == "vender" else "comprar mais"))
+
+    linhas = [l for l in card["linhas"] if not l.startswith("Renda estimada")]
+    renda = next((l for l in card["linhas"] if l.startswith("Renda estimada")), "")
+    precos = ""
+    if card.get("preco_medio") is not None and card.get("preco_atual") is not None:
+        precos = (f"Preço médio {formatar_valor(card['preco_medio'], moeda)} · "
+                  f"hoje {formatar_valor(card['preco_atual'], moeda)}")
+
+    motivo_html = "".join(f"<div style='margin-top:4px'>{html.escape(l)}</div>" for l in linhas)
+    renda_html = (f"<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.3);"
+                  f"font-size:0.85em'>💵 {html.escape(renda)}</div>") if renda else ""
+
+    return f"""
+<div style="background:{fundo};color:white;border-radius:16px;padding:16px 18px;
+            box-shadow:0 6px 18px rgba(0,0,0,0.15);display:flex;flex-direction:column;
+            font-family:'Source Sans Pro',sans-serif;">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="background:rgba(255,255,255,0.22);border-radius:10px;width:38px;height:38px;
+                  display:flex;align-items:center;justify-content:center;font-size:20px">{icone}</div>
+      <div style="font-size:1.1em;font-weight:700">{html.escape(card["ticker"])}</div>
+    </div>
+    <div title="variação sobre o seu preço médio" style="font-size:0.85em;font-weight:600;
+                background:rgba(255,255,255,0.2);border-radius:999px;padding:3px 10px;
+                white-space:nowrap">{html.escape(chip)}</div>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:12px">
+    <div>
+      <div style="font-size:{tamanho_destaque};font-weight:700;line-height:1.1">{destaque}</div>
+      <div style="font-size:0.9em;opacity:0.95">{html.escape(detalhe_destaque) or "&nbsp;"}</div>
+    </div>
+    {_sparkline_svg(card.get("serie_recente") or [], card.get("preco_medio"))}
+  </div>
+  <div style="margin-top:8px;font-size:0.82em;opacity:0.9">{html.escape(precos)}</div>
+  <div style="margin-top:8px;font-size:0.88em;line-height:1.35">{motivo_html}</div>
+  {renda_html}
+</div>"""
+
+
+def _html_resumo_posicoes(cards: list) -> str:
+    """Linha de resumo no topo: quantos ativos pedem cada ação."""
+    contagem = [
+        ("💰", "Vender", sum(1 for c in cards if c["acao"] == "vender"), "#2f45e0"),
+        ("🛒", "Comprar mais", sum(1 for c in cards if c["acao"] == "comprar"), "#3a9a47"),
+        ("✋", "Manter, sem aumentar", sum(1 for c in cards if c["acao"] == "manter_nao_aumente"), "#e0901f"),
+        ("⏸️", "Manter", sum(1 for c in cards if c["acao"] == "manter"), "#8f8783"),
+    ]
+    blocos = "".join(f"""
+<div style="background:white;color:#1f2937;border-radius:16px;padding:14px 16px;
+            box-shadow:0 4px 14px rgba(0,0,0,0.10);border-top:4px solid {cor}">
+  <div style="background:{cor};border-radius:10px;width:34px;height:34px;display:flex;
+              align-items:center;justify-content:center;font-size:18px">{icone}</div>
+  <div style="font-size:1.9em;font-weight:700;margin-top:8px;line-height:1">{n}</div>
+  <div style="font-size:0.9em;color:#4b5563">{rotulo}</div>
+</div>""" for icone, rotulo, n, cor in contagem)
+    return (f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));"
+            f"gap:14px;margin-bottom:18px'>{blocos}</div>")
+
+
 def _renderizar_posicoes(posicoes) -> None:
     """Posição sugerida por ativo (regra de faixas de preço sobre o preço
-    médio) em cards de linguagem simples — quem pede ação hoje aparece
-    primeiro. ``posicoes`` é o par (cards, avisos) de ``gerar_posicoes``,
-    guardado na sessão ao clicar em 'Analisar carteira'."""
+    médio) em cards coloridos — quem pede ação hoje aparece primeiro.
+    ``posicoes`` é o par (cards, avisos) de ``gerar_posicoes``, guardado na
+    sessão ao clicar em 'Analisar carteira'. Usa ``st.html`` (HTML puro,
+    sem Markdown), o que também evita o problema do cifrão virar fórmula."""
     st.markdown("#### 🧭 O que fazer com cada ativo hoje")
     if posicoes is None:
         st.caption(
@@ -651,33 +773,22 @@ def _renderizar_posicoes(posicoes) -> None:
         return
     cards, avisos = posicoes
     if cards:
-        n_compra = sum(1 for c in cards if c["acao"] == "comprar")
-        n_venda = sum(1 for c in cards if c["acao"] == "vender")
-        if n_compra or n_venda:
-            st.markdown(
-                f"**{n_compra + n_venda} ativo(s) pedem ação hoje:** {n_venda} venda(s) e "
-                f"{n_compra} compra(s). Os demais: manter."
-            )
-        else:
-            st.markdown("**Nenhum ativo pede ação hoje** — mantenha a carteira como está.")
-        n_colunas = 2
-        for inicio in range(0, len(cards), n_colunas):
-            colunas_cards = st.columns(n_colunas)
-            for coluna, card in zip(colunas_cards, cards[inicio:inicio + n_colunas]):
-                with coluna, st.container(border=True):
-                    st.caption(card["titulo"])
-                    st.markdown(f"**{card['posicao']}**")
-                    for linha in card["linhas"]:
-                        st.markdown(linha)
+        grade = "".join(_html_card_posicao(c) for c in cards)
+        st.html(
+            _html_resumo_posicoes(cards)
+            + "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));"
+              f"gap:16px'>{grade}</div>"
+        )
     else:
         st.info("Nenhuma posição aberta encontrada na planilha.")
     for aviso in avisos:
-        st.caption(f"⚠️ {aviso}")
+        st.caption(f"⚠️ {_sem_formula(aviso)}")
     st.caption(
-        "A regra compara o preço de hoje com o seu preço médio: compra mais na queda (a partir "
-        "de −15%, no máximo 2 vezes até o ativo voltar a subir, e só se os fundamentos e os "
-        "rendimentos estiverem saudáveis) e vende aos poucos na alta (a partir de +25%). "
-        "Detalhes no 'Guia de Indicadores'. Regra de bolso — não é recomendação de investimento."
+        "A regra compara o preço de hoje com o seu preço médio (linha tracejada no mini-gráfico, "
+        "que mostra os últimos 6 meses): compra mais na queda (a partir de −15%, no máximo 2 vezes "
+        "até o ativo voltar a subir, e só se os fundamentos e os rendimentos estiverem saudáveis) "
+        "e vende aos poucos na alta (a partir de +25%). Detalhes no 'Guia de Indicadores'. "
+        "Regra de bolso — não é recomendação de investimento."
     )
 
 
