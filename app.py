@@ -709,15 +709,17 @@ def _html_card_posicao(card: dict) -> str:
     var = card.get("variacao")
     chip = f"{var * 100:+.0f}%" if var is not None else ""
 
-    # Destaque: quantidade a negociar (ou o rótulo, quando é manter)
-    destaque = html.escape(rotulo)
-    detalhe_destaque = ""
-    tamanho_destaque = "1.5em"
+    # Ordem fixa do card: 1º o posicionamento; 2º a quantidade de cotas —
+    # a negociar (aumentar, vender parte, venda total) ou, quando é manter
+    # posição, a quantidade que o usuário já tem na carteira.
     m = re.search(r"(\d+) cota", card["posicao"])
     if categoria in ("aumentar", "vender_parte", "venda_total") and m:
-        destaque = m.group(1)
-        tamanho_destaque = "2.1em"
-        detalhe_destaque = "cota(s) — " + rotulo.lower()
+        quantidade = m.group(1)
+        detalhe_quantidade = {"aumentar": "cota(s) a comprar", "vender_parte": "cota(s) a vender",
+                              "venda_total": "cota(s) a vender — toda a posição"}[categoria]
+    else:
+        quantidade = f"{card.get('quantidade', 0):.0f}"
+        detalhe_quantidade = "cota(s) na carteira"
 
     linhas = [l for l in card["linhas"] if not l.startswith("Renda estimada")]
     renda = next((l for l in card["linhas"] if l.startswith("Renda estimada")), "")
@@ -746,10 +748,11 @@ def _html_card_posicao(card: dict) -> str:
                 background:rgba(255,255,255,0.2);border-radius:999px;padding:3px 10px;
                 white-space:nowrap">{html.escape(chip)}</div>
   </div>
-  <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:12px">
+  <div style="font-size:1.45em;font-weight:700;line-height:1.15;margin-top:12px">{html.escape(rotulo)}</div>
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:4px">
     <div>
-      <div style="font-size:{tamanho_destaque};font-weight:700;line-height:1.1">{destaque}</div>
-      <div style="font-size:0.9em;opacity:0.95">{html.escape(detalhe_destaque) or "&nbsp;"}</div>
+      <div style="font-size:2.1em;font-weight:700;line-height:1.05">{quantidade}</div>
+      <div style="font-size:0.9em;opacity:0.95">{html.escape(detalhe_quantidade)}</div>
     </div>
     {_sparkline_svg(card.get("serie_recente") or [], card.get("preco_medio"))}
   </div>
@@ -780,6 +783,33 @@ def _html_resumo_posicoes(cards: list) -> str:
             f"gap:14px;margin-bottom:18px'>{blocos}</div>")
 
 
+_NOME_GRUPO = {"Ações": "Ações", "FIIs": "Fundos Imobiliários (FIIs)", "ETF": "ETFs", "Outros": "Outros ativos"}
+
+
+def _html_grupos_posicoes(cards: list) -> str:
+    """Cards agrupados por mercado (B3, EUA) e tipo de ativo (Ações, FIIs,
+    ETFs), na ordem já definida por ``gerar_posicoes``, com um título por grupo."""
+    partes, grupo_atual, grade = [], None, []
+
+    def fechar_grupo():
+        if grade:
+            partes.append("<div style='display:grid;grid-template-columns:repeat(auto-fill,"
+                          "minmax(290px,1fr));gap:16px;margin-bottom:22px'>" + "".join(grade) + "</div>")
+
+    for card in cards:
+        chave = (card.get("mercado", ""), card.get("grupo", "Outros"))
+        if chave != grupo_atual:
+            fechar_grupo()
+            grade = []
+            grupo_atual = chave
+            mercado, grupo = chave
+            partes.append(f"<div style='font-weight:700;font-size:1.05em;margin:6px 0 10px 2px'>"
+                          f"{html.escape(mercado)} · {html.escape(_NOME_GRUPO.get(grupo, grupo))}</div>")
+        grade.append(_html_card_posicao(card))
+    fechar_grupo()
+    return "".join(partes)
+
+
 def _renderizar_posicoes(posicoes) -> None:
     """Posição sugerida por ativo (regra de faixas de preço sobre o preço
     médio) em cards coloridos — quem pede ação hoje aparece primeiro.
@@ -795,12 +825,7 @@ def _renderizar_posicoes(posicoes) -> None:
         return
     cards, avisos = posicoes
     if cards:
-        grade = "".join(_html_card_posicao(c) for c in cards)
-        st.html(
-            _html_resumo_posicoes(cards)
-            + "<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));"
-              f"gap:16px'>{grade}</div>"
-        )
+        st.html(_html_resumo_posicoes(cards) + _html_grupos_posicoes(cards))
     else:
         st.info("Nenhuma posição aberta encontrada na planilha.")
     for aviso in avisos:
