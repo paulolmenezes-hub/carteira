@@ -123,7 +123,10 @@ def test_gerar_posicoes_cenario_completo():
     assert por["HGLG11.SA"]["variacao"] == pytest.approx(0.30)
     assert len(por["HGLG11.SA"]["serie_recente"]) == 126
     assert por["HGLG11.SA"]["fracao"] == pytest.approx(0.10) and por["QQQ"]["fracao"] == 0.0
-    assert [c["prioridade"] for c in cards] == sorted(c["prioridade"] for c in cards)
+    # ordem: B3 (Ações, FIIs, ETF) e depois EUA
+    assert [c["ticker"] for c in cards] == ["VALE3.SA", "HGLG11.SA", "BOVA11.SA", "QQQ"]
+    assert [(c["mercado"], c["grupo"]) for c in cards] == [("B3", "Ações"), ("B3", "FIIs"), ("B3", "ETF"), ("EUA", "ETF")]
+    assert por["VALE3.SA"]["quantidade"] == 100 and por["QQQ"]["quantidade"] == 3
     assert any("SEMP3.SA" in a for a in avisos) and any("ERRO3.SA" in a for a in avisos)
 
 
@@ -160,3 +163,10 @@ def test_estado_com_erro_vira_aviso(monkeypatch):
     monkeypatch.setattr(p, "estado_a_partir_de_operacoes", explode)
     cards, avisos = gerar_posicoes(resumo, ops, fonte, tipos)
     assert cards == [] and any("operações inválidas" in a for a in avisos)
+
+
+def test_tipo_nao_confirmado_vai_para_outros_no_fim_do_mercado():
+    fonte, resumo, ops, _ = _cenario()
+    cards, _ = gerar_posicoes(resumo, ops, fonte, tipos={"VALE3.SA": "acao"})
+    b3 = [c for c in cards if c["mercado"] == "B3"]
+    assert b3[0]["ticker"] == "VALE3.SA" and {c["grupo"] for c in b3[1:]} == {"Outros"}
