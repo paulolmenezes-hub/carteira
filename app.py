@@ -399,7 +399,7 @@ _CABECALHOS_DUAS_LINHAS = {
     "Saldo Final (data)": "Saldo Final<br>(data)",
     "Preço Final": "Preço<br>Final",
     "Ganho Realizado": "Resultado<br>Obtido",
-    "Ganho/Prejuízo não Realizado": "Resultado<br>ñ Realizado",
+    "Ganho/Prejuízo não Realizado": "Resultado não<br>Realizado",
     "Dividendos/Rendimentos": "Divid/Rend",
     "Rentabilidade Total": "Rentab<br>Total",
     "Rentabilidade %": "Rentab%",
@@ -453,7 +453,7 @@ def _linha_subtotal_para_dict(rotulo: str, linhas_grupo: list, moeda: str) -> di
     rentabilidade_pct = rentabilidade / base_pct if rentabilidade is not None and base_pct > 0 else None
 
     return {
-        "Ticker": f"**{rotulo}**",
+        "Ticker": rotulo,  # destaque vem do CSS por tipo de linha (sem marcador Markdown)
         "Saldo Inicial (data)": "", "Preço Médio (PM)": "", "Qtde Inicial": "",
         "Saldo Inicial (valor)": _fmt_moeda(saldo_inicial, moeda),
         "Compras (qtde)": "", "Compras (valor)": _fmt_moeda(compras, moeda) if compras else "-",
@@ -483,7 +483,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
             if not linhas_bloco:
                 continue
 
-            linhas_html.append({"Ticker": f"### {rotulo_situacao} {mercado}"})
+            linhas_html.append({"Ticker": f"{rotulo_situacao} {mercado}"})  # destaque via CSS
             tipos_marcador.append("secao")
 
             moeda_bloco = linhas_bloco[0].moeda
