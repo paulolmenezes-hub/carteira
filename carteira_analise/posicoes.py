@@ -13,7 +13,7 @@ import dataclasses
 
 import pandas as pd
 
-from .planilha import _construir_operacao_da_posicao_inicial, normalizar_ticker
+from .planilha import _TIPO_PARA_GRUPO, _construir_operacao_da_posicao_inicial, normalizar_ticker
 from .regra_posicao import (
     decidir_posicao,
     estado_a_partir_de_operacoes,
@@ -98,12 +98,24 @@ def fundamentos_de_resultado(resultado) -> dict:
     return {}
 
 
+_ORDEM_MERCADO = {"B3": 0, "EUA": 1}
+_ORDEM_GRUPO = {"Ações": 0, "FIIs": 1, "ETF": 2, "Outros": 3}
+
+
+def chave_ordem_card(card: dict) -> tuple:
+    """Ordena os cards por mercado (B3, depois EUA), tipo de ativo (Ações,
+    FIIs, ETF — mesmos grupos do extrato do Dashboard) e ticker."""
+    return (_ORDEM_MERCADO.get(card.get("mercado"), 9), _ORDEM_GRUPO.get(card.get("grupo"), 9),
+            card.get("ticker", ""))
+
+
 def gerar_posicoes(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None = None,
                    fundamentos: dict[str, dict] | None = None,
                    periodo: str = "5y") -> tuple[list[dict], list[str]]:
     """Aplica a regra de faixas a cada posição ABERTA da carteira. Devolve
-    (cards, avisos): um card por ativo (ver ``montar_card_posicao``), com a
-    chave extra ``ticker``, ordenados com quem pede ação hoje primeiro."""
+    (cards, avisos): um card por ativo (ver ``montar_card_posicao``), com as
+    chaves extras ``ticker``, ``quantidade``, ``mercado`` e ``grupo``,
+    ordenados por mercado, tipo de ativo e ticker (``chave_ordem_card``)."""
     tipos = tipos or {}
     fundamentos = fundamentos or {}
     cards: list[dict] = []
@@ -158,7 +170,11 @@ def gerar_posicoes(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
         card["variacao"] = decisao.get("variacao")
         card["fracao"] = decisao.get("fracao", 0.0)
         card["serie_recente"] = [float(v) for v in precos.iloc[-126:].values]  # ~6 meses
+        card["quantidade"] = estado["quantidade"]
+        card["tipo"] = tipos.get(ticker)
+        card["mercado"] = "B3" if ticker.endswith(".SA") else "EUA"
+        card["grupo"] = _TIPO_PARA_GRUPO.get(tipos.get(ticker), "Outros")
         cards.append(card)
 
-    cards.sort(key=lambda c: (c["prioridade"], c["ticker"]))
+    cards.sort(key=chave_ordem_card)
     return cards, avisos
