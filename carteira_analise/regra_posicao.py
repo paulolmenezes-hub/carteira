@@ -4,8 +4,9 @@ import pandas as pd
 # ============================================================================
 # REGRA DE POSIÇÃO POR FAIXAS DE PREÇO
 # Compara o preço atual com o PREÇO MÉDIO da posição (no momento da análise)
-# e devolve uma posição clara: comprar mais, manter, manter sem aumentar,
-# vender parte ou vender tudo.
+# e devolve uma posição clara ao usuário: aumentar posição, manter posição
+# (inclusive quando uma proteção impede o aumento — código interno
+# 'manter_nao_aumente', com o motivo explicado), vender parte ou venda total.
 #   - Compras na queda ("reforços") limitadas a 2 por ciclo; o contador zera
 #     quando o preço volta a ficar pelo menos 5% acima do preço médio.
 #   - Cada faixa de venda dispara uma vez; as faixas de venda voltam a valer
@@ -83,16 +84,16 @@ def decidir_posicao(preco, estado, config=None, compra_permitida=True, motivos_b
         if limiar > estado['faixa_venda_executada'] + 1e-12:
             acao = 'vender'
             if fracao >= 1.0:
-                motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio — a regra manda vender "
-                          f"tudo e embolsar o lucro")
+                motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio — pela regra, é o ponto de "
+                          f"venda total, realizando todo o lucro")
             else:
-                motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio — venda {fracao*100:.0f}% "
-                          f"da posição para garantir parte do lucro")
+                motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio — pela regra, é o ponto de "
+                          f"vender parte (realizar {fracao*100:.0f}% da posição) e garantir parte do lucro")
             return {'acao': acao, 'fracao': fracao, 'variacao': var, 'faixa': limiar, 'motivo': motivo}
         proximas = [f for f in faixas_venda if f[0] > estado['faixa_venda_executada'] + 1e-12]
         prox_txt = (f" A próxima venda é a partir de +{proximas[0][0]*100:.0f}%." if proximas else "")
         return {'acao': 'manter', 'fracao': 0.0, 'variacao': var, 'faixa': None,
-                'motivo': (f"subiu {var*100:.0f}% sobre o seu preço médio, mas você já vendeu "
+                'motivo': (f"subiu {var*100:.0f}% sobre o seu preço médio, mas você já vendeu parte "
                            f"nesta faixa.{prox_txt}")}
 
     # ---- Compra na queda: faixa mais funda atingida ----
@@ -103,30 +104,30 @@ def decidir_posicao(preco, estado, config=None, compra_permitida=True, motivos_b
         if aplicar_limite_reforcos and estado['n_reforcos'] >= cfg['max_reforcos']:
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
                     'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio, mas você já "
-                               f"comprou mais {estado['n_reforcos']} vezes na queda. Espere o preço "
-                               f"voltar a subir antes de colocar mais dinheiro.")}
+                               f"aumentou a posição {estado['n_reforcos']} vezes na queda. Espere o "
+                               f"preço voltar a subir antes de colocar mais dinheiro.")}
         dist = cfg.get('distancia_minima_nova_compra')
         ult = estado.get('preco_ultimo_reforco')
         if dist is not None and ult is not None and preco > ult * (1 - dist):
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
-                    'motivo': (f"você já comprou mais a {ult:.2f}; a próxima compra só vale abaixo "
-                               f"de {ult * (1 - dist):.2f}.")}
+                    'motivo': (f"você já aumentou a posição a {ult:.2f}; o próximo aumento só vale "
+                               f"abaixo de {ult * (1 - dist):.2f}.")}
         if not compra_permitida:
             razoes = '; '.join(motivos_bloqueio or []) or 'os fundamentos não confirmam a compra'
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
                     'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio, mas não é hora de "
-                               f"aumentar: {razoes}.")}
+                               f"aumentar a posição: {razoes}.")}
         return {'acao': 'comprar', 'fracao': fracao, 'variacao': var, 'faixa': limiar,
-                'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio — compre mais "
-                           f"{fracao*100:.0f}% da posição para baixar o seu preço médio")}
+                'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio — pela regra, é o ponto de "
+                           f"aumentar a posição em {fracao*100:.0f}%, o que baixa o seu preço médio")}
 
     # ---- Zona de manter ----
     if var >= 0:
-        motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio. Ainda não é hora de vender "
+        motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio. Ainda não é hora de vender parte "
                   f"(a regra realiza lucro a partir de +{faixas_venda[0][0]*100:.0f}%).")
     else:
-        motivo = (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio. Queda pequena: mantenha "
-                  f"(a regra só compra mais a partir de {faixas_compra[-1][0]*100:.0f}%).")
+        motivo = (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio. Queda pequena: mantenha a "
+                  f"posição (a regra só aumenta a posição a partir de {faixas_compra[-1][0]*100:.0f}%).")
     return {'acao': 'manter', 'fracao': 0.0, 'variacao': var, 'faixa': None, 'motivo': motivo}
 
 
@@ -451,14 +452,16 @@ def formatar_valor(valor, moeda='R$'):
 def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, renda_12m_por_cota=None,
                         moeda='R$'):
     """Monta o conteúdo do card de um ativo, em linguagem simples.
-    Devolve dict com 'titulo', 'posicao' (rótulo), 'acao' (código final),
-    'linhas' (frases) e 'prioridade' (0 = pede ação hoje, 1 = manter)."""
+    Devolve dict com 'titulo', 'posicao' (rótulo), 'acao' (código final:
+    'comprar', 'vender', 'manter'), 'categoria' (apresentada ao usuário:
+    'aumentar', 'manter', 'vender_parte', 'venda_total'), 'linhas' (frases)
+    e 'prioridade' (0 = pede ação hoje, 1 = manter)."""
     q, pm = estado['quantidade'], estado['preco_medio']
     acao = decisao['acao']
     linhas = []
 
     if acao == 'sem_posicao':
-        return {'titulo': ticker, 'posicao': '⚪ Sem posição aberta', 'acao': acao,
+        return {'titulo': ticker, 'posicao': '⚪ Sem posição aberta', 'acao': acao, 'categoria': acao,
                 'linhas': ['Você não tem mais este ativo na carteira.'], 'prioridade': 2}
 
     var = decisao['variacao']
@@ -466,30 +469,30 @@ def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, rend
               f"hoje {formatar_valor(preco_atual, moeda)} ({var*100:+.0f}%)")
 
     if acao in ('comprar', 'vender') and qtd_sugerida <= 0:
-        rotulo = '⚪ Manter'
+        rotulo, categoria = '⚪ Manter posição', 'manter'
         linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:] + '.')
         linhas.append(f"Mas sua posição é pequena demais para aplicar {decisao['fracao']*100:.0f}% "
-                      f"(daria menos de 1 cota). Mantenha.")
+                      f"(daria menos de 1 cota). Mantenha a posição.")
         acao_final, prioridade = 'manter', 1
     elif acao == 'comprar':
-        rotulo = f"🟢 Comprar mais {qtd_sugerida:.0f} cota(s)"
+        rotulo, categoria = f"🟢 Aumentar posição: {qtd_sugerida:.0f} cota(s)", 'aumentar'
         linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:] +
                       f" (cerca de {formatar_valor(qtd_sugerida * preco_atual, moeda)}).")
         acao_final, prioridade = acao, 0
     elif acao == 'vender':
-        tudo = decisao['fracao'] >= 1.0
-        rotulo = (f"💰 Vender tudo ({qtd_sugerida:.0f} cota(s))" if tudo
-                  else f"💰 Vender {qtd_sugerida:.0f} cota(s)")
+        if decisao['fracao'] >= 1.0:
+            rotulo, categoria = f"💰 Venda total: {qtd_sugerida:.0f} cota(s)", 'venda_total'
+        else:
+            rotulo, categoria = f"💰 Vender parte: {qtd_sugerida:.0f} cota(s)", 'vender_parte'
         lucro = (preco_atual - pm) * qtd_sugerida
         linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:] +
                       f". Lucro estimado nesta venda: {formatar_valor(lucro, moeda)}.")
         acao_final, prioridade = acao, 0
-    elif acao == 'manter_nao_aumente':
-        rotulo = '🟡 Manter, sem aumentar'
-        linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:])
-        acao_final, prioridade = acao, 1
     else:
-        rotulo = '⚪ Manter'
+        # 'manter' e 'manter_nao_aumente' (limite de aumentos ou filtro de
+        # fundamentos/renda): para o usuário, ambos são "Manter posição" —
+        # o motivo explica por que não é hora de aumentar.
+        rotulo, categoria = '⚪ Manter posição', 'manter'
         linhas.append(decisao['motivo'][0].upper() + decisao['motivo'][1:])
         acao_final, prioridade = 'manter', 1
 
@@ -503,4 +506,5 @@ def montar_card_posicao(ticker, estado, preco_atual, decisao, qtd_sugerida, rend
             frase += f"; depois da compra, cerca de {formatar_valor(renda_12m_por_cota / 12 * (q + qtd_sugerida), moeda)}"
         linhas.append(frase + '.')
 
-    return {'titulo': titulo, 'posicao': rotulo, 'acao': acao_final, 'linhas': linhas, 'prioridade': prioridade}
+    return {'titulo': titulo, 'posicao': rotulo, 'acao': acao_final, 'categoria': categoria,
+            'linhas': linhas, 'prioridade': prioridade}

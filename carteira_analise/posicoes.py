@@ -156,6 +156,7 @@ def gerar_posicoes(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
         card["preco_medio"] = estado["preco_medio"]
         card["preco_atual"] = preco
         card["variacao"] = decisao.get("variacao")
+        card["fracao"] = decisao.get("fracao", 0.0)
         card["serie_recente"] = [float(v) for v in precos.iloc[-126:].values]  # ~6 meses
         cards.append(card)
 
