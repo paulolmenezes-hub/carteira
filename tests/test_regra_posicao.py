@@ -284,41 +284,58 @@ def test_texto_veredito():
     assert 'ajudou' in f[0] and 'segurar foi melhor' in f[1] and 'empate' in f[2] and len(f) == 3
 
 # ---------------- card ----------------
-def test_card_venda_com_renda():
+def test_card_vender_parte_com_renda():
     e = est(q=40, pm=100)
     d = decidir_posicao(127, e)
     c = montar_card_posicao('HGLG11.SA', e, 127, d, quantidade_para_acao(e, d), renda_12m_por_cota=12.0)
-    assert c['posicao'] == '💰 Vender 4 cota(s)' and c['prioridade'] == 0
+    assert c['posicao'] == '💰 Vender parte: 4 cota(s)' and c['categoria'] == 'vender_parte'
+    assert c['prioridade'] == 0 and c['acao'] == 'vender'
+    assert 'realizar 10% da posição' in c['linhas'][0]
     assert 'Lucro estimado nesta venda: R$ 108,00' in c['linhas'][0]
     assert 'R$ 40,00 por mês' in c['linhas'][1] and 'R$ 36,00' in c['linhas'][1]
     assert '+27%' in c['titulo']
 
-def test_card_vender_tudo():
+def test_card_venda_total():
     e = est(q=10); d = decidir_posicao(210, e)
     c = montar_card_posicao('X', e, 210, d, quantidade_para_acao(e, d))
-    assert c['posicao'].startswith('💰 Vender tudo (10')
+    assert c['posicao'] == '💰 Venda total: 10 cota(s)' and c['categoria'] == 'venda_total'
+    assert 'venda total' in c['linhas'][0]
 
-def test_card_compra():
+def test_card_aumentar_posicao():
     e = est(q=100); d = decidir_posicao(84, e)
     c = montar_card_posicao('X', e, 84, d, quantidade_para_acao(e, d), 12.0, moeda='US$')
-    assert c['posicao'] == '🟢 Comprar mais 10 cota(s)' and 'US$ 840.00' in c['linhas'][0]
+    assert c['posicao'] == '🟢 Aumentar posição: 10 cota(s)' and c['categoria'] == 'aumentar'
+    assert 'aumentar a posição em 10%' in c['linhas'][0] and 'US$ 840.00' in c['linhas'][0]
     assert 'depois da compra' in c['linhas'][1]
 
 def test_card_posicao_pequena_vira_manter():
     e = est(q=3); d = decidir_posicao(126, e)
     c = montar_card_posicao('X', e, 126, d, quantidade_para_acao(e, d))
-    assert c['posicao'] == '⚪ Manter' and c['acao'] == 'manter' and 'pequena demais' in c['linhas'][1]
+    assert c['posicao'] == '⚪ Manter posição' and c['acao'] == 'manter' and c['categoria'] == 'manter'
+    assert 'pequena demais' in c['linhas'][1]
 
-def test_card_manter_e_nao_aumente_e_sem_posicao():
+def test_card_manter_bloqueio_e_sem_posicao():
     e = est()
     c = montar_card_posicao('X', e, 110, decidir_posicao(110, e), 0, 0)
-    assert c['posicao'] == '⚪ Manter' and len(c['linhas']) == 1
+    assert c['posicao'] == '⚪ Manter posição' and len(c['linhas']) == 1
+    # Filtro barrou o aumento: para o usuário é "Manter posição", com o motivo
     d = decidir_posicao(80, e, compra_permitida=False, motivos_bloqueio=['a dívida está alta'])
+    assert d['acao'] == 'manter_nao_aumente'
     c = montar_card_posicao('X', e, 80, d, 0)
-    assert c['posicao'] == '🟡 Manter, sem aumentar' and c['prioridade'] == 1
+    assert c['posicao'] == '⚪ Manter posição' and c['categoria'] == 'manter' and c['acao'] == 'manter'
+    assert 'não é hora de aumentar a posição' in c['linhas'][0] and 'dívida' in c['linhas'][0]
+    assert c['prioridade'] == 1
     z = novo_estado(0, 0)
     assert montar_card_posicao('X', z, 10, decidir_posicao(10, z), 0)['prioridade'] == 2
 
+def test_nenhum_rotulo_antigo():
+    e = est(q=100)
+    for preco in (50, 80, 84, 100, 110, 127, 136, 146, 161, 210):
+        for permitido in (True, False):
+            d = decidir_posicao(preco, e, compra_permitida=permitido)
+            c = montar_card_posicao('X', e, preco, d, quantidade_para_acao(e, d))
+            assert c['categoria'] in ('aumentar', 'manter', 'vender_parte', 'venda_total')
+            assert 'sem aumentar' not in c['posicao'] and 'Comprar mais' not in c['posicao']
 
 def test_formatar_valor():
     assert formatar_valor(1234.5) == 'R$ 1.234,50'

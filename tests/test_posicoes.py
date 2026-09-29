@@ -112,15 +112,17 @@ def test_gerar_posicoes_cenario_completo():
     cards, avisos = gerar_posicoes(resumo, ops, fonte, tipos, fund)
     por = {c["ticker"]: c for c in cards}
     assert set(por) == {"HGLG11.SA", "VALE3.SA", "BOVA11.SA", "QQQ"}  # FECH3 encerrada
-    assert por["HGLG11.SA"]["acao"] == "vender" and por["HGLG11.SA"]["posicao"] == "💰 Vender 4 cota(s)"
+    assert por["HGLG11.SA"]["acao"] == "vender" and por["HGLG11.SA"]["posicao"] == "💰 Vender parte: 4 cota(s)"
     assert any("por mês" in l for l in por["HGLG11.SA"]["linhas"])
-    assert por["VALE3.SA"]["acao"] == "manter_nao_aumente" and "rendimentos" in por["VALE3.SA"]["linhas"][0]
+    assert por["VALE3.SA"]["categoria"] == "manter" and "rendimentos" in por["VALE3.SA"]["linhas"][0]
+    assert "não é hora de aumentar a posição" in por["VALE3.SA"]["linhas"][0]
     assert por["BOVA11.SA"]["acao"] == "comprar"
     assert por["QQQ"]["acao"] == "manter" and "US$" in por["QQQ"]["titulo"]
     assert por["QQQ"]["moeda"] == "US$" and por["HGLG11.SA"]["moeda"] == "R$"
     assert por["HGLG11.SA"]["preco_medio"] == 100.0 and por["HGLG11.SA"]["preco_atual"] == pytest.approx(130.0)
     assert por["HGLG11.SA"]["variacao"] == pytest.approx(0.30)
     assert len(por["HGLG11.SA"]["serie_recente"]) == 126
+    assert por["HGLG11.SA"]["fracao"] == pytest.approx(0.10) and por["QQQ"]["fracao"] == 0.0
     assert [c["prioridade"] for c in cards] == sorted(c["prioridade"] for c in cards)
     assert any("SEMP3.SA" in a for a in avisos) and any("ERRO3.SA" in a for a in avisos)
 
@@ -130,7 +132,7 @@ def test_fundamento_ruim_bloqueia_compra():
     fonte.dividendos.pop("VALE3.SA")
     cards, _ = gerar_posicoes(resumo, ops, fonte, tipos, {"VALE3.SA": {"roe": -0.1}})
     vale = next(c for c in cards if c["ticker"] == "VALE3.SA")
-    assert vale["acao"] == "manter_nao_aumente" and "prejuízo" in vale["linhas"][0]
+    assert vale["categoria"] == "manter" and "prejuízo" in vale["linhas"][0]
     cards, _ = gerar_posicoes(resumo, ops, fonte, tipos, {"VALE3.SA": {"roe": 0.2}})
     assert next(c for c in cards if c["ticker"] == "VALE3.SA")["acao"] == "comprar"
 
