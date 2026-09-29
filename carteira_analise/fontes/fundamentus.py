@@ -80,6 +80,24 @@ def _parse_numero_br(texto) -> float | None:
     return valor / 100 if eh_percentual else valor
 
 
+def _ler_tabela_como_texto(html: str) -> pd.DataFrame:
+    """Lê a primeira tabela do HTML mantendo TODAS as células como texto,
+    no formato brasileiro original, para que a conversão fique inteira a
+    cargo de ``_parse_numero_br``.
+
+    Motivo (regressão encontrada na Sprint 3): com ``thousands='.'`` e
+    ``decimal=','``, o pandas convertia '0,45' em '0.45' mas mantinha o
+    valor como texto quando a coluna tinha algum '-' (bancos, em dívida
+    bruta/patrimônio e liquidez corrente) — e o parser brasileiro removia o
+    ponto como se fosse milhar, lendo 45 em vez de 0,45. Sem parâmetros, o
+    pandas também leria '900.000' (milhar) como 900,0. Forçar texto em todas
+    as colunas (duas leituras: a primeira só para contar as colunas) elimina
+    as duas situações."""
+    n_colunas = len(pd.read_html(io.StringIO(html))[0].columns)
+    return pd.read_html(io.StringIO(html), thousands=None,  # padrão do pandas é thousands=","
+                        converters={i: str for i in range(n_colunas)})[0]
+
+
 def _baixar_html_fii_resultado() -> str:
     """Baixa o HTML bruto da tabela de FIIs do Fundamentus. Precisa de um
     User-Agent de navegador — sem isso, o site pode recusar ou degradar a
@@ -100,8 +118,7 @@ def buscar_todos_fiis_fundamentus() -> dict[str, FundamentosFII]:
     ``buscar_fundamentos_fii``, que já aplica esse tratamento com fallback
     silencioso)."""
     html = _baixar_html_fii_resultado()
-    tabelas = pd.read_html(io.StringIO(html), thousands=".", decimal=",")
-    df = tabelas[0]
+    df = _ler_tabela_como_texto(html)  # ver docstring: evita conversões automáticas do pandas
 
     # Normaliza nomes de coluna (o Fundamentus não muda muito, mas por
     # segurança comparamos por prefixo em minúsculas, não pelo nome exato)
@@ -228,8 +245,7 @@ def buscar_todas_acoes_fundamentus() -> dict[str, FundamentosAcao]:
     padrão de uma única chamada de rede para toda a tabela, com cache em
     memória (ver ``buscar_fundamentos_acao``)."""
     html = _baixar_html_acao_resultado()
-    tabelas = pd.read_html(io.StringIO(html), thousands=".", decimal=",")
-    df = tabelas[0]
+    df = _ler_tabela_como_texto(html)  # ver docstring: evita conversões automáticas do pandas
     colunas = {c: str(c).strip().lower() for c in df.columns}
 
     col_papel = _achar_coluna(colunas, "papel")
