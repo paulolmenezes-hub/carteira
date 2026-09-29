@@ -647,10 +647,10 @@ def _sem_formula(texto: str) -> str:
 
 # Visual de cada posição: cor de fundo (gradiente), ícone e rótulo curto
 _ESTILO_POSICAO = {
-    "vender": ("linear-gradient(135deg, #4f6bff 0%, #2f45e0 100%)", "💰", "Vender"),
-    "comprar": ("linear-gradient(135deg, #5fbf6a 0%, #3a9a47 100%)", "🛒", "Comprar mais"),
-    "manter_nao_aumente": ("linear-gradient(135deg, #f5b942 0%, #e0901f 100%)", "✋", "Manter, sem aumentar"),
-    "manter": ("linear-gradient(135deg, #b3aaa6 0%, #8f8783 100%)", "⏸️", "Manter"),
+    "aumentar": ("linear-gradient(135deg, #5fbf6a 0%, #3a9a47 100%)", "🛒", "Aumentar posição"),
+    "manter": ("linear-gradient(135deg, #b3aaa6 0%, #8f8783 100%)", "⏸️", "Manter posição"),
+    "vender_parte": ("linear-gradient(135deg, #4f6bff 0%, #2f45e0 100%)", "💰", "Vender parte"),
+    "venda_total": ("linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)", "🏁", "Venda total"),
 }
 
 
@@ -681,10 +681,30 @@ def _sparkline_svg(serie: list, preco_medio: float | None) -> str:
             f"stroke-linecap='round' stroke-linejoin='round'/></svg>")
 
 
+def _texto_aviso_decisao(card: dict) -> str:
+    """Aviso de cada card: a informação vem da regra de faixas definida
+    (ex.: 'vender parte: realizar 10%', no caso 19 cotas), e a decisão é
+    sempre do usuário (Seção 3.2.1 do Relatório)."""
+    m = re.search(r"(\d+) cota", card.get("posicao", ""))
+    fracao = card.get("fracao") or 0.0
+    categoria = card.get("categoria", "manter")
+    if m and categoria == "vender_parte":
+        regra = f"vender parte: realizar {fracao * 100:.0f}%"
+    elif m and categoria == "venda_total":
+        regra = "venda total"
+    elif m and categoria == "aumentar":
+        regra = f"aumentar posição em {fracao * 100:.0f}%"
+    else:
+        return "Informação calculada pela regra de faixas. A decisão é sempre sua."
+    return (f"Informação calculada pela regra de faixas ({regra}), no caso {m.group(1)} cota(s). "
+            f"A decisão é sempre sua.")
+
+
 def _html_card_posicao(card: dict) -> str:
     """Um card colorido por ativo, no estilo 'dashboard': ícone, variação,
     ação em destaque, mini-gráfico, motivo e renda estimada."""
-    fundo, icone, rotulo = _ESTILO_POSICAO.get(card["acao"], _ESTILO_POSICAO["manter"])
+    categoria = card.get("categoria", "manter")
+    fundo, icone, rotulo = _ESTILO_POSICAO.get(categoria, _ESTILO_POSICAO["manter"])
     moeda = card.get("moeda", "R$")
     var = card.get("variacao")
     chip = f"{var * 100:+.0f}%" if var is not None else ""
@@ -694,11 +714,10 @@ def _html_card_posicao(card: dict) -> str:
     detalhe_destaque = ""
     tamanho_destaque = "1.5em"
     m = re.search(r"(\d+) cota", card["posicao"])
-    if card["acao"] in ("vender", "comprar") and m:
+    if categoria in ("aumentar", "vender_parte", "venda_total") and m:
         destaque = m.group(1)
         tamanho_destaque = "2.1em"
-        detalhe_destaque = "cota(s) — " + ("vender tudo" if "tudo" in card["posicao"] else
-                                           ("vender" if card["acao"] == "vender" else "comprar mais"))
+        detalhe_destaque = "cota(s) — " + rotulo.lower()
 
     linhas = [l for l in card["linhas"] if not l.startswith("Renda estimada")]
     renda = next((l for l in card["linhas"] if l.startswith("Renda estimada")), "")
@@ -707,6 +726,8 @@ def _html_card_posicao(card: dict) -> str:
         precos = (f"Preço médio {formatar_valor(card['preco_medio'], moeda)} · "
                   f"hoje {formatar_valor(card['preco_atual'], moeda)}")
 
+    aviso_html = (f"<div style='margin-top:10px;font-size:0.75em;opacity:0.85;font-style:italic'>"
+                  f"{html.escape(_texto_aviso_decisao(card))}</div>")
     motivo_html = "".join(f"<div style='margin-top:4px'>{html.escape(l)}</div>" for l in linhas)
     renda_html = (f"<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.3);"
                   f"font-size:0.85em'>💵 {html.escape(renda)}</div>") if renda else ""
@@ -735,16 +756,17 @@ def _html_card_posicao(card: dict) -> str:
   <div style="margin-top:8px;font-size:0.82em;opacity:0.9">{html.escape(precos)}</div>
   <div style="margin-top:8px;font-size:0.88em;line-height:1.35">{motivo_html}</div>
   {renda_html}
+  {aviso_html}
 </div>"""
 
 
 def _html_resumo_posicoes(cards: list) -> str:
     """Linha de resumo no topo: quantos ativos pedem cada ação."""
     contagem = [
-        ("💰", "Vender", sum(1 for c in cards if c["acao"] == "vender"), "#2f45e0"),
-        ("🛒", "Comprar mais", sum(1 for c in cards if c["acao"] == "comprar"), "#3a9a47"),
-        ("✋", "Manter, sem aumentar", sum(1 for c in cards if c["acao"] == "manter_nao_aumente"), "#e0901f"),
-        ("⏸️", "Manter", sum(1 for c in cards if c["acao"] == "manter"), "#8f8783"),
+        (_ESTILO_POSICAO[cat][1], _ESTILO_POSICAO[cat][2],
+         sum(1 for c in cards if c.get("categoria") == cat), cor)
+        for cat, cor in (("aumentar", "#3a9a47"), ("manter", "#8f8783"),
+                         ("vender_parte", "#2f45e0"), ("venda_total", "#6d28d9"))
     ]
     blocos = "".join(f"""
 <div style="background:white;color:#1f2937;border-radius:16px;padding:14px 16px;
@@ -768,7 +790,7 @@ def _renderizar_posicoes(posicoes) -> None:
     if posicoes is None:
         st.caption(
             "Clique em 'Analisar carteira' na aba 'Análise de Carteira' para ver a posição "
-            "sugerida de cada ativo (comprar mais, manter ou vender parte)."
+            "sugerida de cada ativo (aumentar posição, manter posição, vender parte ou venda total)."
         )
         return
     cards, avisos = posicoes
@@ -785,10 +807,13 @@ def _renderizar_posicoes(posicoes) -> None:
         st.caption(f"⚠️ {_sem_formula(aviso)}")
     st.caption(
         "A regra compara o preço de hoje com o seu preço médio (linha tracejada no mini-gráfico, "
-        "que mostra os últimos 6 meses): compra mais na queda (a partir de −15%, no máximo 2 vezes "
-        "até o ativo voltar a subir, e só se os fundamentos e os rendimentos estiverem saudáveis) "
-        "e vende aos poucos na alta (a partir de +25%). Detalhes no 'Guia de Indicadores'. "
-        "Regra de bolso — não é recomendação de investimento."
+        "que mostra os últimos 6 meses): aumenta a posição na queda (a partir de −15%, no máximo "
+        "2 vezes até o ativo voltar a subir, e só se os fundamentos e os rendimentos estiverem "
+        "saudáveis), vende parte aos poucos na alta (a partir de +25%) e indica a venda total a "
+        "partir de +100%. Detalhes no 'Guia de Indicadores'. As informações são calculadas por "
+        "regras de faixas fixas e transparentes, iguais para todos os usuários; a decisão de "
+        "aumentar, manter ou vender é sempre sua. "
+        "Não é recomendação de investimento."
     )
 
 
@@ -1164,21 +1189,21 @@ with tab_guia:
             "clara para cada ativo:\n\n"
             "| Variação sobre o preço médio | Posição sugerida |\n"
             "|---|---|\n"
-            "| Queda de até 15% | Manter |\n"
-            "| Queda de 15% ou mais | Comprar mais 10% da posição |\n"
-            "| Queda de 25% ou mais | Comprar mais 25% da posição |\n"
-            "| Alta de até 25% | Manter |\n"
-            "| Alta de 25% / 35% / 45% / 60% | Vender 10% / 20% / 30% / 40% da posição |\n"
-            "| Alta de 100% ou mais | Vender tudo |\n\n"
+            "| Queda de até 15% | Manter posição |\n"
+            "| Queda de 15% ou mais | Aumentar posição em 10% |\n"
+            "| Queda de 25% ou mais | Aumentar posição em 25% |\n"
+            "| Alta de até 25% | Manter posição |\n"
+            "| Alta de 25% / 35% / 45% / 60% | Vender parte: 10% / 20% / 30% / 40% da posição |\n"
+            "| Alta de 100% ou mais | Venda total |\n\n"
             "**Proteções:**\n\n"
-            "- **No máximo 2 compras na queda** por ativo. O contador zera quando o preço volta "
+            "- **No máximo 2 aumentos de posição na queda** por ativo. O contador zera quando o preço volta "
             "a ficar pelo menos 5% acima do seu preço médio.\n"
-            "- **Só compra mais se o ativo estiver saudável.** Ações: sem prejuízo, dívida "
+            "- **Só aumenta a posição se o ativo estiver saudável.** Ações: sem prejuízo, dívida "
             "bruta/patrimônio até 1,5 e liquidez corrente de pelo menos 1,0. FIIs: P/VP até 1,10 "
             "e, nos FIIs de tijolo, vacância até 15%. Todos os tipos: rendimentos sem queda de "
             "mais de 15% no último ano. ETFs não passam por esse filtro (são cestas "
-            "diversificadas). Se o filtro barrar, a posição vira **manter, sem aumentar**.\n"
-            "- **Cada faixa de venda vale uma vez**; volta a valer depois de uma nova compra ou "
+            "diversificadas). Se o filtro barrar, a posição sugerida é **manter posição**, e o card explica o motivo.\n"
+            "- **Cada faixa de venda vale uma vez**; volta a valer depois de um novo aumento de posição ou "
             "se o preço voltar ao seu preço médio.\n\n"
             "O preço médio segue a regra da Receita Federal: compras mudam o preço médio, vendas "
             "não. A renda por mês é estimada pelos proventos pagos nos últimos 12 meses."
