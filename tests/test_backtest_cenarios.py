@@ -216,3 +216,42 @@ def test_resumo_fii_com_gatilho():
     assert pd.isna(df[df["cenario"] == "Reinvestir 100%"].iloc[0]["pct_com_compra_na_queda"])
     frase = frase_evidencia(df, "FIIs", "CDI + compra na queda (preço médio)", "Não reinvestir", "FIIs", "R$", "FII")
     assert "\"CDI + compra na queda (preço médio)\"" in frase and "em 1 FII," in frase
+
+
+# ---------------------------------------------------------------- Sprint 4: método
+def test_cenario_que_nao_age_empata_e_nao_perde():
+    s = serie([100.0] * 260 + list(np.linspace(100, 120, 900)))  # nunca cai 15%
+    res = {"A": rodar_em_varias_datas(simular_cenario_regra, s, None, list(VARIANTES_ACOES))}
+    df = resumir_cenarios(res, {"A": "Ações B3"}, "Manter").set_index("cenario")
+    l = df.loc["Só aumentar nas quedas"]
+    assert l["pct_empata"] == 100 and l["pct_perde"] == 0 and l["pct_agiu"] == 0
+    assert pd.isna(l["pct_vence_quando_agiu"])
+    frase = frase_evidencia(df.reset_index(), "Ações B3", "Só aumentar nas quedas", "Manter", "ações B3")
+    assert "nunca foi atingida" in frase
+
+
+def test_aumentar_comparado_com_o_mesmo_dinheiro_no_cdi():
+    # cai 30% e se recupera totalmente: comprar na queda deve superar guardar no CDI
+    s = serie([100.0] * 260 + list(np.linspace(100, 70, 120)) + list(np.linspace(70, 110, 300)))
+    r = simular_cenario_regra(s, variante="Só aumentar nas quedas")
+    assert r["agiu"] and r["aporte_extra"] > 0 and r["aportes_no_cdi"] == pytest.approx(r["aporte_extra"])
+    ind = indice_cdi_acumulado(s.index, None, cdi_aa=0.12)
+    r_cdi = simular_cenario_regra(s, variante="Só aumentar nas quedas", indice_cdi=ind)
+    assert r_cdi["aportes_no_cdi"] > r_cdi["aporte_extra"]  # o dinheiro guardado rendeu
+    res = {"A": rodar_em_varias_datas(simular_cenario_regra, s, None, list(VARIANTES_ACOES))}
+    df = resumir_cenarios(res, {"A": "Ações B3"}, "Manter").set_index("cenario")
+    l = df.loc["Só aumentar nas quedas"]
+    assert l["pct_agiu"] > 0 and l["pct_vence_quando_agiu"] == 100
+    # a referência ajustada para 'aumentar' parte do mesmo dinheiro total
+    assert l["valor_de_100_ref_mediano"] != df.loc["Manter", "valor_de_100_mediano"]
+
+
+def test_vitorias_empates_e_derrotas_somam_100():
+    s, d = _fii([100.0] * 252 + list(np.linspace(100, 70, 300)) + list(np.linspace(70, 95, 450)))
+    res = {"F": rodar_em_varias_datas(simular_rendimentos_fii, s, d, list(ESTRATEGIAS_FII))}
+    df = resumir_cenarios(res, {"F": "FIIs"}, "Não reinvestir")
+    for _, l in df[df["cenario"] != "Não reinvestir"].iterrows():
+        assert l["pct_vence"] + l["pct_empata"] + l["pct_perde"] == pytest.approx(100)
+    frase = frase_evidencia(df, "FIIs", "CDI + compra na queda (preço médio)", "Não reinvestir",
+                            "FIIs", "R$", "FII", rotulo_referencia="guardar no CDI sem comprar")
+    assert "guardar no CDI sem comprar" in frase and "chegou a agir" in frase

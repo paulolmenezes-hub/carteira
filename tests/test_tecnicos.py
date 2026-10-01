@@ -110,3 +110,43 @@ class TestCalcularIndicadoresTecnicos:
         assert tec is not None
         assert abs(tec.dist_minima_pct) < 50
         assert tec.n_dias_truncados > 0
+
+
+class TestLimpezaNaoApagaQuedasReais:
+    """Regressão (Sprint 4): a limpeza descartava qualquer trecho antigo 60%
+    acima/abaixo do preço atual, apagando a história de ativos que caíram de
+    verdade (ex.: FIIs de recebíveis com inadimplência) — viés de sobrevivência."""
+
+    def _serie(self, valores):
+        s = pd.Series(valores, dtype=float)
+        s.index = pd.bdate_range("2021-01-04", periods=len(s))
+        return s
+
+    def test_queda_gradual_de_80_por_cento_e_mantida(self):
+        rng = np.random.default_rng(5)
+        tendencia = np.linspace(100, 20, 1000)
+        serie = self._serie(tendencia * (1 + rng.normal(0, 0.01, 1000)))
+        limpa, _, n_truncados = limpar_outliers_precos(serie)
+        assert n_truncados == 0 and len(limpa) == 1000
+
+    def test_alta_gradual_de_300_por_cento_e_mantida(self):
+        serie = self._serie(np.linspace(10, 40, 800))
+        assert limpar_outliers_precos(serie)[2] == 0
+
+    def test_grupamento_10_para_1_abrupto_e_descartado(self):
+        rng = np.random.default_rng(6)
+        antes = 9 + rng.normal(0, 0.05, 600)
+        depois = 90 + rng.normal(0, 0.5, 400)
+        limpa, _, n_truncados = limpar_outliers_precos(self._serie(np.concatenate([antes, depois])))
+        assert 600 <= n_truncados <= 615
+        assert limpa.min() > 80
+
+    def test_queda_real_seguida_de_grupamento(self):
+        # cota cai de 50 para 10 ao longo de 2 anos (real) e depois agrupa 10:1
+        queda = np.linspace(50, 10, 500)
+        depois = np.full(300, 100.0)
+        limpa, _, n_truncados = limpar_outliers_precos(self._serie(np.concatenate([queda, depois])))
+        assert n_truncados >= 500 and limpa.min() > 80
+
+    def test_serie_curta_sem_janela_suficiente(self):
+        assert limpar_outliers_precos(self._serie([10.0] * 15))[2] == 0
