@@ -20,7 +20,11 @@ def baixar_precos(ticker: str, periodo: str) -> pd.Series:
     dados — quem chama decide o que fazer (o motor de análise trata isso
     como "dados insuficientes", não como erro fatal).
     """
-    hist = yf.download(ticker, period=periodo, progress=False)
+    # auto_adjust=False: o "Close" fica ajustado só por desdobramento/grupamento,
+    # SEM embutir proventos. Desde o fim de 2024 o padrão do yfinance é True,
+    # o que ajusta o preço histórico pelos dividendos/rendimentos pagos — e,
+    # como o pacote soma os proventos à parte, eles seriam contados duas vezes.
+    hist = yf.download(ticker, period=periodo, progress=False, auto_adjust=False)
     if hist.empty:
         return pd.Series(dtype=float)
 

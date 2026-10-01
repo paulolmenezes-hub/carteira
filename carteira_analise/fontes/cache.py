@@ -97,7 +97,9 @@ class FonteComCache:
         return json.loads(valor)
 
     def baixar_precos(self, ticker: str, periodo: str) -> pd.Series:
-        chave = f"precos:{ticker}:{periodo}"
+        # "v2": preços sem ajuste por proventos (ver fontes/yahoo.py). A versão
+        # na chave impede que preços ajustados guardados antes sejam reusados.
+        chave = f"precos_v2:{ticker}:{periodo}"
         em_cache = self._get(chave)
         if em_cache is not None:
             return em_cache
