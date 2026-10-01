@@ -48,7 +48,8 @@ def limpar_outliers_precos(
     janela: int = 21,
     limite: float = 0.35,
     iteracoes: int = 3,
-    limite_nivel: float = 0.6,
+    janela_salto: int = 10,
+    fator_salto: float = 3.0,
 ) -> tuple[pd.Series, int, int]:
     """Corrige preços claramente errados em duas etapas, NESTA ORDEM:
 
@@ -61,13 +62,13 @@ def limpar_outliers_precos(
        levando a truncar (descartar) uma quantidade enorme de dados bons só
        por causa de um erro de poucos dias.
 
-    2) Bloco antigo fora de escala (ex.: agrupamento de cotas não ajustado
-       retroativamente): SÓ DEPOIS de (1), compara cada preço remanescente
-       com a mediana dos últimos 60 dias (a cotação atual de fato). Um
-       trecho antigo severamente fora dessa faixa — e que sobreviveu à
-       limpeza local porque é consistente com seus próprios vizinhos — é
-       DESCARTADO por completo; interpolar seria arriscado quando o bloco
-       é grande.
+    2) Descontinuidade de patamar (ex.: agrupamento de cotas não ajustado
+       retroativamente): SÓ DEPOIS de (1), procura o ponto em que o preço
+       muda de escala de um dia para o outro (mediana de 10 pregões antes x
+       depois, 3 vezes ou mais) e DESCARTA o trecho anterior a ele.
+       Quedas e altas reais, que são graduais, são mantidas — descartá-las
+       apagaria a história dos ativos que mais caíram (viés de
+       sobrevivência).
 
     Retorna (serie_limpa, total_pontos_corrigidos, dias_truncados).
     """
@@ -85,17 +86,34 @@ def limpar_outliers_precos(
         serie = serie.interpolate().ffill().bfill()
         total_corrigidos += n_suspeitos
 
-    referencia_recente = serie.iloc[-60:].median() if len(serie) >= 60 else serie.median()
-    desvio_referencia = (serie - referencia_recente).abs() / referencia_recente
-    suspeitos_nivel = desvio_referencia > limite_nivel
-
+    # 2) Descontinuidade de patamar (grupamento/desdobramento de cotas não
+    #    ajustado pelo provedor): o preço muda de escala de um dia para o outro
+    #    e PERMANECE no novo patamar. É detectada comparando a mediana dos
+    #    `janela_salto` pregões antes e depois de cada ponto: uma mudança de
+    #    `fator_salto` vezes ou mais marca o corte, e o trecho anterior é
+    #    descartado. Quedas e altas REAIS, mesmo grandes, acontecem ao longo de
+    #    semanas ou meses e são mantidas. A versão anterior comparava todo o
+    #    histórico com o preço atual e descartava qualquer trecho 60% acima ou
+    #    abaixo dele — o que apagava justamente a história dos ativos que mais
+    #    caíram (viés de sobrevivência no backtest).
     n_truncados = 0
-    if suspeitos_nivel.any():
-        ultimo_suspeito_pos = int(np.where(suspeitos_nivel.values)[0].max())
-        if ultimo_suspeito_pos < len(serie) - 1:
-            n_truncados = ultimo_suspeito_pos + 1
-            serie = serie.iloc[ultimo_suspeito_pos + 1 :]
-            total_corrigidos += n_truncados
+    k = janela_salto
+    if len(serie) >= 2 * k:
+        antes = serie.rolling(k).median().shift(1)
+        depois = serie[::-1].rolling(k).median()[::-1]
+        razao = np.maximum(antes / depois, depois / antes)
+        saltos = np.where((razao >= fator_salto).values)[0]
+        if len(saltos):
+            corte = int(saltos.max())
+            alvo = float(depois.iloc[corte])
+            # avança até o primeiro ponto já no novo patamar (a etapa 1 pode ter
+            # suavizado a fronteira em alguns pregões)
+            while corte < len(serie) - 1 and abs(serie.iloc[corte] - alvo) / alvo > limite:
+                corte += 1
+            if 0 < corte < len(serie) - 1:
+                n_truncados = corte
+                serie = serie.iloc[corte:]
+                total_corrigidos += n_truncados
 
     return serie, total_corrigidos, n_truncados
 

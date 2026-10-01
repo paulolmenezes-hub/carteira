@@ -221,6 +221,7 @@ def simular_cenario_regra(fechamento: pd.Series, dividendos=None, variante: str 
 
     estado = novo_estado(capital / precos[0], precos[0])
     caixa = CaixaRendaFixa()
+    aportes_no_cdi = CaixaRendaFixa()  # contrafactual: o mesmo dinheiro novo guardado no CDI
     aportado = capital
     n_vendas = n_compras = 0
     for i, preco in enumerate(precos):
@@ -233,6 +234,7 @@ def simular_cenario_regra(fechamento: pd.Series, dividendos=None, variante: str 
         if decisao["acao"] == "comprar":
             q = estado["quantidade"] * decisao["fracao"]
             aportado += q * preco
+            aportes_no_cdi.depositar(datas[i], q * preco, indice[i])
             aplicar_compra(estado, q, preco, eh_reforco=True)
             n_compras += 1
         elif decisao["acao"] == "vender":
@@ -244,10 +246,13 @@ def simular_cenario_regra(fechamento: pd.Series, dividendos=None, variante: str 
     valor_final = estado["quantidade"] * precos[-1] + caixa.valor_liquido(datas[-1], indice[-1])
     return {
         "variante": variante, "data_inicio": datas[0], "data_fim": datas[-1],
-        "aportado": aportado, "valor_final": valor_final,
+        "aportado": aportado, "aporte_extra": aportado - capital, "valor_final": valor_final,
         "valor_de_100": 100 * valor_final / aportado,
         "retorno_aa": _retorno_anual(valor_final, aportado, datas[0], datas[-1]),
-        "n_compras": n_compras, "n_vendas": n_vendas,
+        "n_compras": n_compras, "n_vendas": n_vendas, "agiu": (n_compras + n_vendas) > 0,
+        # valor, no fim, do dinheiro novo usado nas compras se tivesse ficado no CDI:
+        # é o que a referência ("manter") recebe para a comparação ser justa
+        "aportes_no_cdi": aportes_no_cdi.valor_liquido(datas[-1], indice[-1]),
     }
 
 
@@ -341,7 +346,7 @@ def simular_rendimentos_fii(fechamento: pd.Series, dividendos=None,
         "retorno_aa": _retorno_anual(valor_final, capital, datas[0], datas[-1]),
         "cotas_finais": cotas, "caixa_final": caixa_final,
         "renda_mensal_final": cotas * float(ult12) / 12,
-        "n_compras": n_compras, "houve_gatilho": dias_gatilho > 0,
+        "n_compras": n_compras, "houve_gatilho": dias_gatilho > 0, "agiu": n_compras > 0,
     }
 
 
@@ -364,43 +369,81 @@ def rodar_em_varias_datas(simular, fechamento, dividendos, nomes, n_datas: int =
     return {k: v for k, v in saida.items() if v}
 
 
+TOLERANCIA_EMPATE = 1e-6  # diferença relativa abaixo disso conta como empate
+
+
+def _referencia_ajustada(base: dict, cenario: dict) -> float:
+    """Valor final da referência na mesma data de entrada, recebendo o MESMO
+    dinheiro novo que o cenário usou, guardado no CDI (comparação justa para
+    'aumentar nas quedas' e 'regra completa'). Sem aportes, é o próprio
+    valor final da referência."""
+    return base["valor_final"] + cenario.get("aportes_no_cdi", 0.0)
+
+
 def resumir_cenarios(resultados: dict[str, dict[str, list[dict]]], tipo_por_ticker: dict[str, str],
                      referencia: str) -> pd.DataFrame:
-    """Agrega por tipo de ativo e cenário:
-    - casos: pares (ativo, data de entrada) avaliados;
-    - retorno anual mediano;
-    - % dos casos em que o cenário superou a referência (mesmo ativo e data);
-    - R$ 100 viraram (mediana entre ativos, na entrada mais antiga ~4 anos);
-    - % dos casos com compra na queda (só estratégias de FII com gatilho)."""
+    """Agrega por tipo de ativo e cenário. Cada caso é um par (ativo, data de
+    entrada), comparado com a referência na MESMA data e com o MESMO dinheiro
+    total (ver ``_referencia_ajustada``):
+
+    - pct_vence / pct_empata / pct_perde: resultado de todos os casos — empate
+      é quando o cenário não chegou a agir (ex.: a faixa nunca foi atingida);
+    - pct_agiu: % dos casos em que o cenário de fato comprou ou vendeu;
+    - pct_vence_quando_agiu: % de vitórias entre os casos em que agiu;
+    - retorno_aa_mediano: retorno anual mediano do cenário;
+    - valor_de_100_mediano / valor_de_100_ref_mediano: quanto R$ 100 viraram no
+      cenário e na referência ajustada (mediana entre ativos, entrada mais
+      antiga, ~4 anos);
+    - pct_com_compra_na_queda: % dos casos em que a faixa de queda foi
+      atingida (estratégias de FII com gatilho)."""
     linhas = []
     tipos = sorted({tipo_por_ticker[t] for t in resultados if t in tipo_por_ticker})
     for tipo in tipos:
         tickers = [t for t in resultados if tipo_por_ticker.get(t) == tipo and referencia in resultados[t]]
         if not tickers:
             continue
-        nomes = list(resultados[tickers[0]].keys())
-        for nome in nomes:
-            retornos, vitorias, comparaveis, de100, gatilhos = [], 0, 0, [], []
+        for nome in list(resultados[tickers[0]].keys()):
+            retornos, de100, de100_ref, gatilhos = [], [], [], []
+            vence = empata = perde = casos = agiu = vence_agiu = 0
             for t in tickers:
                 lista = resultados[t].get(nome, [])
                 ref = {r["data_inicio"]: r for r in resultados[t][referencia]}
-                for r in lista:
+                for k, r in enumerate(lista):
                     if r["retorno_aa"] is not None:
                         retornos.append(r["retorno_aa"])
-                    base = ref.get(r["data_inicio"])
-                    if base is not None and nome != referencia:
-                        comparaveis += 1
-                        vitorias += r["valor_de_100"] > base["valor_de_100"] + 1e-9
                     if "houve_gatilho" in r:
                         gatilhos.append(r["houve_gatilho"])
-                if lista:
-                    de100.append(lista[0]["valor_de_100"])
+                    base = ref.get(r["data_inicio"])
+                    if base is None:
+                        continue
+                    valor_ref = _referencia_ajustada(base, r)
+                    if k == 0:
+                        de100.append(r["valor_de_100"])
+                        de100_ref.append(100 * valor_ref / r["aportado"])
+                    if nome == referencia:
+                        continue
+                    casos += 1
+                    dif = (r["valor_final"] - valor_ref) / valor_ref
+                    if abs(dif) <= TOLERANCIA_EMPATE:
+                        empata += 1
+                    elif dif > 0:
+                        vence += 1
+                    else:
+                        perde += 1
+                    if r.get("agiu"):
+                        agiu += 1
+                        vence_agiu += dif > TOLERANCIA_EMPATE
+            pct = (lambda n: 100 * n / casos) if casos else (lambda n: None)
             linhas.append({
                 "tipo": tipo, "cenario": nome, "ativos": len(tickers),
                 "casos": sum(len(resultados[t].get(nome, [])) for t in tickers),
                 "retorno_aa_mediano": float(np.median(retornos)) if retornos else None,
-                "pct_supera_referencia": (100 * vitorias / comparaveis) if comparaveis else None,
+                "pct_vence": pct(vence), "pct_empata": pct(empata), "pct_perde": pct(perde),
+                "pct_agiu": pct(agiu),
+                "pct_vence_quando_agiu": (100 * vence_agiu / agiu) if agiu else None,
+                "pct_supera_referencia": pct(vence),  # compatibilidade
                 "valor_de_100_mediano": float(np.median(de100)) if de100 else None,
+                "valor_de_100_ref_mediano": float(np.median(de100_ref)) if de100_ref else None,
                 "pct_com_compra_na_queda": (100 * float(np.mean(gatilhos))
                                             if gatilhos and "queda" in nome else None),
             })
@@ -408,17 +451,30 @@ def resumir_cenarios(resultados: dict[str, dict[str, list[dict]]], tipo_por_tick
 
 
 def frase_evidencia(df: pd.DataFrame, tipo: str, cenario: str, referencia: str,
-                    rotulo_tipo: str, moeda: str = "R$", rotulo_singular: str | None = None) -> str | None:
-    """Frase curta para o card ("o que o histórico mostra")."""
+                    rotulo_tipo: str, moeda: str = "R$", rotulo_singular: str | None = None,
+                    rotulo_referencia: str | None = None) -> str | None:
+    """Frase curta para o card ("o que o histórico mostra").
+
+    Usa a referência AJUSTADA (mesmo dinheiro total) e separa os casos em
+    que o cenário de fato agiu — empates (faixa não atingida) não contam
+    como derrota."""
     sub = df[(df["tipo"] == tipo)].set_index("cenario")
     if cenario not in sub.index or referencia not in sub.index:
         return None
-    c, r = sub.loc[cenario], sub.loc[referencia]
+    c = sub.loc[cenario]
     n = int(c["ativos"])
     ativos = f"1 {rotulo_singular or rotulo_tipo}" if n == 1 else f"{n} {rotulo_tipo}"
+
     def nome(texto):  # inicial em minúscula, exceto quando começa com sigla (ex.: CDI)
         return texto if texto[:2].isupper() else texto[0].lower() + texto[1:]
-    return (f"em {ativos}, nos últimos 4 anos, cada {moeda} 100 viraram "
-            f"{moeda} {c['valor_de_100_mediano']:.0f} com \"{nome(cenario)}\" e {moeda} "
-            f"{r['valor_de_100_mediano']:.0f} com \"{nome(referencia)}\" (mediana). Começando em "
-            f"datas diferentes, \"{nome(cenario)}\" superou em {c['pct_supera_referencia']:.0f}% dos casos.")
+
+    ref = rotulo_referencia or nome(referencia)
+    frase = (f"em {ativos}, nos últimos 4 anos, cada {moeda} 100 viraram "
+             f"{moeda} {c['valor_de_100_mediano']:.0f} com \"{nome(cenario)}\" e {moeda} "
+             f"{c['valor_de_100_ref_mediano']:.0f} com \"{ref}\" (mediana).")
+    if pd.isna(c["pct_agiu"]) or c["pct_agiu"] == 0:
+        return frase + " Nas datas de entrada testadas, a faixa nunca foi atingida."
+    frase += f" Começando em datas diferentes, o cenário chegou a agir em {c['pct_agiu']:.0f}% dos casos"
+    if not pd.isna(c["pct_vence_quando_agiu"]):
+        frase += f"; quando agiu, superou em {c['pct_vence_quando_agiu']:.0f}% deles"
+    return frase + "."
