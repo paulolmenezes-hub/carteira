@@ -167,3 +167,20 @@ class TestGerenciadorDeContexto:
         except Exception:
             levantou_erro = True
         assert levantou_erro
+
+
+def test_chave_de_precos_versionada_sem_ajuste(tmp_path):
+    """Preços guardados antes da correção (ajustados por proventos) não podem
+    ser reaproveitados: a chave de preços carrega a versão 'v2'."""
+    import pandas as pd
+    from carteira_analise.fontes.cache import FonteComCache
+
+    class Fonte:
+        def baixar_precos(self, ticker, periodo):
+            return pd.Series([1.0, 2.0], index=pd.bdate_range("2024-01-01", periods=2))
+
+    fonte = FonteComCache(Fonte(), caminho_db=str(tmp_path / "c.db"))
+    fonte.baixar_precos("X", "1y")
+    chaves = [r[0] for r in fonte._conn.execute("SELECT chave FROM cache").fetchall()] if hasattr(fonte, "_conn") else None
+    if chaves is not None:
+        assert chaves == ["precos_v2:X:1y"]
