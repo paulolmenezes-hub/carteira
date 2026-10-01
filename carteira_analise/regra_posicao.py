@@ -123,11 +123,15 @@ def decidir_posicao(preco, estado, config=None, compra_permitida=True, motivos_b
 
     # ---- Zona de manter ----
     if var >= 0:
-        motivo = (f"subiu {var*100:.0f}% sobre o seu preço médio. Ainda não é hora de vender parte "
-                  f"(a regra realiza lucro a partir de +{faixas_venda[0][0]*100:.0f}%).")
+        motivo = f"subiu {var*100:.0f}% sobre o seu preço médio."
+        if faixas_venda:  # variante sem faixas de venda ('só aumentar') não cita realização
+            motivo += (f" Ainda não é hora de vender parte "
+                       f"(a regra realiza lucro a partir de +{faixas_venda[0][0]*100:.0f}%).")
     else:
-        motivo = (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio. Queda pequena: mantenha a "
-                  f"posição (a regra só aumenta a posição a partir de {faixas_compra[-1][0]*100:.0f}%).")
+        motivo = f"caiu {abs(var)*100:.0f}% sobre o seu preço médio."
+        if faixas_compra:  # variante sem faixas de compra ('só realizar') não cita aumento
+            motivo += (f" Queda pequena: mantenha a posição (a regra só aumenta a posição "
+                       f"a partir de {faixas_compra[-1][0]*100:.0f}%).")
     return {'acao': 'manter', 'fracao': 0.0, 'variacao': var, 'faixa': None, 'motivo': motivo}
 
 
