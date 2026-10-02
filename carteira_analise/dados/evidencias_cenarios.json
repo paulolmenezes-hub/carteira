@@ -1,0 +1,22 @@
+{
+  "periodo": "2022 e 2026",
+  "gerado_em": "2026-10-01",
+  "fonte": "Seção 12 do notebook: backtest dos cenários com 28 FIIs, 12 ações B3, 2 ETFs B3, 12 ETFs dos EUA e 1 ação dos EUA; até 13 datas de entrada por ativo; caixa em CDB de 100% do CDI real (Banco Central), lote a lote, com IR e IOF.",
+  "acoes": {
+    "Ações B3": {"ativos": 12,
+      "realizar": {"cenario": 290, "referencia": 307, "pct_agiu": 70, "pct_vence_quando_agiu": 72},
+      "aumentar": {"cenario": 305, "referencia": 289, "pct_agiu": 40, "pct_vence_quando_agiu": 65}},
+    "Ações EUA": {"ativos": 1,
+      "realizar": {"cenario": 155, "referencia": 178, "pct_agiu": 62, "pct_vence_quando_agiu": 38},
+      "aumentar": {"cenario": 178, "referencia": 178, "pct_agiu": 0, "pct_vence_quando_agiu": null}},
+    "ETFs B3": {"ativos": 2,
+      "realizar": {"cenario": 179, "referencia": 186, "pct_agiu": 88, "pct_vence_quando_agiu": 43},
+      "aumentar": {"cenario": 188, "referencia": 186, "pct_agiu": 8, "pct_vence_quando_agiu": 100}},
+    "ETFs EUA": {"ativos": 12,
+      "realizar": {"cenario": 172, "referencia": 222, "pct_agiu": 69, "pct_vence_quando_agiu": 27},
+      "aumentar": {"cenario": 222, "referencia": 222, "pct_agiu": 25, "pct_vence_quando_agiu": 74}}
+  },
+  "fiis": {"ativos": 28, "contexto": "período de Selic alta", "nao_reinvestir": 140,
+    "reinvestir_100": {"cenario": 133, "pct_perde": 84},
+    "compra_na_queda": {"cenario": 139, "pct_agiu": 59, "pct_vence_quando_agiu": 48}}
+}

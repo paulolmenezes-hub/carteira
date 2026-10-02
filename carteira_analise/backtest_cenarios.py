@@ -478,3 +478,33 @@ def frase_evidencia(df: pd.DataFrame, tipo: str, cenario: str, referencia: str,
     if not pd.isna(c["pct_vence_quando_agiu"]):
         frase += f"; quando agiu, superou em {c['pct_vence_quando_agiu']:.0f}% deles"
     return frase + "."
+
+
+def exportar_evidencias(df_acoes: pd.DataFrame, df_fii: pd.DataFrame, periodo: str,
+                        gerado_em: str, fonte: str) -> dict:
+    """Monta o dicionário de ``carteira_analise/dados/evidencias_cenarios.json``
+    (lido pelo painel) a partir das tabelas de ``resumir_cenarios``."""
+    def num(v):
+        return None if v is None or pd.isna(v) else round(float(v))
+
+    acoes = {}
+    for tipo in (df_acoes["tipo"].unique() if not df_acoes.empty else []):
+        sub = df_acoes[df_acoes["tipo"] == tipo].set_index("cenario")
+        grupo = {"ativos": int(sub["ativos"].iloc[0])}
+        for chave, cen in (("realizar", "Só realizar lucro nas faixas"), ("aumentar", "Só aumentar nas quedas")):
+            if cen in sub.index:
+                l = sub.loc[cen]
+                grupo[chave] = {"cenario": num(l["valor_de_100_mediano"]), "referencia": num(l["valor_de_100_ref_mediano"]),
+                                "pct_agiu": num(l["pct_agiu"]), "pct_vence_quando_agiu": num(l["pct_vence_quando_agiu"])}
+        acoes[tipo] = grupo
+    fiis = None
+    if not df_fii.empty:
+        sub = df_fii.set_index("cenario")
+        r100 = sub.loc["Reinvestir 100%"]
+        queda = sub.loc["CDI + compra na queda (preço médio)"]
+        fiis = {"ativos": int(r100["ativos"]), "contexto": "período de Selic alta",
+                "nao_reinvestir": num(sub.loc["Não reinvestir", "valor_de_100_mediano"]),
+                "reinvestir_100": {"cenario": num(r100["valor_de_100_mediano"]), "pct_perde": num(r100["pct_perde"])},
+                "compra_na_queda": {"cenario": num(queda["valor_de_100_mediano"]), "pct_agiu": num(queda["pct_agiu"]),
+                                    "pct_vence_quando_agiu": num(queda["pct_vence_quando_agiu"])}}
+    return {"periodo": periodo, "gerado_em": gerado_em, "fonte": fonte, "acoes": acoes, "fiis": fiis}
