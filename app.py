@@ -32,7 +32,10 @@ import streamlit as st
 from carteira_analise.carteira import analisar_ativo
 from carteira_analise.fontes import yahoo as fonte_yahoo
 from carteira_analise.fontes.cache import FonteComCache
-from carteira_analise.posicoes import fundamentos_de_resultado, gerar_posicoes
+from carteira_analise.backtest_cenarios import indice_cdi_acumulado
+from carteira_analise.cenarios import carregar_evidencias, frase_evidencia_fiis, gerar_cenarios
+from carteira_analise.fontes.bcb import buscar_cdi_diario
+from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
     achar_aba,
@@ -645,201 +648,204 @@ def _sem_formula(texto: str) -> str:
     return texto.replace("$", "\\$")
 
 
-# Visual de cada posição: cor de fundo (gradiente), ícone e rótulo curto
-_ESTILO_POSICAO = {
-    "aumentar": ("linear-gradient(135deg, #5fbf6a 0%, #3a9a47 100%)", "🛒", "Aumentar posição"),
-    "manter": ("linear-gradient(135deg, #b3aaa6 0%, #8f8783 100%)", "⏸️", "Manter posição"),
-    "vender_parte": ("linear-gradient(135deg, #4f6bff 0%, #2f45e0 100%)", "💰", "Vender parte"),
-    "venda_total": ("linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)", "🏁", "Venda total"),
+# ---------------------------------------------------------------------------
+# Cenários comparativos por ativo (aba Dashboard)
+# ---------------------------------------------------------------------------
+
+CDI_RESERVA_AA = 0.14  # usado só se a API do Banco Central estiver fora do ar
+
+
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _cdi_bcb_em_cache(inicio: str, fim: str):
+    return buscar_cdi_diario(inicio, fim)
+
+
+def _cdi_do_banco_central():
+    """CDI diário dos últimos ~2 anos (série 12 do Banco Central), em cache
+    por 12h. Devolve (série ou None, aviso ou None)."""
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    serie = _cdi_bcb_em_cache(str(hoje - pd.Timedelta(days=800)), str(hoje))
+    if serie is None:
+        return None, (f"CDI do Banco Central indisponível no momento — o retrospecto dos FIIs usa "
+                      f"{CDI_RESERVA_AA * 100:.0f}% ao ano para o dinheiro em caixa.")
+    return serie, None
+
+
+# Cor de fundo (gradiente), ícone e cor de destaque de cada situação. Sem cinza
+# e sem verde/vermelho puros (que seriam lidos como "compre"/"venda").
+_ESTILO_SITUACAO = {
+    "realizacao": ("linear-gradient(135deg,#4f6bff,#2f45e0)", "📈", "#2f45e0"),
+    "queda": ("linear-gradient(135deg,#f0a93b,#d9831c)", "📉", "#d9831c"),
+    "fora": ("linear-gradient(135deg,#2bb3a3,#0f7f73)", "↔️", "#0f7f73"),
 }
-
-
-def _sparkline_svg(serie: list, preco_medio: float | None) -> str:
-    """Mini-gráfico (SVG) dos últimos ~6 meses de preço, com o preço médio
-    do usuário em linha tracejada quando ele cabe na escala."""
-    if not serie or len(serie) < 2:
-        return ""
-    largura, altura = 130, 42
-    valores = list(serie)
-    referencia = [v for v in valores] + ([preco_medio] if preco_medio else [])
-    minimo, maximo = min(referencia), max(referencia)
-    amplitude = (maximo - minimo) or 1.0
-
-    def y(v):
-        return altura - 3 - (v - minimo) / amplitude * (altura - 6)
-
-    passo = largura / (len(valores) - 1)
-    pontos = " ".join(f"{i * passo:.1f},{y(v):.1f}" for i, v in enumerate(valores))
-    linha_pm = ""
-    if preco_medio:
-        yp = y(preco_medio)
-        linha_pm = (f"<line x1='0' y1='{yp:.1f}' x2='{largura}' y2='{yp:.1f}' stroke='white' "
-                    f"stroke-opacity='0.55' stroke-width='1' stroke-dasharray='3 3'/>")
-    return (f"<svg width='{largura}' height='{altura}' viewBox='0 0 {largura} {altura}' "
-            f"xmlns='http://www.w3.org/2000/svg'>{linha_pm}"
-            f"<polyline points='{pontos}' fill='none' stroke='white' stroke-width='2' "
-            f"stroke-linecap='round' stroke-linejoin='round'/></svg>")
-
-
-def _texto_aviso_decisao(card: dict) -> str:
-    """Aviso de cada card: a informação vem da regra de faixas definida
-    (ex.: 'vender parte: realizar 10%', no caso 19 cotas), e a decisão é
-    sempre do usuário (Seção 3.2.1 do Relatório)."""
-    m = re.search(r"(\d+) cota", card.get("posicao", ""))
-    fracao = card.get("fracao") or 0.0
-    categoria = card.get("categoria", "manter")
-    if m and categoria == "vender_parte":
-        regra = f"vender parte: realizar {fracao * 100:.0f}%"
-    elif m and categoria == "venda_total":
-        regra = "venda total"
-    elif m and categoria == "aumentar":
-        regra = f"aumentar posição em {fracao * 100:.0f}%"
-    else:
-        return "Informação calculada pela regra de faixas. A decisão é sempre sua."
-    return (f"Informação calculada pela regra de faixas ({regra}), no caso {m.group(1)} cota(s). "
-            f"A decisão é sempre sua.")
-
-
-def _html_card_posicao(card: dict) -> str:
-    """Um card colorido por ativo, no estilo 'dashboard': ícone, variação,
-    ação em destaque, mini-gráfico, motivo e renda estimada."""
-    categoria = card.get("categoria", "manter")
-    fundo, icone, rotulo = _ESTILO_POSICAO.get(categoria, _ESTILO_POSICAO["manter"])
-    moeda = card.get("moeda", "R$")
-    var = card.get("variacao")
-    chip = f"{var * 100:+.0f}%" if var is not None else ""
-
-    # Ordem fixa do card: 1º o posicionamento; 2º a quantidade de cotas —
-    # a negociar (aumentar, vender parte, venda total) ou, quando é manter
-    # posição, a quantidade que o usuário já tem na carteira.
-    m = re.search(r"(\d+) cota", card["posicao"])
-    if categoria in ("aumentar", "vender_parte", "venda_total") and m:
-        quantidade = m.group(1)
-        detalhe_quantidade = {"aumentar": "cota(s) a comprar", "vender_parte": "cota(s) a vender",
-                              "venda_total": "cota(s) a vender — toda a posição"}[categoria]
-    else:
-        quantidade = f"{card.get('quantidade', 0):.0f}"
-        detalhe_quantidade = "cota(s) na carteira"
-
-    linhas = [l for l in card["linhas"] if not l.startswith("Renda estimada")]
-    renda = next((l for l in card["linhas"] if l.startswith("Renda estimada")), "")
-    precos = ""
-    if card.get("preco_medio") is not None and card.get("preco_atual") is not None:
-        precos = (f"Preço médio {formatar_valor(card['preco_medio'], moeda)} · "
-                  f"hoje {formatar_valor(card['preco_atual'], moeda)}")
-
-    aviso_html = (f"<div style='margin-top:10px;font-size:0.75em;opacity:0.85;font-style:italic'>"
-                  f"{html.escape(_texto_aviso_decisao(card))}</div>")
-    motivo_html = "".join(f"<div style='margin-top:4px'>{html.escape(l)}</div>" for l in linhas)
-    renda_html = (f"<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.3);"
-                  f"font-size:0.85em'>💵 {html.escape(renda)}</div>") if renda else ""
-
-    return f"""
-<div style="background:{fundo};color:white;border-radius:16px;padding:16px 18px;
-            box-shadow:0 6px 18px rgba(0,0,0,0.15);display:flex;flex-direction:column;
-            font-family:'Source Sans Pro',sans-serif;">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <div style="display:flex;align-items:center;gap:10px">
-      <div style="background:rgba(255,255,255,0.22);border-radius:10px;width:38px;height:38px;
-                  display:flex;align-items:center;justify-content:center;font-size:20px">{icone}</div>
-      <div style="font-size:1.1em;font-weight:700">{html.escape(card["ticker"])}</div>
-    </div>
-    <div title="variação sobre o seu preço médio" style="font-size:0.85em;font-weight:600;
-                background:rgba(255,255,255,0.2);border-radius:999px;padding:3px 10px;
-                white-space:nowrap">{html.escape(chip)}</div>
-  </div>
-  <div style="font-size:1.45em;font-weight:700;line-height:1.15;margin-top:12px">{html.escape(rotulo)}</div>
-  <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:4px">
-    <div>
-      <div style="font-size:2.1em;font-weight:700;line-height:1.05">{quantidade}</div>
-      <div style="font-size:0.9em;opacity:0.95">{html.escape(detalhe_quantidade)}</div>
-    </div>
-    {_sparkline_svg(card.get("serie_recente") or [], card.get("preco_medio"))}
-  </div>
-  <div style="margin-top:8px;font-size:0.82em;opacity:0.9">{html.escape(precos)}</div>
-  <div style="margin-top:8px;font-size:0.88em;line-height:1.35">{motivo_html}</div>
-  {renda_html}
-  {aviso_html}
-</div>"""
-
-
-def _html_resumo_posicoes(cards: list) -> str:
-    """Linha de resumo no topo: quantos ativos pedem cada ação."""
-    contagem = [
-        (_ESTILO_POSICAO[cat][1], _ESTILO_POSICAO[cat][2],
-         sum(1 for c in cards if c.get("categoria") == cat), cor)
-        for cat, cor in (("aumentar", "#3a9a47"), ("manter", "#8f8783"),
-                         ("vender_parte", "#2f45e0"), ("venda_total", "#6d28d9"))
-    ]
-    blocos = "".join(f"""
-<div style="background:white;color:#1f2937;border-radius:16px;padding:14px 16px;
-            box-shadow:0 4px 14px rgba(0,0,0,0.10);border-top:4px solid {cor}">
-  <div style="background:{cor};border-radius:10px;width:34px;height:34px;display:flex;
-              align-items:center;justify-content:center;font-size:18px">{icone}</div>
-  <div style="font-size:1.9em;font-weight:700;margin-top:8px;line-height:1">{n}</div>
-  <div style="font-size:0.9em;color:#4b5563">{rotulo}</div>
-</div>""" for icone, rotulo, n, cor in contagem)
-    return (f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));"
-            f"gap:14px;margin-bottom:18px'>{blocos}</div>")
-
-
 _NOME_GRUPO = {"Ações": "Ações", "FIIs": "Fundos Imobiliários (FIIs)", "ETF": "ETFs", "Outros": "Outros ativos"}
 
 
-def _html_grupos_posicoes(cards: list) -> str:
-    """Cards agrupados por mercado (B3, EUA) e tipo de ativo (Ações, FIIs,
-    ETFs), na ordem já definida por ``gerar_posicoes``, com um título por grupo."""
+def _fmt_celula(fmt: str, valor, moeda: str) -> str:
+    """Formata uma célula das tabelas de cenário."""
+    if valor is None:
+        return "—"
+    if fmt == "caixa":
+        tipo, v = valor
+        return ("+" if v > 0 else "−") + formatar_valor(abs(v), moeda) + f" ({tipo})"
+    if fmt == "sinal":
+        return ("+" if valor > 0 else "−" if valor < 0 else "") + formatar_valor(abs(valor), moeda)
+    if fmt == "pct":
+        return f"{valor * 100:+.0f}%".replace("-", "−")
+    if fmt == "cotas":
+        return f"{valor:.0f}" if abs(valor - round(valor)) < 1e-9 else f"{valor:.2f}"
+    return formatar_valor(valor, moeda)
+
+
+def _html_tabela(colunas: list, linhas: list, moeda: str) -> str:
+    th = "".join(f"<th style='text-align:right;padding:3px 6px;font-weight:600;white-space:nowrap'>"
+                 f"{html.escape(c)}</th>" for c in colunas)
+    trs = ""
+    for nome, fmt, *valores in linhas:
+        tds = "".join(f"<td style='text-align:right;padding:3px 6px;white-space:nowrap'>"
+                      f"{html.escape(_fmt_celula(fmt, v, moeda))}</td>" for v in valores)
+        trs += f"<tr><td style='padding:3px 6px;opacity:.9;white-space:nowrap'>{html.escape(nome)}</td>{tds}</tr>"
+    return ("<table style='width:100%;border-collapse:collapse;font-size:.8em;margin-top:6px;"
+            f"background:rgba(0,0,0,.12);border-radius:8px'><tr><th></th>{th}</tr>{trs}</table>")
+
+
+def _html_card_cenario(card: dict) -> str:
+    """Card de um ativo: situação, preços e contexto de mercado; tabela de
+    cenários (ações/ETFs na faixa) ou próximas faixas; para FIIs, o
+    retrospecto de reinvestimento dos últimos 12 meses."""
+    fundo, icone, _ = _ESTILO_SITUACAO[card["situacao"]]
+    moeda = card["moeda"]
+    var = card["variacao"]
+    partes = [
+        f"<div style='font-size:1.3em;font-weight:700;margin-top:10px'>{html.escape(card['rotulo_situacao'])}</div>",
+        f"<div style='font-size:.82em;opacity:.92'>Preço médio {formatar_valor(card['preco_medio'], moeda)} · "
+        f"hoje {formatar_valor(card['preco_atual'], moeda)}</div>",
+    ]
+    if card.get("abaixo_da_maxima_12m") is not None:
+        d = card["abaixo_da_maxima_12m"]
+        texto = "na máxima" if d < 0.005 else f"{d * 100:.0f}% abaixo da máxima"
+        partes.append(f"<div style='font-size:.82em;opacity:.92'>Mercado: a cota está {texto} dos últimos 12 meses</div>")
+    tabela = card.get("tabela")
+    if tabela:
+        partes.append(f"<div style='margin-top:10px;font-weight:600;font-size:.9em'>{html.escape(tabela['titulo'])}</div>")
+        partes.append(_html_tabela(tabela["colunas"], tabela["linhas"], moeda))
+    else:
+        f = card["faixas"]
+        partes.append(f"<div style='margin-top:10px;font-size:.85em'>Próximas faixas: realização a partir de "
+                      f"{formatar_valor(f['realizacao'], moeda)} (+25%) · aumento abaixo de "
+                      f"{formatar_valor(f['queda'], moeda)} (−15%).</div>")
+        if card.get("renda_mensal") and not card.get("retrospecto"):
+            partes.append(f"<div style='margin-top:6px;font-size:.85em'>💵 Renda estimada: cerca de "
+                          f"{formatar_valor(card['renda_mensal'], moeda)} por mês.</div>")
+    for nota in card.get("notas", []):
+        partes.append(f"<div style='margin-top:6px;font-size:.82em'>ℹ️ {html.escape(nota)}</div>")
+    for alerta in card.get("alertas", []):
+        partes.append(f"<div style='margin-top:6px;font-size:.82em'>⚠️ Atenção: {html.escape(alerta)}.</div>")
+    retro = card.get("retrospecto")
+    if retro:
+        periodo = "nos últimos 12 meses" if retro["meses"] >= 12 else f"desde a compra ({retro['meses']} meses)"
+        partes.append("<div style='margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.3);"
+                      f"font-weight:600;font-size:.9em'>Rendimentos {html.escape(periodo)}: e se tivesse reinvestido?</div>")
+        partes.append(_html_tabela(retro["colunas"], retro["linhas"], moeda))
+        q = retro["compra_na_queda"]
+        if q["atingida"]:
+            texto_queda = (f"Compra na queda: a faixa (abaixo de {formatar_valor(q['preco_faixa'], moeda)}) foi atingida; "
+                           f"comprando com a reserva do CDI, hoje seriam {q['cotas']:.0f} cotas, renda de "
+                           f"{formatar_valor(q['renda_mensal'], moeda)}/mês e patrimônio de "
+                           f"{formatar_valor(q['patrimonio'], moeda)}.")
+        else:
+            texto_queda = (f"Compra na queda: faixa não atingida no período (abaixo de "
+                           f"{formatar_valor(q['preco_faixa'], moeda)}). Reserva no CDI: {formatar_valor(q['reserva'], moeda)}.")
+        partes.append(f"<div style='font-size:.78em;margin-top:6px'>{html.escape(texto_queda)}</div>")
+    if card.get("evidencia"):
+        partes.append("<div style='margin-top:10px;padding:6px 8px;background:rgba(255,255,255,.15);"
+                      f"border-radius:8px;font-size:.8em'>📊 <b>O que o histórico mostra:</b> {card['evidencia']}</div>")
+    partes.append("<div style='margin-top:8px;font-size:.72em;opacity:.85;font-style:italic'>"
+                  "Cenários para comparação, pela regra de faixas. A decisão é sempre sua.</div>")
+    return (f"<div style='background:{fundo};color:white;border-radius:16px;padding:16px 18px;"
+            f"box-shadow:0 6px 18px rgba(0,0,0,.15)'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+            f"<div style='display:flex;gap:10px;align-items:center'>"
+            f"<div style='background:rgba(255,255,255,.22);border-radius:10px;width:36px;height:36px;display:flex;"
+            f"align-items:center;justify-content:center;font-size:19px'>{icone}</div>"
+            f"<div style='font-weight:700;font-size:1.1em'>{html.escape(card['ticker'])}</div></div>"
+            f"<div title='variação sobre o seu preço médio' style='font-size:.85em;font-weight:600;"
+            f"background:rgba(255,255,255,.2);border-radius:999px;padding:3px 10px;white-space:nowrap'>"
+            f"{var * 100:+.0f}%</div></div>{''.join(partes)}</div>")
+
+
+def _html_resumo_cenarios(cards: list) -> str:
+    """Resumo no topo: quantos ativos em cada situação."""
+    blocos = ""
+    for situacao, rotulo in (("realizacao", "Faixa de realização de lucro"), ("queda", "Faixa de queda"),
+                             ("fora", "Fora das faixas")):
+        _, icone, cor = _ESTILO_SITUACAO[situacao]
+        n = sum(1 for c in cards if c["situacao"] == situacao)
+        blocos += (f"<div style='background:white;color:#1f2937;border-radius:16px;padding:14px 16px;"
+                   f"box-shadow:0 4px 14px rgba(0,0,0,.1);border-top:4px solid {cor}'>"
+                   f"<div style='background:{cor};border-radius:10px;width:34px;height:34px;display:flex;"
+                   f"align-items:center;justify-content:center'>{icone}</div>"
+                   f"<div style='font-size:1.9em;font-weight:700;margin-top:8px'>{n}</div>"
+                   f"<div style='font-size:.9em;color:#4b5563'>{rotulo}</div></div>")
+    return f"<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px'>{blocos}</div>"
+
+
+def _html_cabecalho_fiis(evidencias) -> str:
+    """Bloco único no topo do grupo de FIIs, com o que vale para todos."""
+    frase = frase_evidencia_fiis(evidencias)
+    historico = f"📊 <b>O que o histórico mostra:</b> {frase}<br>" if frase else ""
+    return ("<div style='background:#2a2f3a;color:#f3f4f6;border-radius:12px;padding:10px 14px;margin:0 0 12px;"
+            f"font-size:.82em;line-height:1.45'>{historico}"
+            "📖 <b>Como ler a tabela de cada FII:</b> a coluna <i>Real</i> é o que aconteceu com a sua posição nos "
+            "últimos 12 meses, sem reinvestir; as outras simulam o reinvestimento dos rendimentos, com os preços e "
+            "rendimentos reais do período. Só cotas inteiras, compradas na data aproximada de pagamento (a sobra "
+            "fica parada). O dinheiro em caixa rende o CDI, como CDB de 100% do CDI, com IR regressivo (22,5% a 15%) "
+            "e IOF, como se resgatado hoje; rendimentos de FII são isentos. <i>Compra na queda</i>: os rendimentos "
+            "ficam no CDI e só compram cotas se o preço cair 15% abaixo do seu preço médio.</div>")
+
+
+def _html_grupos_cenarios(cards: list, evidencias) -> str:
+    """Cards agrupados por mercado e tipo de ativo, com o cabeçalho único
+    dos FIIs no topo do grupo."""
     partes, grupo_atual, grade = [], None, []
 
-    def fechar_grupo():
+    def fechar():
         if grade:
-            partes.append("<div style='display:grid;grid-template-columns:repeat(auto-fill,"
-                          "minmax(290px,1fr));gap:16px;margin-bottom:22px'>" + "".join(grade) + "</div>")
+            partes.append("<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));"
+                          "gap:16px;margin-bottom:22px;align-items:start'>" + "".join(grade) + "</div>")
 
     for card in cards:
-        chave = (card.get("mercado", ""), card.get("grupo", "Outros"))
+        chave = (card["mercado"], card["grupo"])
         if chave != grupo_atual:
-            fechar_grupo()
-            grade = []
-            grupo_atual = chave
-            mercado, grupo = chave
+            fechar()
+            grade, grupo_atual = [], chave
             partes.append(f"<div style='font-weight:700;font-size:1.05em;margin:6px 0 10px 2px'>"
-                          f"{html.escape(mercado)} · {html.escape(_NOME_GRUPO.get(grupo, grupo))}</div>")
-        grade.append(_html_card_posicao(card))
-    fechar_grupo()
+                          f"{html.escape(chave[0])} · {html.escape(_NOME_GRUPO.get(chave[1], chave[1]))}</div>")
+            if chave[1] == "FIIs":
+                partes.append(_html_cabecalho_fiis(evidencias))
+        grade.append(_html_card_cenario(card))
+    fechar()
     return "".join(partes)
 
 
-def _renderizar_posicoes(posicoes) -> None:
-    """Posição sugerida por ativo (regra de faixas de preço sobre o preço
-    médio) em cards coloridos — quem pede ação hoje aparece primeiro.
-    ``posicoes`` é o par (cards, avisos) de ``gerar_posicoes``, guardado na
-    sessão ao clicar em 'Analisar carteira'. Usa ``st.html`` (HTML puro,
-    sem Markdown), o que também evita o problema do cifrão virar fórmula."""
-    st.markdown("#### 🧭 O que fazer com cada ativo hoje")
-    if posicoes is None:
-        st.caption(
-            "Clique em 'Analisar carteira' na aba 'Análise de Carteira' para ver a posição "
-            "sugerida de cada ativo (aumentar posição, manter posição, vender parte ou venda total)."
-        )
+def _renderizar_cenarios(cenarios) -> None:
+    """Cenários comparativos por ativo (regra de faixas de preço sobre o
+    preço médio). ``cenarios`` é o par (cards, avisos) de ``gerar_cenarios``,
+    guardado na sessão ao clicar em 'Analisar carteira'. Usa ``st.html``
+    (HTML puro, sem Markdown), o que evita o cifrão virar fórmula."""
+    st.markdown("#### 🧭 Cenários para cada ativo")
+    if cenarios is None:
+        st.caption("Clique em 'Analisar carteira' na aba 'Análise de Carteira' para ver os cenários de cada ativo.")
         return
-    cards, avisos = posicoes
+    cards, avisos = cenarios
+    st.caption("Compare o que acontece em cada caminho. Os números são calculados pela regra de faixas e não "
+               "constituem recomendação: a decisão é sempre sua. Histórico de preço completo na aba Ativo Específico.")
     if cards:
-        st.html(_html_resumo_posicoes(cards) + _html_grupos_posicoes(cards))
+        st.html(_html_resumo_cenarios(cards) + _html_grupos_cenarios(cards, carregar_evidencias()))
     else:
         st.info("Nenhuma posição aberta encontrada na planilha.")
     for aviso in avisos:
         st.caption(f"⚠️ {_sem_formula(aviso)}")
-    st.caption(
-        "A regra compara o preço de hoje com o seu preço médio (linha tracejada no mini-gráfico, "
-        "que mostra os últimos 6 meses): aumenta a posição na queda (a partir de −15%, no máximo "
-        "2 vezes até o ativo voltar a subir, e só se os fundamentos e os rendimentos estiverem "
-        "saudáveis), vende parte aos poucos na alta (a partir de +25%) e indica a venda total a "
-        "partir de +100%. Detalhes no 'Guia de Indicadores'. As informações são calculadas por "
-        "regras de faixas fixas e transparentes, iguais para todos os usuários; a decisão de "
-        "aumentar, manter ou vender é sempre sua. "
-        "Não é recomendação de investimento."
-    )
 
 
 tab_carteira, tab_ativo, tab_dashboard, tab_guia = st.tabs([
@@ -892,16 +898,22 @@ with tab_carteira:
                     except Exception:
                         dividendos_por_ticker[ticker] = pd.Series(dtype=float)
 
-                # Posição sugerida por ativo (regra de faixas de preço) — mostrada na
-                # aba Dashboard. Falha aqui não pode derrubar o resto da análise.
+                # Cenários comparativos por ativo (regra de faixas de preço) — mostrados
+                # na aba Dashboard. Falha aqui não pode derrubar o resto da análise.
                 try:
                     fundamentos_por_ticker = {
                         t: fundamentos_de_resultado(r) for t, tp, r in linhas_analise
                     }
-                    posicoes = gerar_posicoes(df_resumo, df_operacoes, fonte_dados,
-                                              tipos_confirmados, fundamentos_por_ticker)
+                    cdi, aviso_cdi = _cdi_do_banco_central()
+                    cards, avisos = gerar_cenarios(
+                        df_resumo, df_operacoes, fonte_dados, tipos_confirmados, fundamentos_por_ticker,
+                        indice_cdi_por_data=lambda idx: indice_cdi_acumulado(idx, cdi, cdi_aa=CDI_RESERVA_AA),
+                        evidencias=carregar_evidencias())
+                    if aviso_cdi and any(c.get("retrospecto") for c in cards):
+                        avisos.append(aviso_cdi)
+                    cenarios = (cards, avisos)
                 except Exception as e:
-                    posicoes = ([], [f"não foi possível calcular as posições sugeridas ({e})"])
+                    cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
 
             # Guarda tudo na sessão — sobrevive a um clique posterior noutra aba/botão
             # (ver docstring do arquivo) e alimenta também a aba Dashboard.
@@ -912,7 +924,7 @@ with tab_carteira:
             st.session_state["carteira_dividendos"] = dividendos_por_ticker
             st.session_state["carteira_tipos_confirmados"] = tipos_confirmados
             st.session_state["carteira_data_analise"] = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
-            st.session_state["carteira_posicoes"] = posicoes
+            st.session_state["carteira_cenarios"] = cenarios
 
         if "carteira_linhas_analise" in st.session_state:
             st.caption(f"🕒 Análise executada em {st.session_state['carteira_horario']}")
@@ -1100,7 +1112,7 @@ with tab_dashboard:
                 "colunas. Posição inicial, compras e vendas já aparecem abaixo, direto da planilha."
             )
 
-        _renderizar_posicoes(st.session_state.get("carteira_posicoes"))
+        _renderizar_cenarios(st.session_state.get("carteira_cenarios"))
         st.divider()
         st.markdown("#### 📒 Extrato por ativo")
 
@@ -1208,30 +1220,36 @@ with tab_guia:
             "(limiar: 2+)."
         )
 
-    with st.expander("🧭 Posição sugerida por ativo (regra de faixas de preço)"):
+    with st.expander("🧭 Cenários por ativo (regra de faixas de preço)"):
         st.markdown(
-            "O painel compara o preço de hoje com o **seu preço médio** e sugere uma posição "
-            "clara para cada ativo:\n\n"
-            "| Variação sobre o preço médio | Posição sugerida |\n"
-            "|---|---|\n"
-            "| Queda de até 15% | Manter posição |\n"
-            "| Queda de 15% ou mais | Aumentar posição em 10% |\n"
-            "| Queda de 25% ou mais | Aumentar posição em 25% |\n"
-            "| Alta de até 25% | Manter posição |\n"
-            "| Alta de 25% / 35% / 45% / 60% | Vender parte: 10% / 20% / 30% / 40% da posição |\n"
-            "| Alta de 100% ou mais | Venda total |\n\n"
-            "**Proteções:**\n\n"
-            "- **No máximo 2 aumentos de posição na queda** por ativo. O contador zera quando o preço volta "
-            "a ficar pelo menos 5% acima do seu preço médio.\n"
-            "- **Só aumenta a posição se o ativo estiver saudável.** Ações: sem prejuízo, dívida "
-            "bruta/patrimônio até 1,5 e liquidez corrente de pelo menos 1,0. FIIs: P/VP até 1,10 "
-            "e, nos FIIs de tijolo, vacância até 15%. Todos os tipos: rendimentos sem queda de "
-            "mais de 15% no último ano. ETFs não passam por esse filtro (são cestas "
-            "diversificadas). Se o filtro barrar, a posição sugerida é **manter posição**, e o card explica o motivo.\n"
-            "- **Cada faixa de venda vale uma vez**; volta a valer depois de um novo aumento de posição ou "
-            "se o preço voltar ao seu preço médio.\n\n"
-            "O preço médio segue a regra da Receita Federal: compras mudam o preço médio, vendas "
-            "não. A renda por mês é estimada pelos proventos pagos nos últimos 12 meses."
+            "O painel compara o preço de hoje com o **seu preço médio** e mostra em que **situação** cada "
+            "ativo está — e os cenários possíveis, lado a lado, para você comparar. Não há recomendação: "
+            "a decisão é sempre sua.\n\n"
+            "| Variação sobre o preço médio | Situação | Cenários comparados |\n"
+            "|---|---|---|\n"
+            "| Alta de 25% ou mais | Faixa de realização de lucro | Manter tudo × realizar 10% / 20% / 30% / 40% "
+            "(nas altas de 25% / 35% / 45% / 60%) ou venda total (a partir de +100%) |\n"
+            "| Entre −15% e +25% | Fora das faixas | — (o card mostra a que preço cada faixa começa) |\n"
+            "| Queda de 15% ou mais | Faixa de queda | Manter tudo × aumentar a posição em 10% (−15%) ou 25% (−25%) |\n\n"
+            "**Como ler a tabela de cenários:** as mesmas 8 linhas, na mesma ordem, em todos os cards — valor "
+            "investido, valor da posição, movimento de caixa (+ venda / − aporte), resultado realizado e não "
+            "realizado, preço médio, variação e renda estimada por mês.\n\n"
+            "**O que o histórico mostra:** cada card cita o resultado do backtest do seu próprio cenário (Seção 12 "
+            "do notebook): ativos testados entre 2022 e 2026, a partir de até 13 datas de entrada, com o dinheiro "
+            "guardado rendendo o CDI real, líquido de IR e IOF. Quando o cenário usa dinheiro novo (aumentar a "
+            "posição), a comparação é com o mesmo dinheiro guardado no CDI.\n\n"
+            "**FIIs:** além da situação, o card mostra o que teria acontecido nos últimos 12 meses com os "
+            "rendimentos — sem reinvestir, reinvestindo 50% ou 100%, ou guardando no CDI para comprar cotas na "
+            "queda —, com os preços, rendimentos e CDI reais do período.\n\n"
+            "**Proteções que viram avisos no card:** no máximo 2 aumentos de posição na queda por ativo (o "
+            "contador zera quando o preço volta a ficar 5% acima do preço médio); e alertas de saúde quando a "
+            "empresa dá prejuízo, tem dívida alta (acima de 1,5 vez o patrimônio) ou pouca liquidez, quando o FII "
+            "tem P/VP acima de 1,10 ou vacância acima de 15%, ou quando os rendimentos caíram mais de 15% no "
+            "último ano. Cada faixa de realização vale uma vez; volta a valer depois de um novo aumento de "
+            "posição ou se o preço voltar ao seu preço médio.\n\n"
+            "O preço médio segue a regra da Receita Federal: compras mudam o preço médio, vendas não. A renda "
+            "por mês é estimada pelos proventos pagos nos últimos 12 meses e, no backtest, errou em média cerca "
+            "de 2,5 pontos percentuais de yield — ela não antecipa mudanças de rendimento."
         )
 
     st.info(
