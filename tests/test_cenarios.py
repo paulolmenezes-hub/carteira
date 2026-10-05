@@ -268,3 +268,23 @@ def test_posicao_pequena_gera_nota():
                           columns=["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"])
     cards, _ = gerar_cenarios(resumo, None, FonteFalsa(precos, {}), {"P.SA": "acao"})
     assert cards[0]["tabela"] is None and "pequena demais" in cards[0]["notas"][0]
+
+
+def test_fii_sem_rendimentos_nao_mostra_retrospecto_zerado():
+    datas = pd.bdate_range(end="2026-09-30", periods=300)
+    precos = {"HASH11.SA": pd.Series(np.linspace(45, 57.7, 300), index=datas)}
+    resumo = pd.DataFrame([["HASH11", 194, 45.83, None, "2025-01-02"]],
+                          columns=["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"])
+    cards, _ = gerar_cenarios(resumo, None, FonteFalsa(precos, {}), {"HASH11.SA": "fii"})
+    assert cards[0]["retrospecto"] is None
+    assert any("Sem rendimentos" in n and "corrija o tipo" in n for n in cards[0]["notas"])
+
+
+def test_pico_falso_de_cotacao_nao_distorce_a_maxima():
+    datas = pd.bdate_range(end="2026-09-30", periods=300)
+    serie = pd.Series(np.linspace(70, 78, 300), index=datas)
+    serie.iloc[250] = 150.0  # erro pontual do provedor
+    resumo = pd.DataFrame([["IAU", 24.11, 36.67, None, "2025-01-02"]],
+                          columns=["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"])
+    cards, _ = gerar_cenarios(resumo, None, FonteFalsa({"IAU": serie}, {}), {"IAU": "etf_us"})
+    assert cards[0]["abaixo_da_maxima_12m"] < 0.01  # sem o pico, o preço atual é a máxima
