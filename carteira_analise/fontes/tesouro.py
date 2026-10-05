@@ -21,7 +21,7 @@ def _sem_acento(texto: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", str(texto)) if unicodedata.category(c) != "Mn").lower()
 
 
-def _coluna(df: pd.DataFrame, *pistas: str) -> str | None:
+def _coluna_csv(df: pd.DataFrame, *pistas: str) -> str | None:
     for col in df.columns:
         nome = _sem_acento(col)
         if all(p in nome for p in pistas):
@@ -35,9 +35,9 @@ def juro_real_tesouro_ipca(csv_texto: str, prazo_min_anos: float = 5, prazo_max_
     `prazo_min_anos` e `prazo_max_anos` a partir da data. Usa a taxa de
     compra e, quando ela não existe no dia (título fora de oferta), a de venda."""
     df = pd.read_csv(io.StringIO(csv_texto), sep=";", dtype=str)
-    c_tipo, c_venc = _coluna(df, "tipo"), _coluna(df, "vencimento")
-    c_data = _coluna(df, "data base") or _coluna(df, "data", "base")
-    c_compra, c_venda = _coluna(df, "taxa", "compra"), _coluna(df, "taxa", "venda")
+    c_tipo, c_venc = _coluna_csv(df, "tipo"), _coluna_csv(df, "vencimento")
+    c_data = _coluna_csv(df, "data base") or _coluna_csv(df, "data", "base")
+    c_compra, c_venda = _coluna_csv(df, "taxa", "compra"), _coluna_csv(df, "taxa", "venda")
     if not all([c_tipo, c_venc, c_data]) or not (c_compra or c_venda):
         raise ValueError("formato inesperado do arquivo do Tesouro")
     tipo = df[c_tipo].map(_sem_acento)
