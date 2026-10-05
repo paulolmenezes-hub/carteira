@@ -28,6 +28,7 @@ from .posicoes import (
     operacoes_por_ticker,
     renda_12m_por_cota,
 )
+from .tecnicos import limpar_outliers_precos
 from .regra_posicao import (
     CONFIG_REGRA_PADRAO,
     decidir_posicao,
@@ -176,6 +177,9 @@ def retrospecto_reinvestimento(ops: list[dict], precos: pd.Series, dividendos: p
     avaliado como se resgatado hoje. Rendimentos de FII são isentos."""
     p = _sem_fuso(precos).dropna()
     d = _sem_fuso(dividendos)
+    if d is None or d.empty:
+        # lista vazia de rendimentos chega com índice numérico: normaliza para datas
+        d = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     if p.empty or not ops:
         return None
     fim = p.index[-1]
@@ -342,6 +346,9 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
         if precos.empty:
             avisos.append(f"{ticker}: sem cotação disponível — ativo não avaliado.")
             continue
+        # mesma limpeza de dados do resto da ferramenta: um "pico" falso de
+        # cotação não pode distorcer a máxima de 12 meses nem o histórico da regra
+        precos, _, _ = limpar_outliers_precos(precos)
         preco, data_ref = float(precos.iloc[-1]), precos.index[-1]
         try:
             estado = estado_a_partir_de_operacoes(ops, historico_precos=precos)
@@ -398,8 +405,13 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
             "retrospecto": None,
         }
         if tipo == "fii":
-            indice = indice_cdi_por_data(precos.index) if indice_cdi_por_data else None
-            card["retrospecto"] = retrospecto_reinvestimento(ops, precos, dividendos, indice)
+            if renda_cota:
+                indice = indice_cdi_por_data(precos.index) if indice_cdi_por_data else None
+                card["retrospecto"] = retrospecto_reinvestimento(ops, precos, dividendos, indice)
+            else:
+                # sem rendimentos no período não há o que reinvestir (ex.: ETF classificado como FII)
+                card["notas"].append("Sem rendimentos pagos nos últimos 12 meses: o retrospecto de reinvestimento "
+                                     "não se aplica. Se este ativo não for um FII, corrija o tipo na aba Análise de Carteira.")
         cards.append(card)
     cards.sort(key=chave_ordem_card)
     return cards, avisos
