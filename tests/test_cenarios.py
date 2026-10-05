@@ -288,3 +288,11 @@ def test_pico_falso_de_cotacao_nao_distorce_a_maxima():
                           columns=["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"])
     cards, _ = gerar_cenarios(resumo, None, FonteFalsa({"IAU": serie}, {}), {"IAU": "etf_us"})
     assert cards[0]["abaixo_da_maxima_12m"] < 0.01  # sem o pico, o preço atual é a máxima
+
+
+def test_retrospecto_com_lista_de_rendimentos_vazia_nao_quebra():
+    s, _ = _fii([100.0] * 400)
+    ops = [{"data": s.index[0], "tipo": "compra", "quantidade": 10, "preco": 100.0}]
+    r = retrospecto_reinvestimento(ops, s, pd.Series(dtype=float))
+    lin = {nome: vals for nome, _, *vals in r["linhas"]}
+    assert lin["Cotas hoje"] == [10, 10, 10] and lin["Em caixa (CDI líquido)"] == [0, 0, 0]
