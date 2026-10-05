@@ -151,8 +151,22 @@ def test_retrospecto_sem_dados():
 
 
 # ---------------------------------------------------------------- evidências
-def test_evidencias_do_repositorio_e_frases():
+# Evidências FIXAS de teste: as frases são verificadas contra estes números, e não
+# contra o arquivo publicado (que muda a cada nova rodada do backtest).
+EVIDENCIAS_TESTE = {'periodo': '2022 e 2026', 'gerado_em': '2026-10-01', 'fonte': 'Seção 12 do notebook: backtest dos cenários com 28 FIIs, 12 ações B3, 2 ETFs B3, 12 ETFs dos EUA e 1 ação dos EUA; até 13 datas de entrada por ativo; caixa em CDB de 100% do CDI real (Banco Central), lote a lote, com IR e IOF.', 'acoes': {'Ações B3': {'ativos': 12, 'realizar': {'cenario': 290, 'referencia': 307, 'pct_agiu': 70, 'pct_vence_quando_agiu': 72}, 'aumentar': {'cenario': 305, 'referencia': 289, 'pct_agiu': 40, 'pct_vence_quando_agiu': 65}}, 'Ações EUA': {'ativos': 1, 'realizar': {'cenario': 155, 'referencia': 178, 'pct_agiu': 62, 'pct_vence_quando_agiu': 38}, 'aumentar': {'cenario': 178, 'referencia': 178, 'pct_agiu': 0, 'pct_vence_quando_agiu': None}}, 'ETFs B3': {'ativos': 2, 'realizar': {'cenario': 179, 'referencia': 186, 'pct_agiu': 88, 'pct_vence_quando_agiu': 43}, 'aumentar': {'cenario': 188, 'referencia': 186, 'pct_agiu': 8, 'pct_vence_quando_agiu': 100}}, 'ETFs EUA': {'ativos': 12, 'realizar': {'cenario': 172, 'referencia': 222, 'pct_agiu': 69, 'pct_vence_quando_agiu': 27}, 'aumentar': {'cenario': 222, 'referencia': 222, 'pct_agiu': 25, 'pct_vence_quando_agiu': 74}}}, 'fiis': {'ativos': 28, 'contexto': 'período de Selic alta', 'nao_reinvestir': 140, 'reinvestir_100': {'cenario': 133, 'pct_perde': 84}, 'compra_na_queda': {'cenario': 139, 'pct_agiu': 59, 'pct_vence_quando_agiu': 48}}}
+
+
+def test_arquivo_de_evidencias_publicado_tem_o_formato_esperado():
     e = carregar_evidencias()
+    assert e["periodo"] and e["fiis"]["ativos"] > 0
+    for grupo in e["acoes"].values():
+        assert grupo["ativos"] > 0 and {"realizar", "aumentar"} <= set(grupo)
+    assert frase_evidencia_card(e, "acao", "realizacao") and frase_evidencia_fiis(e)
+
+
+def test_evidencias_e_frases():
+    import copy
+    e = copy.deepcopy(EVIDENCIAS_TESTE)
     assert e["fiis"]["ativos"] == 28 and "Ações B3" in e["acoes"]
     f = frase_evidencia_card(e, "acao", "realizacao")
     assert "72%" in f and "manter rendeu mais" in f
@@ -166,7 +180,8 @@ def test_evidencias_do_repositorio_e_frases():
 
 
 def test_frase_fii_leituras(tmp_path):
-    e = carregar_evidencias()
+    import copy
+    e = copy.deepcopy(EVIDENCIAS_TESTE)
     e["fiis"]["compra_na_queda"]["pct_vence_quando_agiu"] = 70
     assert "foi melhor na maioria" in frase_evidencia_fiis(e)
     e["fiis"]["compra_na_queda"]["pct_vence_quando_agiu"] = 20
@@ -225,7 +240,7 @@ def test_gerar_cenarios_carteira_completa():
     cards, avisos = gerar_cenarios(resumo, None, FonteFalsa(precos, divs), tipos,
                                    {"POMO4.SA": {"divida_bruta_patrimonio": 2.0}},
                                    indice_cdi_por_data=lambda idx: indice_cdi_acumulado(idx, None, 0.14),
-                                   evidencias=carregar_evidencias())
+                                   evidencias=EVIDENCIAS_TESTE)
     por = {c["ticker"]: c for c in cards}
     # ordem: B3 (Ações, FIIs, Outros) e depois EUA
     assert [c["ticker"] for c in cards] == ["ITSA4.SA", "POMO4.SA", "VALE3.SA", "KNIP11.SA", "SEMD3.SA", "IAU"]

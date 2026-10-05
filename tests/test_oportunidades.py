@@ -125,3 +125,25 @@ def test_leitura_do_intervalo(ic, texto):
     r = {"fiis": 3, "casos": 100, "casos_com_criterio": 20, "taxa_base": 0.5, "taxa_com_criterio": 0.6,
          "periodo": (pd.Timestamp("2019-01-31"), pd.Timestamp("2024-09-30")), "ic90_diferenca": ic}
     assert texto in frase_resultado(r, "critério")
+
+
+def test_lacuna_de_rendimentos_na_fonte_nao_dispara_o_criterio():
+    # rendimentos constantes, mas o provedor "perdeu" 2019-2020; preço estável
+    p, _ = _fii(lambda i: 100.0)
+    d = pd.Series([1.0 for m in MESES if m.year not in (2019, 2020)],
+                  index=[m for m in MESES if m.year not in (2019, 2020)])
+    df = avaliar_fii_mes_a_mes(p, d, None)
+    # sem a correção, a média de 24 meses ficava baixa após a lacuna e o critério disparava
+    assert not df["criterio_yield"].eq(1).any()
+    # depois da lacuna, a média só volta a existir ~36 meses após o fim dela (12 do yield + 24 da média)
+    depois = df[(df["data"] >= "2021-01-01") & df["criterio_yield"].notna()]
+    assert depois["data"].min() >= pd.Timestamp("2023-10-01")
+    assert df.loc[df["data"].dt.year == 2020, "yield"].isna().all()
+
+
+def test_lacuna_nos_12_meses_seguintes_exclui_o_caso():
+    p, _ = _fii(lambda i: 100.0)
+    d = pd.Series([1.0 for m in MESES if m.year != 2024], index=[m for m in MESES if m.year != 2024])
+    df = avaliar_fii_mes_a_mes(p, d, None)
+    afetados = df[df["lacuna_futuro"]]
+    assert len(afetados) and afetados["superou_cdi"].isna().all()
