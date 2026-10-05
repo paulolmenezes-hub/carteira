@@ -78,8 +78,13 @@ def indice_cdi_acumulado(datas: pd.DatetimeIndex, cdi_diario_pct: pd.Series | No
         acumulado = (1 + serie.astype(float) / 100).cumprod()
         indice = acumulado.reindex(acumulado.index.union(datas)).ffill().reindex(datas)
         return indice.fillna(1.0)
-    fator = (1 + cdi_aa) ** (1 / 252)
-    return pd.Series(fator ** np.arange(len(datas)), index=datas)
+    # Sem a série do Banco Central (taxa de reserva): compõe pelo tempo corrido,
+    # o que dá exatamente `cdi_aa` em um ano — equivalente aos 252 dias úteis
+    # do mercado, qualquer que seja o calendário das `datas` (pregões do ativo).
+    if len(datas) == 0:
+        return pd.Series(dtype=float)
+    anos = (datas - datas[0]).days / 365.25
+    return pd.Series((1 + cdi_aa) ** np.asarray(anos, dtype=float), index=datas)
 
 
 class CaixaRendaFixa:
