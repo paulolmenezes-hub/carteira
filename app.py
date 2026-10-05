@@ -14,7 +14,7 @@ clique reexecuta o script inteiro do zero, e sem essa persistência o
 resultado anterior desapareceria da tela.
 
 Organizado em 4 abas: Análise de Carteira, Ativo Específico, Dashboard da
-Carteira (posição sugerida por ativo + extrato por ativo) e Guia de
+Carteira (cenários comparativos por ativo + extrato por ativo) e Guia de
 Indicadores (glossário).
 """
 import html
