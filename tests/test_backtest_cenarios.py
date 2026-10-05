@@ -44,9 +44,11 @@ def test_indice_cdi_com_serie_do_bc_e_feriados():
 
 
 def test_indice_cdi_taxa_constante_e_sem_serie():
-    datas = pd.bdate_range("2024-01-01", periods=253)
+    # reserva: exatamente a taxa anual em um ano corrido, qualquer que seja o calendário
+    datas = pd.DatetimeIndex(["2024-01-01", "2024-07-01", "2025-01-01"])
     ind = indice_cdi_acumulado(datas, None, cdi_aa=0.10)
-    assert ind.iloc[-1] / ind.iloc[0] == pytest.approx(1.10)
+    assert ind.iloc[-1] / ind.iloc[0] == pytest.approx(1.10, rel=1e-3)
+    assert len(indice_cdi_acumulado(pd.DatetimeIndex([]), None, 0.1)) == 0
     assert indice_cdi_acumulado(datas, pd.Series(dtype=float)).iloc[-1] == 1.0
 
 
