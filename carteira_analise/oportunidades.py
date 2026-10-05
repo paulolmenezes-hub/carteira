@@ -17,6 +17,12 @@ Critérios (fixados ANTES de ver os resultados, para não ajustar ao passado):
   Tesouro IPCA+) ao menos 1 ponto percentual acima da média do próprio
   prêmio nos 24 meses anteriores, com rendimentos estáveis.
 
+Lacunas na fonte: o histórico de rendimentos de FIIs no Yahoo Finance tem
+meses sem registro. Só janelas de 12 meses com ao menos 10 pagamentos contam
+(no histórico dos critérios e nos 12 meses seguintes), e a média de 24 meses
+exige 24 meses seguidos válidos — uma lacuna invalida a média em vez de
+distorcê-la. FIIs com pagamentos não mensais ficam de fora.
+
 Resultado de cada caso (FII, mês): o retorno total dos 12 meses seguintes
 (preço + rendimentos recebidos, sem reinvestir) superou o CDI do período,
 líquido de IR (17,5% — aplicação de 12 meses)? Compara a taxa de acerto
@@ -32,6 +38,7 @@ import pandas as pd
 DESCONTO_MINIMO_YIELD = 0.15     # caminho 2: yield 15% acima da própria média
 PREMIO_EXTRA_MINIMO = 0.01       # caminho 3: prêmio 1 p.p. acima da própria média
 QUEDA_MAXIMA_RENDIMENTOS = 0.10  # rendimentos "estáveis": queda de no máximo 10%
+MIN_PAGAMENTOS_12M = 10          # janela de 12 meses "completa": ao menos 10 pagamentos mensais
 MESES_MEDIA = 24
 IR_CDI_12M = 0.175               # IR de aplicação entre 361 e 720 dias
 
@@ -52,7 +59,7 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
     dos 12 meses seguintes e CDI líquido do mesmo período."""
     p = _sem_fuso(precos).dropna()
     d = _sem_fuso(dividendos)
-    if len(p) < 60:
+    if len(p) < 60 or len(d) == 0:
         return pd.DataFrame()
     cdi = indice_cdi.reindex(p.index).ffill() if indice_cdi is not None else None
     juro = None
@@ -61,6 +68,15 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
 
     def soma_div(ini, fim):
         return float(d[(d.index > ini) & (d.index <= fim)].sum()) if len(d) else 0.0
+
+    def n_pag(ini, fim):
+        return int(((d.index > ini) & (d.index <= fim)).sum()) if len(d) else 0
+
+    def completa(ini, fim):
+        # O histórico de rendimentos de FIIs no Yahoo tem lacunas (meses sem
+        # registro). Uma janela com lacuna subestima o yield e contaminaria a média
+        # e o resultado; por isso só janelas com ao menos 10 pagamentos contam.
+        return n_pag(ini, fim) >= MIN_PAGAMENTOS_12M
 
     # O yield só é calculado com 12 meses COMPLETOS de histórico (de preço e de
     # rendimentos): no começo da série a soma de 12 meses ainda está incompleta,
@@ -76,20 +92,23 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
         if t < inicio_dados + m(months=12):
             continue
         preco = float(p.loc[t])
-        div12 = soma_div(t - m(months=12), t)
-        if preco <= 0 or div12 <= 0:
+        if preco <= 0:
             continue
-        tem_ano_anterior = t >= inicio_dados + m(months=24)
-        # últimos 3 meses (anualizados) x os 12 meses que terminam 3 meses antes:
-        # pega cortes recentes que a soma de 12 meses ainda esconde (yield trap)
-        recentes_anualizado = soma_div(t - m(months=3), t) * 4
-        referencia_recentes = (soma_div(t - m(months=15), t - m(months=3))
-                               if t >= inicio_dados + m(months=15) else np.nan)
-        linhas.append({"data": t, "preco": preco, "div12": div12, "yield": div12 / preco,
-                       "div12_anterior": (soma_div(t - m(months=24), t - m(months=12))
-                                          if tem_ano_anterior else np.nan),
-                       "div3m_anualizado": recentes_anualizado, "div12_ate_3m_atras": referencia_recentes,
-                       "juro_real": float(juro.loc[t]) if juro is not None and pd.notna(juro.loc[t]) else None})
+        # uma linha por MÊS do calendário, mesmo com lacuna (yield vazio): assim a
+        # média de 24 meses exige 24 meses seguidos válidos, sem "pular" lacunas
+        janela_ok = completa(t - m(months=12), t)
+        div12 = soma_div(t - m(months=12), t)
+        anterior_ok = t >= inicio_dados + m(months=24) and completa(t - m(months=24), t - m(months=12))
+        referencia_ok = t >= inicio_dados + m(months=15) and completa(t - m(months=15), t - m(months=3))
+        linhas.append({
+            "data": t, "preco": preco, "div12": div12 if janela_ok else np.nan,
+            "yield": div12 / preco if janela_ok and div12 > 0 else np.nan,
+            "div12_anterior": soma_div(t - m(months=24), t - m(months=12)) if anterior_ok else np.nan,
+            # últimos 3 meses (anualizados) x os 12 meses que terminam 3 meses antes:
+            # pega cortes recentes que a soma de 12 meses ainda esconde (yield trap)
+            "div3m_anualizado": soma_div(t - m(months=3), t) * 4,
+            "div12_ate_3m_atras": soma_div(t - m(months=15), t - m(months=3)) if referencia_ok else np.nan,
+            "juro_real": float(juro.loc[t]) if juro is not None and pd.notna(juro.loc[t]) else None})
     df = pd.DataFrame(linhas)
     if df.empty:
         return df
@@ -99,7 +118,7 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
     df["estavel"] = ((df["div12_anterior"] > 0)
                      & (df["div12"] >= (1 - QUEDA_MAXIMA_RENDIMENTOS) * df["div12_anterior"])
                      & (df["div3m_anualizado"] >= (1 - QUEDA_MAXIMA_RENDIMENTOS) * df["div12_ate_3m_atras"]))
-    sem_comparacao = df["div12_anterior"].isna()
+    sem_comparacao = df["div12_anterior"].isna() | df["yield"].isna() | df["div12_ate_3m_atras"].isna()
     # critérios como 1/0, e vazio (NaN) enquanto não há 24 meses de histórico para a média
     crit_y = (df["yield"] >= (1 + DESCONTO_MINIMO_YIELD) * df["yield_medio_24m"]) & df["estavel"]
     crit_p = (df["premio"] >= df["premio_medio_24m"] + PREMIO_EXTRA_MINIMO) & df["estavel"]
@@ -108,10 +127,13 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
 
     # resultado: retorno total em 12 meses x CDI líquido do mesmo período
     ultimo = p.index[-1]
-    ret, cdi_liq = [], []
+    ret, cdi_liq, lacuna_futuro = [], [], []
     for t, preco in zip(df["data"], df["preco"]):
         fim = t + pd.DateOffset(months=12)
-        if fim > ultimo:
+        # sem os 12 meses seguintes, ou com lacuna de rendimentos neles (não dá para
+        # distinguir lacuna da fonte de corte real), o caso não é avaliado
+        lacuna_futuro.append(fim <= ultimo and not completa(t, fim))
+        if fim > ultimo or lacuna_futuro[-1]:
             ret.append(np.nan)
             cdi_liq.append(np.nan)
             continue
@@ -122,6 +144,7 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
             cdi_liq.append((i1 / i0 - 1) * (1 - IR_CDI_12M))
         else:
             cdi_liq.append(0.0)
+    df["lacuna_futuro"] = lacuna_futuro
     df["retorno_12m"] = ret
     df["cdi_liquido_12m"] = cdi_liq
     df["superou_cdi"] = np.where(df["retorno_12m"].isna(), np.nan,
