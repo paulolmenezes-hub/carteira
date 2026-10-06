@@ -300,3 +300,62 @@ def buscar_fundamentos_acao(ticker: str) -> FundamentosAcao | None:
         return _cache_tabela_acoes.get(ticker_normalizado)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Proventos de FIIs (histórico de rendimentos efetivamente pagos)
+# ---------------------------------------------------------------------------
+# Página pública "Distribuição de Rendimentos" de cada FII: data-com, tipo,
+# data de pagamento e valor por cota. Usada no teste de "preço atrativo"
+# (Seção 13 do notebook) porque o histórico de rendimentos de FIIs do Yahoo
+# Finance tem lacunas de vários anos. Mesmas cautelas do resto deste módulo.
+
+URL_FII_PROVENTOS = "https://www.fundamentus.com.br/fii_proventos.php?papel={papel}&tipo=2"
+_cache_proventos: dict[str, pd.Series] = {}
+
+
+def _baixar_html_proventos_fii(papel: str) -> str:
+    req = urllib.request.Request(URL_FII_PROVENTOS.format(papel=papel), headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read().decode("latin-1")
+
+
+def proventos_fii_de_html(html: str) -> pd.Series:
+    """Rendimentos por cota indexados pela data-com, a partir do HTML da
+    página de proventos. Só linhas do tipo "Rendimento" (amortizações
+    devolvem capital e não entram no yield); mais de um rendimento na mesma
+    data-com é somado."""
+    df = _ler_tabela_como_texto(html)
+
+    def normalizar(nome) -> str:
+        import unicodedata
+        texto = "".join(c for c in unicodedata.normalize("NFD", str(nome)) if unicodedata.category(c) != "Mn")
+        return " ".join(texto.lower().split())
+
+    colunas = {normalizar(c): c for c in df.columns}
+    c_data = next((c for n, c in colunas.items() if "data com" in n), None)
+    c_tipo = next((c for n, c in colunas.items() if n.startswith("tipo")), None)
+    c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
+    if not c_data or not c_valor:
+        raise ValueError(f"layout inesperado da página de proventos: {list(df.columns)}")
+    if c_tipo:
+        df = df[df[c_tipo].astype(str).str.lower().str.contains("rendimento")]
+    datas = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
+    valores = df[c_valor].map(_parse_numero_br)
+    serie = pd.Series(valores.values, index=datas.values, dtype=float)
+    serie = serie[serie.index.notna() & serie.notna() & (serie > 0)]
+    return serie.groupby(level=0).sum().sort_index()
+
+
+def buscar_proventos_fii(ticker: str) -> pd.Series | None:
+    """Histórico de rendimentos pagos por cota de um FII (Fundamentus), com
+    cache em memória. Devolve None se a busca falhar."""
+    papel = ticker.upper().replace(".SA", "")
+    if papel in _cache_proventos:
+        return _cache_proventos[papel]
+    try:
+        serie = proventos_fii_de_html(_baixar_html_proventos_fii(papel))
+    except Exception:
+        return None
+    _cache_proventos[papel] = serie
+    return serie
