@@ -572,8 +572,11 @@ st.markdown(
     "igual um extrato."
 )
 
-_CAMINHO_CACHE_PLANILHA = Path(tempfile.gettempdir()) / "carteira_analise_ultima_planilha.xlsx"
-
+# A planilha fica guardada SÓ na sessão do navegador de quem a enviou
+# (st.session_state). Uma versão anterior a gravava num arquivo do servidor,
+# compartilhado por todos os acessos ao painel: um segundo usuário veria a
+# carteira do primeiro. Custo da correção: ao recarregar a página (F5), é
+# preciso enviar a planilha de novo.
 arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
 
 df_resumo = None
@@ -583,26 +586,19 @@ bytes_planilha = None
 
 if arquivo is not None:
     bytes_planilha = arquivo.getvalue()
-    try:
-        _CAMINHO_CACHE_PLANILHA.write_bytes(bytes_planilha)
-    except Exception:
-        pass  # sem persistência nesta sessão, mas não impede o uso normal
-elif _CAMINHO_CACHE_PLANILHA.exists():
-    # Menor fricção: reabre a última planilha enviada, sem exigir novo
-    # upload a cada vez que o painel é aberto — dura enquanto o servidor do
-    # Streamlit Cloud não reiniciar (ex.: a cada nova publicação de código).
-    bytes_planilha = _CAMINHO_CACHE_PLANILHA.read_bytes()
-    _mtime = datetime.fromtimestamp(_CAMINHO_CACHE_PLANILHA.stat().st_mtime, tz=ZoneInfo("America/Sao_Paulo"))
+    st.session_state["planilha_bytes"] = bytes_planilha
+    st.session_state["planilha_nome"] = arquivo.name
+elif st.session_state.get("planilha_bytes") is not None:
+    # Reaproveita a planilha já enviada NESTA sessão (ex.: ao trocar de aba)
+    bytes_planilha = st.session_state["planilha_bytes"]
     col_info, col_limpar = st.columns([5, 1])
     with col_info:
-        st.info(
-            f"📎 Usando a última planilha carregada, enviada em "
-            f"{_mtime.strftime('%d/%m/%Y às %H:%M')} (horário de Brasília). "
-            "Envie um novo arquivo acima pra substituir."
-        )
+        st.info(f"📎 Usando a planilha enviada nesta sessão ({st.session_state.get('planilha_nome', 'carteira')}). "
+                "Envie um novo arquivo acima para substituir.")
     with col_limpar:
         if st.button("🗑️ Limpar"):
-            _CAMINHO_CACHE_PLANILHA.unlink(missing_ok=True)
+            for chave in ("planilha_bytes", "planilha_nome", "carteira_cenarios"):
+                st.session_state.pop(chave, None)
             st.rerun()
 
 if bytes_planilha is not None:
