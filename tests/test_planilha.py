@@ -232,3 +232,44 @@ def test_dashboard_resumo_invalido_nao_quebra_e_via_valor_investido():
 def test_dashboard_vazio():
     assert construir_dashboard_por_ativo(None, None) == []
     assert construir_dashboard_por_ativo(None, operacoes([])) == []
+
+
+# ---------------------------------------------------------------- quantidades inválidas (Sprint 4)
+import pandas as _pd
+import pytest as _pytest
+
+from carteira_analise.planilha import interpretar_quantidade_operacao, processar_carteira_combinada
+from carteira_analise.posicoes import operacoes_por_ticker
+
+
+@_pytest.mark.parametrize("tipo,valor,esperado", [
+    ("compra", 10, 10.0), ("venda", -5, 5.0), ("venda", "3", 3.0),
+    ("compra", 0, None), ("venda", float("nan"), None), ("compra", -2, None), ("compra", "abc", None)])
+def test_interpretar_quantidade(tipo, valor, esperado):
+    q, motivo = interpretar_quantidade_operacao(tipo, valor)
+    assert q == esperado and (motivo is None) == (esperado is not None)
+
+
+class _FonteConstante:
+    def baixar_precos(self, ticker, periodo):
+        return _pd.Series([20.0, 21.0], index=_pd.bdate_range("2026-09-01", periods=2))
+
+    def baixar_dividendos(self, ticker):
+        return _pd.Series(dtype=float)
+
+
+def test_linha_invalida_nao_derruba_a_carteira():
+    ops = _pd.DataFrame([
+        ["IVV", "compra", 10, 500.0, "2025-01-02"],
+        ["IVV", "venda", -4, 550.0, "2025-06-02"],      # venda negativa: aceita
+        ["IVV", "compra", 0, 520.0, "2025-07-01"],      # zero: ignorada
+        ["QQQ", "compra", float("nan"), 400.0, "2025-01-02"],  # vazia: ignorada
+        ["QQQ", "compra", 5, 400.0, "2025-01-03"],
+    ], columns=["ticker", "tipo", "quantidade", "preco", "data"])
+    linhas = processar_carteira_combinada(None, ops, _FonteConstante())
+    por = {l.ticker: l for l in linhas}
+    assert any("zero" in a for a in por["IVV"].avisos)
+    assert any("vazia" in a for a in por["QQQ"].avisos)
+    assert por["IVV"].situacao != "erro" and por["QQQ"].situacao != "erro"
+    cen = operacoes_por_ticker(None, ops)
+    assert [o["quantidade"] for o in cen["IVV"]] == [10.0, 4.0] and len(cen["QQQ"]) == 1
