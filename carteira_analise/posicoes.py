@@ -13,7 +13,12 @@ import dataclasses
 
 import pandas as pd
 
-from .planilha import _TIPO_PARA_GRUPO, _construir_operacao_da_posicao_inicial, normalizar_ticker
+from .planilha import (
+    _TIPO_PARA_GRUPO,
+    _construir_operacao_da_posicao_inicial,
+    interpretar_quantidade_operacao,
+    normalizar_ticker,
+)
 from .regra_posicao import (
     decidir_posicao,
     estado_a_partir_de_operacoes,
@@ -59,10 +64,15 @@ def operacoes_por_ticker(df_resumo: pd.DataFrame | None,
                 tipo = "venda"
             else:
                 continue
+            quantidade, _ = interpretar_quantidade_operacao(tipo, row["quantidade"])
+            if quantidade is None:
+                continue
             try:
+                preco = float(row["preco"])
+                if not preco > 0:
+                    continue
                 ops.setdefault(ticker, []).append({
-                    "data": pd.Timestamp(row["data"]), "tipo": tipo,
-                    "quantidade": float(row["quantidade"]), "preco": float(row["preco"])})
+                    "data": pd.Timestamp(row["data"]), "tipo": tipo, "quantidade": quantidade, "preco": preco})
             except (ValueError, TypeError):
                 continue
     return ops

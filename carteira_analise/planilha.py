@@ -128,6 +128,25 @@ class LinhaCarteira:
     erro: str | None = None
 
 
+def interpretar_quantidade_operacao(tipo: str, valor) -> tuple[float | None, str | None]:
+    """Quantidade de uma linha da aba Operações, ou (None, motivo) se inválida.
+
+    - venda com quantidade negativa (formato de alguns extratos de corretora):
+      aceita, como venda da quantidade em valor absoluto;
+    - zero, vazio, texto ou compra com quantidade negativa: inválida."""
+    try:
+        q = float(valor)
+    except (ValueError, TypeError):
+        return None, f"quantidade ilegível ({valor!r})"
+    if q != q or q == 0:  # NaN (célula vazia) ou zero
+        return None, "quantidade vazia ou zero"
+    if q < 0:
+        if tipo == "venda":
+            return -q, None
+        return None, f"compra com quantidade negativa ({q:g})"
+    return q, None
+
+
 def processar_carteira_combinada(
     df_resumo: pd.DataFrame | None,
     df_operacoes: pd.DataFrame | None,
@@ -179,12 +198,19 @@ def processar_carteira_combinada(
                     continue
                 try:
                     data_op = pd.Timestamp(row["data"]).date()
-                    quantidade_op = float(row["quantidade"])
                     preco_op = float(row["preco"])
                 except (ValueError, TypeError):
-                    avisos.append(f"operação com data/quantidade/preço ilegível (data={row['data']!r})")
+                    avisos.append(f"operação com data/preço ilegível (data={row['data']!r}) — linha ignorada")
                     continue
-                operacoes.append(Operacao(data=data_op, tipo=tipo, quantidade=quantidade_op, preco=preco_op))
+                quantidade_op, motivo = interpretar_quantidade_operacao(tipo, row["quantidade"])
+                if quantidade_op is None:
+                    avisos.append(f"{tipo} de {data_op:%d/%m/%Y} com {motivo} — linha ignorada")
+                    continue
+                try:
+                    operacoes.append(Operacao(data=data_op, tipo=tipo, quantidade=quantidade_op, preco=preco_op))
+                except ValueError as e:
+                    avisos.append(f"{tipo} de {data_op:%d/%m/%Y} inválida ({e}) — linha ignorada")
+                    continue
                 n_operacoes_lancadas += 1
 
         if not operacoes:
