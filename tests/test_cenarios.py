@@ -169,9 +169,11 @@ def test_evidencias_e_frases():
     e = copy.deepcopy(EVIDENCIAS_TESTE)
     assert e["fiis"]["ativos"] == 28 and "Ações B3" in e["acoes"]
     f = frase_evidencia_card(e, "acao", "realizacao")
-    assert "72%" in f and "manter rendeu mais" in f
+    assert "72%" in f and "não uma regra" in f and "ganho realizado" in f and "maior queda" not in f  # evidência antiga, sem risco
+    e["acoes"]["Ações B3"]["realizar"].update({"queda": 18, "queda_ref": 31})
+    assert "maior queda da carteira foi de 18% realizando, contra 31% mantendo" in frase_evidencia_card(e, "acao", "realizacao")
     assert "65%" in frase_evidencia_card(e, "acao", "queda")
-    assert "só 27%" in frase_evidencia_card(e, "etf_us", "realizacao")
+    assert "27%" in frase_evidencia_card(e, "etf_us", "realizacao")
     assert "nunca foi atingida" in frase_evidencia_card(e, "acao_us", "queda")
     assert frase_evidencia_card(e, "fii", "realizacao") is None
     assert frase_evidencia_card(e, "acao", "fora") is None and frase_evidencia_card(None, "acao", "queda") is None

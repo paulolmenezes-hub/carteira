@@ -257,3 +257,29 @@ def test_vitorias_empates_e_derrotas_somam_100():
     frase = frase_evidencia(df, "FIIs", "CDI + compra na queda (preço médio)", "Não reinvestir",
                             "FIIs", "R$", "FII", rotulo_referencia="guardar no CDI sem comprar")
     assert "guardar no CDI sem comprar" in frase and "chegou a agir" in frase
+
+
+# ---------------------------------------------------------------- Sprint 4: risco
+def test_realizar_reduz_a_maior_queda_quando_o_preco_devolve_a_alta():
+    s = serie([100.0] * 260 + list(np.linspace(100, 170, 250)) + list(np.linspace(170, 100, 390)))
+    manter = simular_cenario_regra(s, variante="Manter")
+    realizar = simular_cenario_regra(s, variante="Só realizar lucro nas faixas")
+    assert manter["maior_queda"] == pytest.approx(70 / 170, rel=0.01)
+    assert realizar["maior_queda"] < manter["maior_queda"] - 0.1
+    assert realizar["valor_de_100"] > manter["valor_de_100"]
+
+
+def test_dinheiro_novo_nao_conta_como_valorizacao():
+    # preço parado: comprar mais não pode criar queda nem alta artificial
+    s = serie([100.0] * 260 + list(np.linspace(100, 80, 60)) + [80.0] * 300)
+    r = simular_cenario_regra(s, variante="Só aumentar nas quedas")
+    assert r["n_compras"] >= 1 and r["maior_queda"] < 0.2 + 1e-6
+
+
+def test_resumo_traz_queda_do_cenario_e_da_referencia():
+    s = serie([100.0] * 260 + list(np.linspace(100, 170, 250)) + list(np.linspace(170, 100, 390)) + [100.0] * 300)
+    res = {"A": rodar_em_varias_datas(simular_cenario_regra, s, None, list(VARIANTES_ACOES))}
+    df = resumir_cenarios(res, {"A": "Ações B3"}, "Manter").set_index("cenario")
+    l = df.loc["Só realizar lucro nas faixas"]
+    assert l["maior_queda_mediana"] < l["maior_queda_mediana_ref"] and l["pct_queda_menor"] > 50
+    assert pd.isna(df.loc["Manter", "maior_queda_mediana"])
