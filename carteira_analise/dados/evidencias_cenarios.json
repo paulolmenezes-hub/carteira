@@ -1,34 +1,43 @@
 {
   "periodo": "2022 e 2026",
-  "gerado_em": "2026-10-05",
-  "fonte": "Seção 12 do notebook: backtest dos cenários com 55 ativos; até 13 datas de entrada por ativo; caixa em CDB de 100% do CDI real (Banco Central, série 12, de 05/10/2021 a 02/10/2026), lote a lote, com IR e IOF.",
+  "gerado_em": "2026-10-08",
+  "fonte": "Seção 12 do notebook: backtest dos cenários com 55 ativos; até 13 datas de entrada por ativo; caixa em CDB de 100% do CDI real (Banco Central), lote a lote, com IR e IOF.",
   "acoes": {
     "Ações B3": {
       "ativos": 12,
       "realizar": {
-        "cenario": 293,
-        "referencia": 312,
-        "pct_agiu": 71,
-        "pct_vence_quando_agiu": 44
+        "cenario": 296,
+        "referencia": 315,
+        "pct_agiu": 74,
+        "pct_vence_quando_agiu": 45,
+        "queda": 9,
+        "queda_ref": 13,
+        "pct_queda_menor": 78
       },
       "aumentar": {
-        "cenario": 312,
-        "referencia": 310,
-        "pct_agiu": 38,
-        "pct_vence_quando_agiu": 82
+        "cenario": 315,
+        "referencia": 315,
+        "pct_agiu": 39,
+        "pct_vence_quando_agiu": 75,
+        "queda": 17,
+        "queda_ref": 17,
+        "pct_queda_menor": 0
       }
     },
     "Ações EUA": {
       "ativos": 1,
       "realizar": {
-        "cenario": 156,
-        "referencia": 181,
+        "cenario": 162,
+        "referencia": 191,
         "pct_agiu": 62,
-        "pct_vence_quando_agiu": 25
+        "pct_vence_quando_agiu": 25,
+        "queda": 10,
+        "queda_ref": 15,
+        "pct_queda_menor": 100
       },
       "aumentar": {
-        "cenario": 181,
-        "referencia": 181,
+        "cenario": 191,
+        "referencia": 191,
         "pct_agiu": 0,
         "pct_vence_quando_agiu": null
       }
@@ -36,46 +45,58 @@
     "ETFs B3": {
       "ativos": 2,
       "realizar": {
-        "cenario": 182,
-        "referencia": 197,
+        "cenario": 183,
+        "referencia": 195,
         "pct_agiu": 88,
-        "pct_vence_quando_agiu": 26
+        "pct_vence_quando_agiu": 26,
+        "queda": 12,
+        "queda_ref": 16,
+        "pct_queda_menor": 87
       },
       "aumentar": {
-        "cenario": 198,
+        "cenario": 195,
         "referencia": 195,
-        "pct_agiu": 8,
-        "pct_vence_quando_agiu": 100
+        "pct_agiu": 4,
+        "pct_vence_quando_agiu": 100,
+        "queda": 19,
+        "queda_ref": 19,
+        "pct_queda_menor": 0
       }
     },
     "ETFs EUA": {
       "ativos": 12,
       "realizar": {
-        "cenario": 173,
-        "referencia": 223,
-        "pct_agiu": 71,
-        "pct_vence_quando_agiu": 24
+        "cenario": 175,
+        "referencia": 233,
+        "pct_agiu": 70,
+        "pct_vence_quando_agiu": 29,
+        "queda": 14,
+        "queda_ref": 21,
+        "pct_queda_menor": 66
       },
       "aumentar": {
-        "cenario": 223,
-        "referencia": 223,
+        "cenario": 233,
+        "referencia": 233,
         "pct_agiu": 24,
-        "pct_vence_quando_agiu": 76
+        "pct_vence_quando_agiu": 74,
+        "queda": 22,
+        "queda_ref": 22,
+        "pct_queda_menor": 0
       }
     }
   },
   "fiis": {
     "ativos": 28,
     "contexto": "período de Selic alta",
-    "nao_reinvestir": 140,
+    "nao_reinvestir": 143,
     "reinvestir_100": {
-      "cenario": 135,
-      "pct_perde": 79
+      "cenario": 140,
+      "pct_perde": 65
     },
     "compra_na_queda": {
-      "cenario": 140,
-      "pct_agiu": 57,
-      "pct_vence_quando_agiu": 57
+      "cenario": 146,
+      "pct_agiu": 58,
+      "pct_vence_quando_agiu": 62
     }
   }
 }
