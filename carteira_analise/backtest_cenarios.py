@@ -229,24 +229,43 @@ def simular_cenario_regra(fechamento: pd.Series, dividendos=None, variante: str 
     aportes_no_cdi = CaixaRendaFixa()  # contrafactual: o mesmo dinheiro novo guardado no CDI
     aportado = capital
     n_vendas = n_compras = 0
+    # Risco: a carteira (ativo + caixa) é acompanhada como uma "cota" (valor por
+    # unidade), para que o dinheiro novo das compras não pareça valorização. O
+    # caixa entra pelo valor bruto do CDI no dia (o IR só incide no resgate).
+    unidades_caixa = 0.0          # caixa em "unidades de CDI": valor = unidades x índice
+    cotas_carteira, nav_max, maior_queda = capital / precos[0], 1.0, 0.0
+
+    def registrar(i):
+        nonlocal nav_max, maior_queda
+        valor = estado["quantidade"] * precos[i] + unidades_caixa * indice[i]
+        nav = valor / cotas_carteira
+        nav_max = max(nav_max, nav)
+        maior_queda = max(maior_queda, 1 - nav / nav_max)
+
     for i, preco in enumerate(precos):
         if i in pagamentos and estado["quantidade"] > 0:
             caixa.depositar(datas[i], estado["quantidade"] * pagamentos[i], indice[i])
+            unidades_caixa += estado["quantidade"] * pagamentos[i] / indice[i]
         if config is None or i == 0:
+            registrar(i)
             continue
         aplicar_resets_por_preco(estado, preco, config)
         decisao = decidir_posicao(preco, estado, config)
         if decisao["acao"] == "comprar":
             q = estado["quantidade"] * decisao["fracao"]
             aportado += q * preco
+            nav = (estado["quantidade"] * preco + unidades_caixa * indice[i]) / cotas_carteira
+            cotas_carteira += q * preco / nav  # o dinheiro novo "compra cotas" da carteira
             aportes_no_cdi.depositar(datas[i], q * preco, indice[i])
             aplicar_compra(estado, q, preco, eh_reforco=True)
             n_compras += 1
         elif decisao["acao"] == "vender":
             q = estado["quantidade"] * min(decisao["fracao"], 1.0)
             caixa.depositar(datas[i], q * preco, indice[i])
+            unidades_caixa += q * preco / indice[i]
             aplicar_venda(estado, q, preco, config)
             n_vendas += 1
+        registrar(i)
 
     valor_final = estado["quantidade"] * precos[-1] + caixa.valor_liquido(datas[-1], indice[-1])
     return {
@@ -255,6 +274,7 @@ def simular_cenario_regra(fechamento: pd.Series, dividendos=None, variante: str 
         "valor_de_100": 100 * valor_final / aportado,
         "retorno_aa": _retorno_anual(valor_final, aportado, datas[0], datas[-1]),
         "n_compras": n_compras, "n_vendas": n_vendas, "agiu": (n_compras + n_vendas) > 0,
+        "maior_queda": maior_queda,  # maior queda da carteira (ativo + caixa) a partir de um topo
         # valor, no fim, do dinheiro novo usado nas compras se tivesse ficado no CDI:
         # é o que a referência ("manter") recebe para a comparação ser justa
         "aportes_no_cdi": aportes_no_cdi.valor_liquido(datas[-1], indice[-1]),
@@ -409,6 +429,7 @@ def resumir_cenarios(resultados: dict[str, dict[str, list[dict]]], tipo_por_tick
             continue
         for nome in list(resultados[tickers[0]].keys()):
             retornos, de100, de100_ref, gatilhos = [], [], [], []
+            quedas, quedas_ref, queda_menor = [], [], 0
             vence = empata = perde = casos = agiu = vence_agiu = 0
             for t in tickers:
                 lista = resultados[t].get(nome, [])
@@ -422,6 +443,10 @@ def resumir_cenarios(resultados: dict[str, dict[str, list[dict]]], tipo_por_tick
                     if base is None:
                         continue
                     valor_ref = _referencia_ajustada(base, r)
+                    if "maior_queda" in r and "maior_queda" in base and nome != referencia and r.get("agiu"):
+                        quedas.append(r["maior_queda"])
+                        quedas_ref.append(base["maior_queda"])
+                        queda_menor += r["maior_queda"] < base["maior_queda"] - 1e-9
                     if k == 0:
                         de100.append(r["valor_de_100"])
                         de100_ref.append(100 * valor_ref / r["aportado"])
@@ -447,6 +472,11 @@ def resumir_cenarios(resultados: dict[str, dict[str, list[dict]]], tipo_por_tick
                 "pct_agiu": pct(agiu),
                 "pct_vence_quando_agiu": (100 * vence_agiu / agiu) if agiu else None,
                 "pct_supera_referencia": pct(vence),  # compatibilidade
+                # risco, nos casos em que o cenário agiu (mesmo ativo e data na referência)
+                "maior_queda_mediana": float(np.median(quedas)) if quedas else None,
+                "maior_queda_mediana_ref": float(np.median(quedas_ref)) if quedas_ref else None,
+                "pct_queda_menor": (100 * queda_menor / len(quedas)) if quedas else None,
+                "retorno_aa_p10": float(np.percentile(retornos, 10)) if retornos else None,
                 "valor_de_100_mediano": float(np.median(de100)) if de100 else None,
                 "valor_de_100_ref_mediano": float(np.median(de100_ref)) if de100_ref else None,
                 "pct_com_compra_na_queda": (100 * float(np.mean(gatilhos))
@@ -501,6 +531,10 @@ def exportar_evidencias(df_acoes: pd.DataFrame, df_fii: pd.DataFrame, periodo: s
                 l = sub.loc[cen]
                 grupo[chave] = {"cenario": num(l["valor_de_100_mediano"]), "referencia": num(l["valor_de_100_ref_mediano"]),
                                 "pct_agiu": num(l["pct_agiu"]), "pct_vence_quando_agiu": num(l["pct_vence_quando_agiu"])}
+                if "maior_queda_mediana" in l and not pd.isna(l["maior_queda_mediana"]):
+                    grupo[chave]["queda"] = num(100 * l["maior_queda_mediana"])
+                    grupo[chave]["queda_ref"] = num(100 * l["maior_queda_mediana_ref"])
+                    grupo[chave]["pct_queda_menor"] = num(l["pct_queda_menor"])
         acoes[tipo] = grupo
     fiis = None
     if not df_fii.empty:

@@ -287,13 +287,18 @@ def frase_evidencia_card(evidencias: dict | None, tipo: str | None, situacao: st
     pv = cen["pct_vence_quando_agiu"]
     so = "só " if pv < 50 else ""
     if situacao == "realizacao":
-        frase = (inicio + f"nas vezes em que o preço chegou à faixa, <b>realizar lucro superou manter em "
-                 f"{so}{pv:.0f}% delas</b>")
-        if cen["cenario"] < cen["referencia"] and pv >= 50:
-            return frase + (f". Mas para quem ficou os 4 anos inteiros, manter rendeu mais: cada {moeda} 100 "
-                            f"viraram {moeda} {cen['referencia']:.0f} mantendo e {moeda} {cen['cenario']:.0f} realizando.")
-        return frase + (f": cada {moeda} 100 viraram {moeda} {cen['referencia']:.0f} mantendo e "
-                        f"{moeda} {cen['cenario']:.0f} realizando, em 4 anos.")
+        # Realizar lucro troca parte do ganho possível por proteção: a frase mostra
+        # os dois lados (retorno e maior queda), e deixa claro que vale para o período.
+        frase = (inicio + f"nas vezes em que o preço chegou à faixa, realizar lucro <b>rendeu mais que manter em "
+                 f"{pv:.0f}% delas</b> (mediana em 4 anos: {moeda} {cen['cenario']:.0f} realizando e "
+                 f"{moeda} {cen['referencia']:.0f} mantendo, por {moeda} 100)")
+        if cen.get("queda") is not None and cen.get("queda_ref") is not None:
+            frase += (f"; em compensação, <b>a maior queda da carteira foi de {cen['queda']:.0f}% realizando, contra "
+                      f"{cen['queda_ref']:.0f}% mantendo</b>")
+        return frase + (". Resultado do período testado, não uma regra: não há como saber de antemão quando uma alta "
+                        "termina. Em altas longas, realizar tende a render menos que manter; em compensação, vender "
+                        "parte a cada faixa de ganho sobre o preço médio transforma parte do lucro em ganho realizado, "
+                        "que não se perde se o preço cair depois.")
     return (inicio + f"nas vezes em que o preço chegou à faixa de queda, <b>aumentar a posição superou guardar o "
             f"mesmo dinheiro no CDI em {so}{pv:.0f}% delas</b> ({moeda} {cen['cenario']:.0f} contra "
             f"{moeda} {cen['referencia']:.0f} por {moeda} 100, em 4 anos).")
