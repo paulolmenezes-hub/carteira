@@ -64,39 +64,78 @@ def _obter_fonte_com_cache() -> FonteComCache:
 fonte_dados = _obter_fonte_com_cache()
 
 
-def _verificar_senha() -> bool:
-    """Bloqueia o acesso ao painel até a senha correta ser informada. A
-    senha fica no gerenciador de Secrets do Streamlit Cloud (Settings →
-    Secrets), nunca no código — mesmo com o repositório público no GitHub,
-    a senha não fica exposta."""
-    if st.session_state.get("autenticado"):
-        return True
+def _usuarios_configurados() -> dict:
+    """Acessos definidos em Settings → Secrets do Streamlit Cloud.
 
+    Formato por usuário (um bloco por pessoa; validade opcional, AAAA-MM-DD):
+
+        [usuarios.paulo]
+        senha = "senha-do-paulo"
+
+        [usuarios.teste1]
+        senha = "senha-provisoria"
+        validade = "2026-10-12"
+
+    Para cortar um acesso, apague o bloco da pessoa (ou deixe a validade
+    vencer): os demais acessos não mudam. A senha única antiga
+    ('senha_painel') continua aceita, como usuário "admin"."""
     try:
-        senha_esperada = st.secrets.get("senha_painel")
+        bruto = st.secrets.get("usuarios", {}) or {}
+        usuarios = {str(nome).lower(): dict(dados) for nome, dados in dict(bruto).items()}
+        senha_antiga = st.secrets.get("senha_painel")
     except Exception:
-        # st.secrets lança exceção (em vez de devolver None) quando não existe
-        # NENHUM secrets.toml configurado ainda — trata como "sem senha".
-        senha_esperada = None
-    if not senha_esperada:
-        st.title("🔒 Acesso ao Painel")
-        st.error(
-            "Nenhuma senha configurada ainda. Antes de publicar, defina "
-            "'senha_painel' em Settings → Secrets no Streamlit Cloud "
-            "(ou, pra testar localmente, crie um arquivo "
-            ".streamlit/secrets.toml com o conteúdo: "
-            'senha_painel = "sua-senha-aqui").'
-        )
-        return False
+        # st.secrets lança exceção quando não existe NENHUM secrets.toml
+        return {}
+    if senha_antiga and "admin" not in usuarios:
+        usuarios["admin"] = {"senha": senha_antiga}
+    return usuarios
+
+
+def _acesso_valido(usuarios: dict, nome: str, senha: str, hoje=None) -> tuple[bool, str]:
+    """Confere usuário, senha (comparação em tempo constante) e validade."""
+    import hmac
+    dados = usuarios.get((nome or "").strip().lower())
+    if not dados or not hmac.compare_digest(str(dados.get("senha", "")), str(senha or "")):
+        return False, "Usuário ou senha incorretos."
+    validade = dados.get("validade")
+    if validade:
+        hoje = hoje or datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+        if hoje > pd.Timestamp(str(validade)).date():
+            return False, "Este acesso expirou. Fale com o responsável pelo painel."
+    return True, ""
+
+
+def _verificar_senha() -> bool:
+    """Bloqueia o painel até um usuário válido entrar. Os acessos ficam nos
+    Secrets do Streamlit Cloud, nunca no código (o repositório é público)."""
+    usuarios = _usuarios_configurados()
+    if st.session_state.get("autenticado"):
+        # revalida a cada interação: um acesso apagado ou vencido cai na hora
+        nome = st.session_state.get("usuario", "admin")
+        dados = usuarios.get(nome)
+        ok, _ = _acesso_valido(usuarios, nome, dados.get("senha", "") if dados else "")
+        if ok:
+            return True
+        st.session_state.clear()
 
     st.title("🔒 Acesso ao Painel")
-    senha_digitada = st.text_input("Senha de acesso", type="password")
+    if not usuarios:
+        st.error(
+            "Nenhum acesso configurado ainda. Defina os usuários em Settings → Secrets no "
+            "Streamlit Cloud (ou, para testar localmente, no arquivo .streamlit/secrets.toml), "
+            'por exemplo: [usuarios.paulo] e, na linha seguinte, senha = "sua-senha".'
+        )
+        return False
+    nome = st.text_input("Usuário")
+    senha = st.text_input("Senha", type="password")
     if st.button("Entrar"):
-        if senha_digitada == senha_esperada:
+        ok, motivo = _acesso_valido(usuarios, nome, senha)
+        if ok:
             st.session_state["autenticado"] = True
+            st.session_state["usuario"] = nome.strip().lower()
             st.rerun()
         else:
-            st.error("Senha incorreta.")
+            st.error(motivo)
     return False
 
 
