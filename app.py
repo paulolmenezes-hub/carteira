@@ -420,7 +420,7 @@ def _renderizar_detalhe(d: str) -> str:
 _COLUNAS_DASHBOARD = [
     "Ticker", "Saldo Inicial (data)", "Saldo Inicial (valor)", "Preço Médio (PM)",
     "Qtde Inicial", "Compras (qtde)", "Compras (valor)", "Vendas (qtde)", "Vendas (valor)",
-    "Saldo Final (valor)", "Saldo Final (qtde)", "Saldo Final (data)", "Preço Final",
+    "Eventos (qtde)", "Saldo Final (valor)", "Saldo Final (qtde)", "Saldo Final (data)", "Preço Final",
     "Ganho Realizado", "Ganho/Prejuízo não Realizado", "Dividendos/Rendimentos", "Rentabilidade Total",
     "Rentabilidade %",
 ]
@@ -436,6 +436,7 @@ _CABECALHOS_DUAS_LINHAS = {
     "Compras (valor)": "Compras<br>(valor)",
     "Vendas (qtde)": "Vendas<br>(qtde)",
     "Vendas (valor)": "Vendas<br>(valor)",
+    "Eventos (qtde)": "Eventos<br>(qtde)",
     "Saldo Final (valor)": "Saldo Final<br>(valor)",
     "Saldo Final (qtde)": "Saldo Final<br>(qtde)",
     "Saldo Final (data)": "Saldo Final<br>(data)",
@@ -464,6 +465,8 @@ def _linha_dashboard_para_dict(l) -> dict:
         "Compras (valor)": _fmt_moeda(l.compras_valor, l.moeda) if l.compras_valor else "-",
         "Vendas (qtde)": _fmt_qtde(l.vendas_quantidade) if l.vendas_quantidade else "-",
         "Vendas (valor)": _fmt_moeda(l.vendas_valor, l.moeda) if l.vendas_valor else "-",
+        "Eventos (qtde)": (f"{'+' if l.eventos_quantidade > 0 else '−'}{_fmt_qtde(abs(l.eventos_quantidade))}"
+                           if l.eventos_quantidade else "-"),
         "Saldo Final (valor)": _fmt_moeda(l.saldo_final_valor, l.moeda),
         "Saldo Final (qtde)": _fmt_qtde(l.saldo_final_qtde),
         "Saldo Final (data)": _fmt_data(l.saldo_final_data),
@@ -500,7 +503,7 @@ def _linha_subtotal_para_dict(rotulo: str, linhas_grupo: list, moeda: str) -> di
         "Saldo Inicial (valor)": _fmt_moeda(saldo_inicial, moeda),
         "Compras (qtde)": "", "Compras (valor)": _fmt_moeda(compras, moeda) if compras else "-",
         "Vendas (qtde)": "", "Vendas (valor)": _fmt_moeda(vendas, moeda) if vendas else "-",
-        "Saldo Final (valor)": _fmt_moeda(saldo_final, moeda),
+        "Eventos (qtde)": "", "Saldo Final (valor)": _fmt_moeda(saldo_final, moeda),
         "Saldo Final (qtde)": "", "Saldo Final (data)": "", "Preço Final": "",
         "Ganho Realizado": _fmt_moeda_contabil(ganho_realizado, moeda),
         "Ganho/Prejuízo não Realizado": _fmt_moeda_contabil(ganho_nao_realizado, moeda),
@@ -604,7 +607,10 @@ st.markdown(
     "- **Resumo** — posição inicial de cada ativo: `ticker`, `quantidade`, "
     "`preco_medio` (ou `valor_investido`), `data_inicio`.\n"
     "- **Operações** — movimentações feitas a partir dali: `ticker`, `tipo` "
-    "(compra/venda), `quantidade`, `preco`, `data`.\n\n"
+    "(compra/venda), `quantidade`, `preco`, `data`. Eventos da empresa também entram nessa aba, "
+    "com a **diferença** de ações na quantidade: `bonificação` (ações recebidas; no preço, o custo "
+    "atribuído informado pela empresa, ou 0), `desdobramento` (ações recebidas; preço em branco) e "
+    "`grupamento` (ações que deixaram de existir; preço em branco).\n\n"
     "Você pode ter só uma das abas, ou as duas — quando tiver as duas, a "
     "posição inicial entra como o primeiro registro, e cada operação "
     "lançada depois ajusta quantidade, preço médio e ganho automaticamente, "
@@ -839,27 +845,40 @@ def _html_cabecalho_fiis(evidencias) -> str:
             "ficam no CDI e só compram cotas se o preço cair 15% abaixo do seu preço médio.</div>")
 
 
+def _html_cabecalho_evidencias(cards_do_grupo: list) -> str:
+    """Bloco único no topo de um grupo de ações/ETFs com o que o histórico
+    mostra para cada faixa: a frase é a mesma para todos os ativos do grupo,
+    por isso aparece uma vez só (e não repetida em cada card)."""
+    rotulos = {"realizacao": "📈 Faixa de realização de lucro", "queda": "📉 Faixa de queda"}
+    blocos = []
+    for situacao in ("realizacao", "queda"):
+        frase = next((c["evidencia"] for c in cards_do_grupo
+                      if c["situacao"] == situacao and c.get("evidencia")), None)
+        if frase:
+            blocos.append(f"<b>{rotulos[situacao]}</b> — {frase}")
+    if not blocos:
+        return ""
+    return ("<div style='background:#2a2f3a;color:#f3f4f6;border-radius:12px;padding:10px 14px;margin:0 0 12px;"
+            "font-size:.82em;line-height:1.45'>📊 <b>O que o histórico mostra</b> (vale para os cards deste grupo)"
+            "<br>" + "<br>".join(blocos) + "</div>")
+
+
 def _html_grupos_cenarios(cards: list, evidencias) -> str:
-    """Cards agrupados por mercado e tipo de ativo, com o cabeçalho único
-    dos FIIs no topo do grupo."""
-    partes, grupo_atual, grade = [], None, []
-
-    def fechar():
-        if grade:
-            partes.append("<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));"
-                          "gap:16px;margin-bottom:22px;align-items:start'>" + "".join(grade) + "</div>")
-
+    """Cards agrupados por mercado e tipo de ativo, com um cabeçalho único
+    no topo de cada grupo (FIIs: evidências e como ler a tabela; demais:
+    evidências por faixa)."""
+    grupos: dict = {}
     for card in cards:
-        chave = (card["mercado"], card["grupo"])
-        if chave != grupo_atual:
-            fechar()
-            grade, grupo_atual = [], chave
-            partes.append(f"<div style='font-weight:700;font-size:1.05em;margin:6px 0 10px 2px'>"
-                          f"{html.escape(chave[0])} · {html.escape(_NOME_GRUPO.get(chave[1], chave[1]))}</div>")
-            if chave[1] == "FIIs":
-                partes.append(_html_cabecalho_fiis(evidencias))
-        grade.append(_html_card_cenario(card))
-    fechar()
+        grupos.setdefault((card["mercado"], card["grupo"]), []).append(card)
+    partes = []
+    for chave, cards_do_grupo in grupos.items():
+        partes.append(f"<div style='font-weight:700;font-size:1.05em;margin:6px 0 10px 2px'>"
+                      f"{html.escape(chave[0])} · {html.escape(_NOME_GRUPO.get(chave[1], chave[1]))}</div>")
+        partes.append(_html_cabecalho_fiis(evidencias) if chave[1] == "FIIs"
+                      else _html_cabecalho_evidencias(cards_do_grupo))
+        grade = [_html_card_cenario({**c, "evidencia": None}) for c in cards_do_grupo]
+        partes.append("<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));"
+                      "gap:16px;margin-bottom:22px;align-items:start'>" + "".join(grade) + "</div>")
     return "".join(partes)
 
 
