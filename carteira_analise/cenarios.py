@@ -299,9 +299,11 @@ def frase_evidencia_card(evidencias: dict | None, tipo: str | None, situacao: st
                         "termina. Em altas longas, realizar tende a render menos que manter; em compensação, vender "
                         "parte a cada faixa de ganho sobre o preço médio transforma parte do lucro em ganho realizado, "
                         "que não se perde se o preço cair depois.")
+    # As medianas incluem os casos em que a faixa não foi atingida (cenário igual à
+    # referência), por isso a frase usa a proporção de casos em que a faixa foi atingida.
     return (inicio + f"nas vezes em que o preço chegou à faixa de queda, <b>aumentar a posição superou guardar o "
-            f"mesmo dinheiro no CDI em {so}{pv:.0f}% delas</b> ({moeda} {cen['cenario']:.0f} contra "
-            f"{moeda} {cen['referencia']:.0f} por {moeda} 100, em 4 anos).")
+            f"mesmo dinheiro no CDI em {so}{pv:.0f}% delas</b> (a faixa foi atingida em {cen['pct_agiu']:.0f}% "
+            f"dos casos testados, em 4 anos).")
 
 
 def frase_evidencia_fiis(evidencias: dict | None) -> str | None:
