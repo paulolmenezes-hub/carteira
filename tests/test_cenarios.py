@@ -177,7 +177,7 @@ def test_evidencias_e_frases():
     assert "nunca foi atingida" in frase_evidencia_card(e, "acao_us", "queda")
     assert frase_evidencia_card(e, "fii", "realizacao") is None
     assert frase_evidencia_card(e, "acao", "fora") is None and frase_evidencia_card(None, "acao", "queda") is None
-    assert "84%" in frase_evidencia_fiis(e) and "empatou na prática" in frase_evidencia_fiis(e)
+    assert "84%" in frase_evidencia_fiis(e) and "não mostrou vantagem clara" in frase_evidencia_fiis(e)
     assert frase_evidencia_fiis(None) is None
 
 

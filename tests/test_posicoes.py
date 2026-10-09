@@ -115,7 +115,7 @@ def test_gerar_posicoes_cenario_completo():
     assert por["HGLG11.SA"]["acao"] == "vender" and por["HGLG11.SA"]["posicao"] == "💰 Vender parte: 4 cota(s)"
     assert any("por mês" in l for l in por["HGLG11.SA"]["linhas"])
     assert por["VALE3.SA"]["categoria"] == "manter" and "rendimentos" in por["VALE3.SA"]["linhas"][0]
-    assert "não é hora de aumentar a posição" in por["VALE3.SA"]["linhas"][0]
+    assert "cenário de aumento não é mostrado" in por["VALE3.SA"]["linhas"][0]
     assert por["BOVA11.SA"]["acao"] == "comprar"
     assert por["QQQ"]["acao"] == "manter" and "US$" in por["QQQ"]["titulo"]
     assert por["QQQ"]["moeda"] == "US$" and por["HGLG11.SA"]["moeda"] == "R$"

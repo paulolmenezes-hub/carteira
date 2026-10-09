@@ -273,3 +273,165 @@ def test_linha_invalida_nao_derruba_a_carteira():
     assert por["IVV"].situacao != "erro" and por["QQQ"].situacao != "erro"
     cen = operacoes_por_ticker(None, ops)
     assert [o["quantidade"] for o in cen["IVV"]] == [10.0, 4.0] and len(cen["QQQ"]) == 1
+
+
+def test_bonificacao_a_preco_zero_entra_na_quantidade_sem_custo():
+    """Regressão (ITSA4/POMO4): compra lançada com preço 0 (bonificação) era
+    descartada no saldo final, mas somada na coluna de compras do extrato."""
+    import pandas as pd
+    from carteira_analise.planilha import processar_carteira_combinada, construir_dashboard_por_ativo
+    from carteira_analise.posicoes import operacoes_por_ticker
+    from carteira_analise.regra_posicao import estado_a_partir_de_operacoes
+
+    resumo = pd.DataFrame({"ticker": ["ITSA4"], "quantidade": [200], "preco_medio": [9.8127],
+                           "valor_investido": [None], "data_inicio": [pd.Timestamp("2024-08-07")]})
+    ops = pd.DataFrame({"ticker": ["ITSA4", "ITSA4"], "tipo": ["compra", "compra"],
+                        "data": [pd.Timestamp("2025-01-10"), pd.Timestamp("2025-12-22")],
+                        "quantidade": [455, 33], "preco": [9.3470, 0.0]})
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return pd.Series([16.07], index=[pd.Timestamp("2026-10-09")])
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+
+    linhas = processar_carteira_combinada(resumo, ops, Fonte())
+    assert linhas[0].quantidade_aberta == 688
+    assert linhas[0].avisos == []
+    custo = 200 * 9.8127 + 455 * 9.3470
+    assert abs(linhas[0].preco_medio_atual - custo / 688) < 1e-9
+    dash = construir_dashboard_por_ativo(resumo, ops, linhas)
+    assert dash[0].saldo_final_qtde == 688 == dash[0].qtde_inicial + dash[0].compras_quantidade + dash[0].eventos_quantidade
+
+    estado = estado_a_partir_de_operacoes(operacoes_por_ticker(resumo, ops)["ITSA4.SA"])
+    assert estado["quantidade"] == 688 and estado["n_reforcos"] == 1  # bonificação não conta como aumento
+
+
+def test_venda_a_preco_zero_continua_invalida():
+    from carteira_analise.ganhos import Operacao
+    import datetime as dt
+    import pytest
+    with pytest.raises(ValueError):
+        Operacao(data=dt.date(2025, 1, 1), tipo="venda", quantidade=1, preco=0)
+    with pytest.raises(ValueError):
+        Operacao(data=dt.date(2025, 1, 1), tipo="compra", quantidade=1, preco=-1)
+
+
+def test_extrato_usa_o_mesmo_preco_medio_dos_cards_quando_aberta():
+    import pandas as pd
+    from carteira_analise.planilha import processar_carteira_combinada, construir_dashboard_por_ativo
+    ops = pd.DataFrame({"ticker": ["X3"] * 3, "tipo": ["compra", "venda", "compra"],
+                        "data": pd.to_datetime(["2024-01-02", "2024-02-01", "2024-03-01"]),
+                        "quantidade": [10, 5, 5], "preco": [10.0, 12.0, 20.0]})
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return pd.Series([18.0], index=[pd.Timestamp("2024-04-01")])
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+
+    linhas = processar_carteira_combinada(None, ops, Fonte())
+    d = construir_dashboard_por_ativo(None, ops, linhas)[0]
+    assert d.preco_medio == linhas[0].preco_medio_atual == 15.0  # (5×10 + 5×20) / 10
+
+
+def test_cenarios_ignora_encerrada_sem_cotacao():
+    import pandas as pd
+    from carteira_analise.cenarios import gerar_cenarios
+    ops = pd.DataFrame({"ticker": ["BCFF11", "BCFF11"], "tipo": ["compra", "venda"],
+                        "data": pd.to_datetime(["2023-01-02", "2024-01-02"]),
+                        "quantidade": [10, 10], "preco": [80.0, 85.0]})
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            raise RuntimeError("sem cotação")
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+
+    cards, avisos = gerar_cenarios(None, ops, Fonte())
+    assert cards == [] and avisos == []
+
+
+def _fonte_fixa(preco=10.0):
+    import pandas as pd
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return pd.Series([preco], index=[pd.Timestamp("2026-10-01")])
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+    return Fonte()
+
+
+def _ops(linhas):
+    import pandas as pd
+    return pd.DataFrame(linhas, columns=["ticker", "tipo", "quantidade", "preco", "data"]).assign(
+        data=lambda d: pd.to_datetime(d["data"]))
+
+
+def test_desdobramento_multiplica_quantidade_e_mantem_custo():
+    import pytest
+    from carteira_analise.planilha import processar_carteira_combinada, construir_dashboard_por_ativo
+    ops = _ops([["X3", "compra", 100, 20.0, "2024-01-02"],
+                ["X3", "Desdobramento", 100, None, "2024-06-03"],   # 1:2 — recebeu 100 ações
+                ["X3", "venda", 50, 12.0, "2024-07-01"]])
+    l = processar_carteira_combinada(None, ops, _fonte_fixa(11.0))[0]
+    assert l.quantidade_aberta == 150 and l.preco_medio_atual == pytest.approx(10.0)
+    assert l.ganho_realizado == pytest.approx(50 * (12.0 - 10.0)) and l.avisos == []
+    d = construir_dashboard_por_ativo(None, ops, [l])[0]
+    assert d.eventos_quantidade == 100
+    assert d.compras_quantidade + d.eventos_quantidade - d.vendas_quantidade == d.saldo_final_qtde
+
+
+def test_grupamento_reduz_quantidade_e_mantem_custo():
+    import pytest
+    from carteira_analise.planilha import processar_carteira_combinada
+    ops = _ops([["X3", "compra", 1000, 1.0, "2024-01-02"],
+                ["X3", "grupamento", 900, None, "2024-06-03"]])     # 10:1 — sobram 100
+    l = processar_carteira_combinada(None, ops, _fonte_fixa(12.0))[0]
+    assert l.quantidade_aberta == pytest.approx(100) and l.preco_medio_atual == pytest.approx(10.0)
+    assert l.ganho_nao_realizado == pytest.approx(200.0)
+
+
+def test_bonificacao_com_custo_atribuido_entra_no_custo():
+    import pytest
+    from carteira_analise.planilha import processar_carteira_combinada
+    from carteira_analise.posicoes import operacoes_por_ticker
+    from carteira_analise.regra_posicao import estado_a_partir_de_operacoes
+    ops = _ops([["ABCD3", "compra", 100, 10.0, "2024-01-02"],
+                ["ABCD3", "Bonificação", 10, 5.0, "2024-06-03"]])
+    l = processar_carteira_combinada(None, ops, _fonte_fixa())[0]
+    assert l.quantidade_aberta == 110 and l.preco_medio_atual == pytest.approx(1050 / 110)
+    estado = estado_a_partir_de_operacoes(operacoes_por_ticker(None, ops)["ABCD3.SA"])
+    assert estado["n_reforcos"] == 0  # custo atribuído abaixo do PM não é "aumento na queda"
+
+
+def test_evento_sem_posicao_ou_grupamento_excessivo_vira_erro():
+    from carteira_analise.planilha import processar_carteira_combinada
+    sem_posicao = _ops([["X3", "desdobramento", 10, None, "2024-01-02"],
+                        ["X3", "compra", 10, 1.0, "2024-02-01"]])
+    assert processar_carteira_combinada(None, sem_posicao, _fonte_fixa())[0].situacao == "erro"
+    excessivo = _ops([["X3", "compra", 10, 1.0, "2024-01-02"], ["X3", "grupamento", 10, None, "2024-02-01"]])
+    l = processar_carteira_combinada(None, excessivo, _fonte_fixa())[0]
+    assert l.situacao == "erro" and "grupamento" in l.erro
+
+
+def test_desdobramento_ajusta_operacoes_anteriores_para_a_escala_atual():
+    import pandas as pd
+    from carteira_analise.planilha import aplicar_eventos_societarios
+    ops = [{"data": pd.Timestamp("2024-01-02"), "tipo": "compra", "quantidade": 10.0, "preco": 30.0},
+           {"data": pd.Timestamp("2024-02-01"), "tipo": "desdobramento", "quantidade": 20.0, "preco": 0.0}]
+    r = aplicar_eventos_societarios(ops)
+    assert len(r) == 1 and r[0]["quantidade"] == 30 and r[0]["preco"] == 10
+    assert ops[0]["quantidade"] == 10  # não altera a lista recebida
+
+
+def test_tipo_invalido_lista_os_tipos_aceitos():
+    from carteira_analise.planilha import processar_carteira_combinada
+    ops = _ops([["X3", "compra", 10, 1.0, "2024-01-02"], ["X3", "subscrição", 1, 1.0, "2024-02-01"]])
+    l = processar_carteira_combinada(None, ops, _fonte_fixa())[0]
+    assert any("grupamento" in a for a in l.avisos)

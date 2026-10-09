@@ -67,7 +67,7 @@ def test_limite_de_2_reforcos():
         aplicar_compra(e, e['quantidade'] * d['fracao'], p, True)
     assert e['n_reforcos'] == 2
     d = decidir_posicao(70, e)
-    assert d['acao'] == 'manter_nao_aumente' and '2 vezes' in d['motivo']
+    assert d['acao'] == 'manter_nao_aumente' and 'máximo 2 aumentos' in d['motivo']
 
 def test_referencia_eh_pm_atual():
     # após reforço a 85, PM ~98,64: a 85 a variação é ~-13,8% => manter
@@ -323,7 +323,7 @@ def test_card_manter_bloqueio_e_sem_posicao():
     assert d['acao'] == 'manter_nao_aumente'
     c = montar_card_posicao('X', e, 80, d, 0)
     assert c['posicao'] == '⚪ Manter posição' and c['categoria'] == 'manter' and c['acao'] == 'manter'
-    assert 'não é hora de aumentar a posição' in c['linhas'][0] and 'dívida' in c['linhas'][0]
+    assert 'cenário de aumento não é mostrado' in c['linhas'][0] and 'dívida' in c['linhas'][0]
     assert c['prioridade'] == 1
     z = novo_estado(0, 0)
     assert montar_card_posicao('X', z, 10, decidir_posicao(10, z), 0)['prioridade'] == 2
