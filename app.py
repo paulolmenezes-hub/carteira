@@ -420,7 +420,7 @@ def _renderizar_detalhe(d: str) -> str:
 _COLUNAS_DASHBOARD = [
     "Ticker", "Saldo Inicial (data)", "Saldo Inicial (valor)", "Preço Médio (PM)",
     "Qtde Inicial", "Compras (qtde)", "Compras (valor)", "Vendas (qtde)", "Vendas (valor)",
-    "Eventos (qtde)", "Saldo Final (valor)", "Saldo Final (qtde)", "Saldo Final (data)", "Preço Final",
+    "Eventos (qtde)", "Saldo Final (valor)", "Saldo Final (qtde)", "Preço Final",
     "Ganho Realizado", "Ganho/Prejuízo não Realizado", "Dividendos/Rendimentos", "Rentabilidade Total",
     "Rentabilidade %",
 ]
@@ -557,9 +557,9 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
         # crescer além do container (17 colunas com texto sem quebra) pra
         # disparar a rolagem do <div> em volta; travar a tabela em 100%
         # espremia as células em vez de rolar.
-        {"selector": "table", "props": [("border-collapse", "collapse"), ("font-size", "0.85em")]},
+        {"selector": "table", "props": [("border-collapse", "collapse"), ("font-size", "0.82em")]},
         {"selector": "td", "props": [
-            ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 8px"), ("white-space", "nowrap"),
+            ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 6px"), ("white-space", "nowrap"),
         ]},
         {"selector": "th", "props": [
             ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 6px"),
@@ -599,6 +599,11 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
         f'<div style="overflow-x: auto; max-width: 100%; display: block;">{styler.to_html()}</div>',
         unsafe_allow_html=True,
     )
+    # A data do saldo final é a mesma para todos os ativos (a da análise): sai
+    # da tabela, que ganhou a coluna de eventos, e vai para a legenda.
+    data_final = next((l.saldo_final_data for l in linhas_dashboard if l.saldo_final_data), None)
+    if data_final:
+        st.caption(f"Saldo final e preço final em {_fmt_data(data_final)}.")
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
