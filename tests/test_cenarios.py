@@ -313,3 +313,11 @@ def test_retrospecto_com_lista_de_rendimentos_vazia_nao_quebra():
     r = retrospecto_reinvestimento(ops, s, pd.Series(dtype=float))
     lin = {nome: vals for nome, _, *vals in r["linhas"]}
     assert lin["Cotas hoje"] == [10, 10, 10] and lin["Em caixa (CDI líquido)"] == [0, 0, 0]
+
+
+def test_frase_de_queda_usa_proporcao_de_casos_atingidos_e_nao_medianas_iguais():
+    from carteira_analise.cenarios import frase_evidencia_card
+    e = {"periodo": "2022 e 2026", "acoes": {"Ações B3": {"ativos": 12, "aumentar": {
+        "cenario": 315, "referencia": 315, "pct_agiu": 39, "pct_vence_quando_agiu": 75}}}}
+    f = frase_evidencia_card(e, "acao", "queda")
+    assert "75%" in f and "atingida em 39%" in f and "315" not in f
