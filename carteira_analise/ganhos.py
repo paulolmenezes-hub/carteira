@@ -114,7 +114,9 @@ class Operacao:
             raise ValueError("tipo deve ser 'compra' ou 'venda'")
         if self.quantidade <= 0:
             raise ValueError("quantidade deve ser positiva")
-        if self.preco <= 0:
+        # compra a preço zero = bonificação, desdobramento ou ações recebidas
+        # sem custo: as ações entram na posição sem alterar o custo total
+        if self.preco < 0 or (self.preco == 0 and self.tipo == "venda"):
             raise ValueError("preco deve ser positivo")
 
 

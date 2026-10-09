@@ -15,9 +15,9 @@ import pandas as pd
 
 from .planilha import (
     _TIPO_PARA_GRUPO,
-    _construir_operacao_da_posicao_inicial,
-    interpretar_quantidade_operacao,
+    aplicar_eventos_societarios,
     normalizar_ticker,
+    operacoes_do_ticker,
 )
 from .regra_posicao import (
     decidir_posicao,
@@ -40,41 +40,26 @@ def _sem_fuso(serie: pd.Series) -> pd.Series:
 def operacoes_por_ticker(df_resumo: pd.DataFrame | None,
                          df_operacoes: pd.DataFrame | None) -> dict[str, list[dict]]:
     """Mesma combinação Resumo + Operações de ``processar_carteira_combinada``
-    (posição inicial primeiro, operações em cima), no formato de dict usado
-    pela regra. Linhas inválidas são ignoradas aqui — o painel já avisa
-    sobre elas na leitura da planilha e no dashboard."""
-    ops: dict[str, list[dict]] = {}
+    (posição inicial primeiro, operações em cima, eventos societários
+    aplicados), no formato de dict usado pela regra. Linhas inválidas são
+    ignoradas aqui — o painel já avisa sobre elas no extrato."""
+    resumo: dict[str, object] = {}
     if df_resumo is not None:
         for _, row in df_resumo.iterrows():
-            ticker, _ = normalizar_ticker(row["ticker"])
-            try:
-                op = _construir_operacao_da_posicao_inicial(row)
-            except (ValueError, TypeError):
-                continue
-            ops.setdefault(ticker, []).append({
-                "data": pd.Timestamp(op.data), "tipo": op.tipo,
-                "quantidade": float(op.quantidade), "preco": float(op.preco)})
+            resumo[normalizar_ticker(row["ticker"])[0]] = row
+    grupos: dict[str, pd.DataFrame] = {}
     if df_operacoes is not None and not df_operacoes.empty:
-        for _, row in df_operacoes.iterrows():
-            ticker, _ = normalizar_ticker(row["ticker"])
-            tipo_bruto = str(row["tipo"]).strip().lower()
-            if tipo_bruto in ("compra", "buy", "c"):
-                tipo = "compra"
-            elif tipo_bruto in ("venda", "sell", "v"):
-                tipo = "venda"
-            else:
-                continue
-            quantidade, _ = interpretar_quantidade_operacao(tipo, row["quantidade"])
-            if quantidade is None:
-                continue
-            try:
-                preco = float(row["preco"])
-                if not preco > 0:
-                    continue
-                ops.setdefault(ticker, []).append({
-                    "data": pd.Timestamp(row["data"]), "tipo": tipo, "quantidade": quantidade, "preco": preco})
-            except (ValueError, TypeError):
-                continue
+        chaves = df_operacoes["ticker"].apply(lambda t: normalizar_ticker(t)[0])
+        grupos = {t: g for t, g in df_operacoes.groupby(chaves)}
+    ops: dict[str, list[dict]] = {}
+    for ticker in sorted(set(resumo) | set(grupos)):
+        lista, _, _ = operacoes_do_ticker(resumo.get(ticker), grupos.get(ticker))
+        try:
+            lista = aplicar_eventos_societarios(lista)
+        except ValueError:
+            continue
+        if lista:
+            ops[ticker] = lista
     return ops
 
 
@@ -132,6 +117,12 @@ def gerar_posicoes(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
     avisos: list[str] = []
 
     for ticker, ops in sorted(operacoes_por_ticker(df_resumo, df_operacoes).items()):
+        # posição já encerrada (ex.: fundo incorporado, sem cotação): sem card e sem aviso
+        try:
+            if estado_a_partir_de_operacoes(ops)["quantidade"] <= 0:
+                continue
+        except (ValueError, TypeError, KeyError):
+            pass  # o erro é relatado abaixo, com o histórico de preços
         try:
             precos = _sem_fuso(fonte.baixar_precos(ticker, periodo)).dropna()
         except Exception:

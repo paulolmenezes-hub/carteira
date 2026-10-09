@@ -147,6 +147,124 @@ def interpretar_quantidade_operacao(tipo: str, valor) -> tuple[float | None, str
     return q, None
 
 
+# Eventos societários aceitos na coluna "tipo" da aba Operações. A
+# quantidade é sempre a DIFERENÇA de ações (positiva): as recebidas na
+# bonificação/desdobramento, as que deixaram de existir no grupamento.
+_TIPOS_OPERACAO = {
+    "compra": "compra", "buy": "compra", "c": "compra",
+    "venda": "venda", "sell": "venda", "v": "venda",
+    "bonificacao": "bonificacao", "bonus": "bonificacao",
+    "desdobramento": "desdobramento", "desdobro": "desdobramento", "split": "desdobramento",
+    "grupamento": "grupamento", "agrupamento": "grupamento", "inplit": "grupamento",
+    "reverse split": "grupamento",
+}
+EVENTOS_SOCIETARIOS = ("bonificacao", "desdobramento", "grupamento")
+
+
+def normalizar_tipo_operacao(valor) -> str | None:
+    """'Compra', 'Bonificação', 'Desdobro'... -> tipo interno, ou None."""
+    texto = _normalizar_nome_coluna(str(valor)).replace("_", " ").strip()
+    return _TIPOS_OPERACAO.get(texto)
+
+
+def aplicar_eventos_societarios(ops: list[dict]) -> list[dict]:
+    """Converte a lista de operações (dicts data/tipo/quantidade/preco, já
+    validados) para o "padrão de hoje", em que só existem compras e vendas:
+
+    - desdobramento e grupamento mudam o número de ações sem mudar o custo
+      total. As operações ANTERIORES ao evento são reescritas pelo fator
+      (quantidade x fator, preço / fator) — o mesmo ajuste que as cotações
+      históricas já trazem, o que mantém operações e histórico de preços na
+      mesma escala. Custo total, ganho realizado e quantidade final não mudam;
+    - bonificação vira compra das ações recebidas pelo custo atribuído
+      informado pela empresa (coluna preço; 0 se não houver), como manda a
+      Receita Federal, marcada como evento (não conta como aumento na queda).
+
+    Compra com preço 0 é tratada como bonificação. Levanta ValueError se o
+    evento acontecer sem posição ou se o grupamento consumir a posição toda."""
+    ordem = {"compra": 0, "venda": 1}  # no mesmo dia, o evento vem depois das negociações
+    ops = sorted(ops, key=lambda o: (pd.Timestamp(o["data"]), ordem.get(o["tipo"], 2)))
+    saida: list[dict] = []
+    q = 0.0
+    for op in ops:
+        op = dict(op)
+        tipo = op["tipo"]
+        if tipo == "compra" and op["preco"] == 0:
+            tipo = "bonificacao"
+        if tipo in ("desdobramento", "grupamento"):
+            data = pd.Timestamp(op["data"])
+            if q <= 0:
+                raise ValueError(f"{tipo} em {data:%d/%m/%Y} sem posição aberta")
+            novo_q = q + op["quantidade"] if tipo == "desdobramento" else q - op["quantidade"]
+            if novo_q <= 0:
+                raise ValueError(f"grupamento em {data:%d/%m/%Y} de {op['quantidade']:g} ações, mas a "
+                                 f"posição era de {q:g}")
+            fator = novo_q / q
+            for anterior in saida:
+                anterior["quantidade"] *= fator
+                anterior["preco"] /= fator
+            q = novo_q
+            continue
+        if tipo == "bonificacao":
+            if q <= 0:
+                raise ValueError(f"bonificação em {pd.Timestamp(op['data']):%d/%m/%Y} sem posição aberta")
+            op.update(tipo="compra", evento=True)
+        if op["tipo"] == "venda":
+            q -= op["quantidade"]
+        else:
+            q += op["quantidade"]
+        saida.append(op)
+    return saida
+
+
+def operacoes_do_ticker(row_resumo, grupo_operacoes: pd.DataFrame | None) -> tuple[list[dict], list[str], int]:
+    """Operações válidas de um ativo (posição inicial da aba Resumo + aba
+    Operações), já com os eventos societários aplicados. Devolve
+    (operações, avisos sobre linhas ignoradas, nº de linhas aproveitadas)."""
+    ops: list[dict] = []
+    avisos: list[str] = []
+    if row_resumo is not None:
+        try:
+            op = _construir_operacao_da_posicao_inicial(row_resumo)
+            ops.append({"data": pd.Timestamp(op.data), "tipo": "compra",
+                        "quantidade": float(op.quantidade), "preco": float(op.preco)})
+        except (ValueError, TypeError) as e:
+            avisos.append(f"posição inicial (aba Resumo) inválida — {e}")
+    n = 0
+    if grupo_operacoes is not None:
+        for _, row in grupo_operacoes.iterrows():
+            tipo = normalizar_tipo_operacao(row["tipo"])
+            if tipo is None:
+                avisos.append(f"tipo inválido {row['tipo']!r} numa operação (use compra, venda, "
+                              f"bonificação, desdobramento ou grupamento)")
+                continue
+            try:
+                data_op = pd.Timestamp(row["data"])
+                if pd.isna(data_op):
+                    raise ValueError
+                preco_bruto = row["preco"]
+                if tipo in ("desdobramento", "grupamento"):
+                    preco_op = 0.0  # não há preço: só muda o número de ações
+                elif tipo == "bonificacao" and (preco_bruto is None or pd.isna(preco_bruto)):
+                    preco_op = 0.0  # custo atribuído não informado
+                else:
+                    preco_op = float(preco_bruto)
+            except (ValueError, TypeError):
+                avisos.append(f"operação com data/preço ilegível (data={row['data']!r}) — linha ignorada")
+                continue
+            quantidade, motivo = interpretar_quantidade_operacao(
+                "venda" if tipo == "grupamento" else tipo, row["quantidade"])
+            if quantidade is None:
+                avisos.append(f"{tipo} de {data_op:%d/%m/%Y} com {motivo} — linha ignorada")
+                continue
+            if preco_op < 0 or (preco_op == 0 and tipo == "venda") or preco_op != preco_op:
+                avisos.append(f"{tipo} de {data_op:%d/%m/%Y} com preço inválido ({preco_bruto!r}) — linha ignorada")
+                continue
+            ops.append({"data": data_op, "tipo": tipo, "quantidade": quantidade, "preco": preco_op})
+            n += 1
+    return ops, avisos, n
+
+
 def processar_carteira_combinada(
     df_resumo: pd.DataFrame | None,
     df_operacoes: pd.DataFrame | None,
@@ -176,42 +294,16 @@ def processar_carteira_combinada(
 
     for ticker in todos_tickers:
         moeda = "R$" if ticker.endswith(".SA") else "US$"
-        operacoes: list[Operacao] = []
-        avisos: list[str] = []
-
-        if ticker in tickers_resumo:
-            try:
-                operacoes.append(_construir_operacao_da_posicao_inicial(tickers_resumo[ticker]))
-            except (ValueError, TypeError) as e:
-                avisos.append(f"posição inicial (aba Resumo) inválida — {e}")
-
-        n_operacoes_lancadas = 0
-        if ticker in tickers_operacoes:
-            for _, row in tickers_operacoes[ticker].iterrows():
-                tipo_bruto = str(row["tipo"]).strip().lower()
-                if tipo_bruto in ("compra", "buy", "c"):
-                    tipo = "compra"
-                elif tipo_bruto in ("venda", "sell", "v"):
-                    tipo = "venda"
-                else:
-                    avisos.append(f"tipo inválido {row['tipo']!r} numa operação (use compra/venda)")
-                    continue
-                try:
-                    data_op = pd.Timestamp(row["data"]).date()
-                    preco_op = float(row["preco"])
-                except (ValueError, TypeError):
-                    avisos.append(f"operação com data/preço ilegível (data={row['data']!r}) — linha ignorada")
-                    continue
-                quantidade_op, motivo = interpretar_quantidade_operacao(tipo, row["quantidade"])
-                if quantidade_op is None:
-                    avisos.append(f"{tipo} de {data_op:%d/%m/%Y} com {motivo} — linha ignorada")
-                    continue
-                try:
-                    operacoes.append(Operacao(data=data_op, tipo=tipo, quantidade=quantidade_op, preco=preco_op))
-                except ValueError as e:
-                    avisos.append(f"{tipo} de {data_op:%d/%m/%Y} inválida ({e}) — linha ignorada")
-                    continue
-                n_operacoes_lancadas += 1
+        ops, avisos, n_operacoes_lancadas = operacoes_do_ticker(
+            tickers_resumo.get(ticker), tickers_operacoes.get(ticker))
+        try:
+            ops = aplicar_eventos_societarios(ops)
+        except ValueError as e:
+            linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
+                                         origem="", avisos=avisos, erro=str(e)))
+            continue
+        operacoes = [Operacao(data=o["data"].date(), tipo=o["tipo"], quantidade=o["quantidade"],
+                              preco=o["preco"]) for o in ops]
 
         if not operacoes:
             linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
@@ -278,11 +370,14 @@ class LinhaDashboardAtivo:
     saldo_inicial_valor: float | None = None
     saldo_inicial_data: object = None  # date ou None, se o ativo não tiver aba Resumo
     qtde_inicial: float | None = None
-    preco_medio: float | None = None  # custo médio ponderado de tudo que já foi comprado
+    preco_medio: float | None = None  # posição aberta: custo médio da posição (o mesmo dos cards); encerrada: de tudo que foi comprado
     compras_valor: float = 0.0
     compras_quantidade: float = 0.0
     vendas_valor: float = 0.0
     vendas_quantidade: float = 0.0
+    # bonificação/desdobramento (+) e grupamento (−): muda a quantidade sem ser compra ou venda
+    eventos_quantidade: float = 0.0
+    eventos_custo: float = 0.0  # custo atribuído das bonificações (Receita Federal)
     saldo_final_valor: float | None = None
     saldo_final_qtde: float | None = None
     saldo_final_data: object = None  # date da análise, ou None se ainda não foi calculado
@@ -367,16 +462,31 @@ def construir_dashboard_por_ativo(
 
         if ticker in tickers_operacoes:
             for _, row in tickers_operacoes[ticker].iterrows():
-                tipo_bruto = str(row["tipo"]).strip().lower()
+                tipo = normalizar_tipo_operacao(row["tipo"])
+                quantidade_op, _ = interpretar_quantidade_operacao(
+                    "venda" if tipo == "grupamento" else (tipo or "compra"), row["quantidade"])
+                if tipo is None or quantidade_op is None:
+                    continue  # linha inválida — mesma tolerância de processar_carteira_combinada
+                if tipo in ("desdobramento", "grupamento"):
+                    linha.eventos_quantidade += quantidade_op if tipo == "desdobramento" else -quantidade_op
+                    continue
                 try:
-                    quantidade_op = float(row["quantidade"])
                     preco_op = float(row["preco"])
                 except (ValueError, TypeError):
-                    continue  # linha ilegível — mesma tolerância de processar_carteira_combinada
-                if tipo_bruto in ("compra", "buy", "c"):
+                    if tipo != "bonificacao":
+                        continue
+                    preco_op = 0.0
+                if preco_op != preco_op:  # vazio
+                    if tipo != "bonificacao":
+                        continue
+                    preco_op = 0.0
+                if tipo == "bonificacao" or (tipo == "compra" and preco_op == 0):
+                    linha.eventos_quantidade += quantidade_op
+                    linha.eventos_custo += quantidade_op * preco_op
+                elif tipo == "compra" and preco_op > 0:
                     linha.compras_quantidade += quantidade_op
                     linha.compras_valor += quantidade_op * preco_op
-                elif tipo_bruto in ("venda", "sell", "v"):
+                elif tipo == "venda" and preco_op > 0:
                     linha.vendas_quantidade += quantidade_op
                     linha.vendas_valor += quantidade_op * preco_op
 
@@ -384,8 +494,8 @@ def construir_dashboard_por_ativo(
         # + compras), independente do ativo ainda estar aberto ou não —
         # não depende do estado transitório do ganhos.py, então funciona
         # igual pra posição aberta ou já totalmente encerrada.
-        qtde_total_comprada = (linha.qtde_inicial or 0.0) + linha.compras_quantidade
-        valor_total_comprado = (linha.saldo_inicial_valor or 0.0) + linha.compras_valor
+        qtde_total_comprada = (linha.qtde_inicial or 0.0) + linha.compras_quantidade + linha.eventos_quantidade
+        valor_total_comprado = (linha.saldo_inicial_valor or 0.0) + linha.compras_valor + linha.eventos_custo
         if qtde_total_comprada > 0:
             linha.preco_medio = valor_total_comprado / qtde_total_comprada
 
@@ -397,6 +507,10 @@ def construir_dashboard_por_ativo(
             if resultado_ganho.quantidade_aberta and resultado_ganho.preco_atual is not None:
                 linha.saldo_final_valor = resultado_ganho.quantidade_aberta * resultado_ganho.preco_atual
                 linha.saldo_final_data = data_analise
+            # posição aberta: mesmo preço médio dos cards (custo médio ponderado
+            # da posição em aberto, regra da Receita); encerrada: custo de tudo comprado
+            if resultado_ganho.quantidade_aberta and resultado_ganho.preco_medio_atual is not None:
+                linha.preco_medio = resultado_ganho.preco_medio_atual
             linha.ganho_realizado = resultado_ganho.ganho_realizado
             linha.ganho_nao_realizado = resultado_ganho.ganho_nao_realizado
             linha.renda_recebida = resultado_ganho.renda_recebida

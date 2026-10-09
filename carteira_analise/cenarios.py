@@ -153,7 +153,7 @@ def _posicao_na_data(ops: list[dict], data) -> tuple[float, float]:
     for op in sorted(ops, key=lambda o: pd.Timestamp(o["data"])):
         if pd.Timestamp(op["data"]) > pd.Timestamp(data):
             break
-        if op["tipo"] == "compra":
+        if op["tipo"] == "compra":  # eventos societários já convertidos (aplicar_eventos_societarios)
             q += op["quantidade"]
             custo += op["quantidade"] * op["preco"]
         elif q > 0:
@@ -318,9 +318,11 @@ def frase_evidencia_fiis(evidencias: dict | None) -> str | None:
             f"por R$ 100, em 4 anos).")
     if pv is None:
         return base + " A faixa de queda para comprar cotas com a reserva do CDI não foi atingida nas datas testadas."
-    if 40 <= pv <= 60:
-        leitura = "empatou na prática"
-    elif pv > 60:
+    # Faixa larga para "sem vantagem clara": entre execuções do teste (datas de
+    # entrada e CDI atualizados) a proporção variou de 48% a 62%.
+    if 35 <= pv <= 65:
+        leitura = "não mostrou vantagem clara (resultado próximo da equivalência, não conclusivo)"
+    elif pv > 65:
         leitura = "foi melhor na maioria das vezes"
     else:
         leitura = "foi pior na maioria das vezes"
@@ -344,6 +346,12 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
     fundamentos = fundamentos or {}
     cards, avisos = [], []
     for ticker, ops in sorted(operacoes_por_ticker(df_resumo, df_operacoes).items()):
+        # posição já encerrada (ex.: fundo incorporado, sem cotação): sem card e sem aviso
+        try:
+            if estado_a_partir_de_operacoes(ops)["quantidade"] <= 0:
+                continue
+        except (ValueError, TypeError, KeyError):
+            pass  # o erro é relatado abaixo, com o histórico de preços
         try:
             precos = _sem_fuso(fonte.baixar_precos(ticker, periodo)).dropna()
         except Exception:

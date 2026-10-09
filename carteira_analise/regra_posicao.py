@@ -91,10 +91,10 @@ def decidir_posicao(preco, estado, config=None, compra_permitida=True, motivos_b
                           f"vender parte (realizar {fracao*100:.0f}% da posição) e garantir parte do lucro")
             return {'acao': acao, 'fracao': fracao, 'variacao': var, 'faixa': limiar, 'motivo': motivo}
         proximas = [f for f in faixas_venda if f[0] > estado['faixa_venda_executada'] + 1e-12]
-        prox_txt = (f" A próxima venda é a partir de +{proximas[0][0]*100:.0f}%." if proximas else "")
+        prox_txt = (f" A próxima faixa de realização começa em +{proximas[0][0]*100:.0f}%." if proximas else "")
         return {'acao': 'manter', 'fracao': 0.0, 'variacao': var, 'faixa': None,
-                'motivo': (f"subiu {var*100:.0f}% sobre o seu preço médio, mas você já vendeu parte "
-                           f"nesta faixa.{prox_txt}")}
+                'motivo': (f"subiu {var*100:.0f}% sobre o seu preço médio. A planilha registra venda "
+                           f"nesta faixa, por isso o cenário de realização não se repete.{prox_txt}")}
 
     # ---- Compra na queda: faixa mais funda atingida ----
     faixas_compra = sorted(cfg['faixas_compra'])  # mais funda primeiro
@@ -103,20 +103,22 @@ def decidir_posicao(preco, estado, config=None, compra_permitida=True, motivos_b
         limiar, fracao = atingidas_c[0]
         if aplicar_limite_reforcos and estado['n_reforcos'] >= cfg['max_reforcos']:
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
-                    'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio, mas você já "
-                               f"aumentou a posição {estado['n_reforcos']} vezes na queda. Espere o "
-                               f"preço voltar a subir antes de colocar mais dinheiro.")}
+                    'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio. A regra de faixas prevê "
+                               f"no máximo {cfg['max_reforcos']} aumentos por ciclo de queda, e a planilha "
+                               f"registra {estado['n_reforcos']} compras abaixo do preço médio neste ciclo; "
+                               f"por isso o cenário de aumento não é mostrado. O ciclo recomeça quando o "
+                               f"preço volta a ficar {cfg['limiar_reset_reforcos']*100:.0f}% acima do preço médio.")}
         dist = cfg.get('distancia_minima_nova_compra')
         ult = estado.get('preco_ultimo_reforco')
         if dist is not None and ult is not None and preco > ult * (1 - dist):
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
-                    'motivo': (f"você já aumentou a posição a {ult:.2f}; o próximo aumento só vale "
-                               f"abaixo de {ult * (1 - dist):.2f}.")}
+                    'motivo': (f"a última compra abaixo do preço médio foi a {ult:.2f}; pela regra de "
+                               f"faixas, um novo aumento só é considerado abaixo de {ult * (1 - dist):.2f}.")}
         if not compra_permitida:
             razoes = '; '.join(motivos_bloqueio or []) or 'os fundamentos não confirmam a compra'
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
-                    'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio, mas não é hora de "
-                               f"aumentar a posição: {razoes}.")}
+                    'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio; o cenário de aumento "
+                               f"não é mostrado porque {razoes}.")}
         return {'acao': 'comprar', 'fracao': fracao, 'variacao': var, 'faixa': limiar,
                 'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio — pela regra, é o ponto de "
                            f"aumentar a posição em {fracao*100:.0f}%, o que baixa o seu preço médio")}
@@ -188,7 +190,8 @@ def estado_a_partir_de_operacoes(operacoes, historico_precos=None, config=None):
         data = pd.Timestamp(op['data'])
         _passar_precos(data_anterior, data)
         if op['tipo'] == 'compra':
-            eh_reforco = estado['quantidade'] > 0 and op['preco'] < estado['preco_medio']
+            eh_reforco = (estado['quantidade'] > 0 and not op.get('evento')  # bonificação não conta
+                          and 0 < op['preco'] < estado['preco_medio'])
             aplicar_compra(estado, float(op['quantidade']), float(op['preco']), eh_reforco)
         elif op['tipo'] == 'venda':
             aplicar_venda(estado, float(op['quantidade']), float(op['preco']), config)
