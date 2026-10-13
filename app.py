@@ -771,6 +771,12 @@ def _html_card_cenario(card: dict) -> str:
         d = card["abaixo_da_maxima_12m"]
         texto = "na máxima" if d < 0.005 else f"{d * 100:.0f}% abaixo da máxima"
         partes.append(f"<div style='font-size:.82em;opacity:.92'>Mercado: a cota está {texto} dos últimos 12 meses</div>")
+    # Evento societário não lançado: o preço médio do card fica errado, então o
+    # aviso vem logo abaixo dos preços, em destaque (fundo branco, texto vermelho).
+    for aviso in card.get("alertas_evento", []):
+        partes.append("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#b91c1c;"
+                      "border-left:5px solid #b91c1c;border-radius:8px;font-size:.84em;font-weight:700;"
+                      f"line-height:1.4'>⚠️ Possível evento não lançado: {html.escape(aviso)}</div>")
     tabela = card.get("tabela")
     if tabela:
         partes.append(f"<div style='margin-top:10px;font-weight:600;font-size:.9em'>{html.escape(tabela['titulo'])}</div>")
@@ -975,8 +981,7 @@ with tab_carteira:
                     # validação), então o aviso vai no próprio card e no topo.
                     eventos = {l.ticker: l.avisos_eventos for l in linhas_ganho if l.avisos_eventos}
                     for c in cards:
-                        for a in eventos.get(c["ticker"], []):
-                            c.setdefault("alertas", []).insert(0, "possível evento não lançado — " + a.rstrip("."))
+                        c["alertas_evento"] = list(eventos.get(c["ticker"], []))
                     avisos[:0] = [f"{t}: {a}" for t, lista in eventos.items() for a in lista]
                     cenarios = (cards, avisos)
                 except Exception as e:
