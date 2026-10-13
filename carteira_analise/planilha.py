@@ -451,11 +451,27 @@ def processar_carteira_combinada(
     return linhas
 
 
+# Nomes aceitos para as duas abas. Os nomes alternativos vieram da validação
+# com o usuário-piloto: "Resumo" foi lido como "posição atual", quando é o
+# ponto de partida (a primeira compra ou a posição numa data de início).
+NOMES_ABA_RESUMO = ["Resumo", "Resumo da carteira", "Posicao", "Posição", "Posição inicial",
+                    "1ª compra", "1a compra", "1º compra", "1o compra", "Primeira compra"]
+NOMES_ABA_OPERACOES = ["Operações", "Operacoes", "Movimentações", "Movimentacoes",
+                       "Compras e vendas posteriores"]
+
+
+def _normalizar_nome_aba(nome: str) -> str:
+    """Como os nomes de coluna, e também: ª/º viram a/o e espaços repetidos somem."""
+    texto = _normalizar_nome_coluna(str(nome)).replace("ª", "a").replace("º", "o").replace(".", "")
+    return " ".join(texto.split())
+
+
 def achar_aba(abas: dict[str, pd.DataFrame], nomes_possiveis: list[str]) -> pd.DataFrame | None:
-    """Procura uma aba pelo nome, tolerando maiúsculas/minúsculas e acento."""
-    alvo = {_normalizar_nome_coluna(n) for n in nomes_possiveis}
+    """Procura uma aba pelo nome, tolerando maiúsculas/minúsculas, acento,
+    ª/º e espaços a mais."""
+    alvo = {_normalizar_nome_aba(n) for n in nomes_possiveis}
     for nome_real, df in abas.items():
-        if _normalizar_nome_coluna(nome_real) in alvo:
+        if _normalizar_nome_aba(nome_real) in alvo:
             return df
     return None
 
