@@ -357,7 +357,9 @@ def verificar_eventos_nao_registrados(ops: list[dict], eventos_fonte=None, preco
         avisos.append(
             f"{nome} em {data:%d/%m/%Y} (fonte de mercado) não está registrado na planilha. Com {q:g} cotas antes "
             f"do evento, lance na aba Operações: tipo \"{tipo}\", quantidade {round(delta, 4):g}, data "
-            f"{data:%d/%m/%Y}. Se a quantidade da planilha já é a posterior ao evento, ignore este aviso.")
+            f"{data:%d/%m/%Y}"
+            + (" e, no preço, o custo atribuído informado pela empresa (ou 0)" if tipo == "bonificação" else "")
+            + ". Se a quantidade da planilha já é a posterior ao evento, ignore este aviso.")
     return avisos
 
 
