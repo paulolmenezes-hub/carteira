@@ -518,3 +518,15 @@ def test_data_do_salto_com_precos_constantes():
     pr = pd.Series(np.where(datas < pd.Timestamp("2025-05-09"), 9.0, 90.0), index=datas)  # grupamento 10:1
     ev = detectar_saltos_de_patamar(pr)
     assert ev == [(pd.Timestamp("2025-05-09"), 0.1)]
+
+
+def test_aceita_nomes_alternativos_das_abas():
+    import pandas as pd
+    from carteira_analise.planilha import NOMES_ABA_OPERACOES, NOMES_ABA_RESUMO, achar_aba
+    r, o = pd.DataFrame({"a": [1]}), pd.DataFrame({"b": [2]})
+    for nome_r, nome_o in [("Resumo", "Operações"), ("1ª Compra", "Movimentações"),
+                           ("1a  compra", "Compras e vendas posteriores"), ("Posição Inicial", "MOVIMENTACOES"),
+                           ("1º Compra", "compras e vendas posteriores ")]:
+        abas = {nome_r: r, nome_o: o}
+        assert achar_aba(abas, NOMES_ABA_RESUMO) is r and achar_aba(abas, NOMES_ABA_OPERACOES) is o
+    assert achar_aba({"Plan1": r}, NOMES_ABA_RESUMO) is None
