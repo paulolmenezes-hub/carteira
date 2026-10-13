@@ -435,3 +435,86 @@ def test_tipo_invalido_lista_os_tipos_aceitos():
     ops = _ops([["X3", "compra", 10, 1.0, "2024-01-02"], ["X3", "subscrição", 1, 1.0, "2024-02-01"]])
     l = processar_carteira_combinada(None, ops, _fonte_fixa())[0]
     assert any("grupamento" in a for a in l.avisos)
+
+
+def _serie_com_desdobramento():
+    import numpy as np
+    import pandas as pd
+    datas = pd.bdate_range("2025-01-02", "2025-12-30")
+    precos = pd.Series(np.where(datas < pd.Timestamp("2025-05-09"), 90.0, 9.0), index=datas)
+    return precos * (1 + 0.01 * np.sin(np.arange(len(datas))))
+
+
+def test_detecta_salto_de_patamar_como_desdobramento():
+    import pandas as pd
+    from carteira_analise.planilha import detectar_saltos_de_patamar
+    ev = detectar_saltos_de_patamar(_serie_com_desdobramento())
+    assert len(ev) == 1 and ev[0][1] == 10 and ev[0][0] == pd.Timestamp("2025-05-09")
+
+
+def test_avisa_desdobramento_nao_lancado_e_sugere_a_linha():
+    import pandas as pd
+    from carteira_analise.planilha import processar_carteira_combinada
+    ops = _ops([["RBVA11", "compra", 64, 90.0, "2025-02-03"], ["RBVA11", "compra", 30, 9.2, "2025-08-01"]])
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return _serie_com_desdobramento()
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+
+    l = processar_carteira_combinada(None, ops, Fonte())[0]
+    assert len(l.avisos_eventos) == 1
+    a = l.avisos_eventos[0]
+    assert "desdobramento de 1 para 10" in a and "quantidade 576" in a and "64 cotas" in a
+
+    # com o evento lançado, o aviso some e a posição fica certa
+    ops2 = _ops([["RBVA11", "compra", 64, 90.0, "2025-02-03"], ["RBVA11", "desdobramento", 576, None, "2025-05-09"],
+                 ["RBVA11", "compra", 30, 9.2, "2025-08-01"]])
+    l2 = processar_carteira_combinada(None, ops2, Fonte())[0]
+    assert l2.avisos_eventos == [] and l2.quantidade_aberta == 670
+
+
+def test_eventos_da_fonte_grupamento_e_bonificacao():
+    import pandas as pd
+    from carteira_analise.planilha import verificar_eventos_nao_registrados
+    ops = [{"data": pd.Timestamp("2024-01-02"), "tipo": "compra", "quantidade": 1000.0, "preco": 1.0}]
+    ev = pd.Series([0.1, 1.1], index=pd.to_datetime(["2024-06-03", "2024-12-20"]).tz_localize("America/Sao_Paulo"))
+    avisos = verificar_eventos_nao_registrados(ops, ev)
+    assert "grupamento de 10 para 1" in avisos[0] and "quantidade 900" in avisos[0]
+    assert "bonificação de 10%" in avisos[1]
+    # evento anterior à primeira compra não gera aviso; lançamento próximo também não
+    assert verificar_eventos_nao_registrados(ops, pd.Series([2.0], index=pd.to_datetime(["2023-01-02"]))) == []
+    ops.append({"data": pd.Timestamp("2024-06-05"), "tipo": "grupamento", "quantidade": 900.0, "preco": 0.0})
+    assert len(verificar_eventos_nao_registrados(ops, ev)) == 1
+
+
+def test_cache_repassa_eventos(tmp_path):
+    import pandas as pd
+    from carteira_analise.fontes.cache import FonteComCache
+
+    class F:
+        n = 0
+
+        def baixar_eventos(self, t):
+            F.n += 1
+            return pd.Series([10.0], index=pd.to_datetime(["2025-05-09"]))
+
+    class SemEventos:
+        pass
+
+    with FonteComCache(F(), caminho_db=str(tmp_path / "c.db")) as c:
+        assert c.baixar_eventos("X").iloc[0] == 10 and c.baixar_eventos("X").iloc[0] == 10 and F.n == 1
+    with FonteComCache(SemEventos(), caminho_db=str(tmp_path / "d.db")) as c:
+        assert c.baixar_eventos("X").empty
+
+
+def test_data_do_salto_com_precos_constantes():
+    import numpy as np
+    import pandas as pd
+    from carteira_analise.planilha import detectar_saltos_de_patamar
+    datas = pd.bdate_range("2025-01-02", "2025-12-30")
+    pr = pd.Series(np.where(datas < pd.Timestamp("2025-05-09"), 9.0, 90.0), index=datas)  # grupamento 10:1
+    ev = detectar_saltos_de_patamar(pr)
+    assert ev == [(pd.Timestamp("2025-05-09"), 0.1)]
