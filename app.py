@@ -970,6 +970,14 @@ with tab_carteira:
                         evidencias=carregar_evidencias())
                     if aviso_cdi and any(c.get("retrospecto") for c in cards):
                         avisos.append(aviso_cdi)
+                    # Desdobramento/grupamento conhecido pela fonte e não lançado na
+                    # planilha: o preço médio do card fica errado (caso RBVA11 na
+                    # validação), então o aviso vai no próprio card e no topo.
+                    eventos = {l.ticker: l.avisos_eventos for l in linhas_ganho if l.avisos_eventos}
+                    for c in cards:
+                        for a in eventos.get(c["ticker"], []):
+                            c.setdefault("alertas", []).insert(0, "possível evento não lançado — " + a.rstrip("."))
+                    avisos[:0] = [f"{t}: {a}" for t, lista in eventos.items() for a in lista]
                     cenarios = (cards, avisos)
                 except Exception as e:
                     cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
@@ -1182,7 +1190,29 @@ with tab_dashboard:
             data_analise=st.session_state.get("carteira_data_analise"),
         )
 
+        # Linhas da planilha que não entraram no cálculo, eventos da fonte não
+        # lançados e conferência do totalizador (inicial + compras − vendas ±
+        # eventos = saldo final), para que nenhuma divergência passe em silêncio.
+        avisos_planilha = [f"{l.ticker}: {a}" for l in (st.session_state.get("carteira_linhas_ganho") or [])
+                           for a in list(getattr(l, "avisos_eventos", [])) + l.avisos]
+        for l in linhas_dashboard:
+            if l.saldo_final_qtde is None:
+                continue
+            esperado = (l.qtde_inicial or 0.0) + l.compras_quantidade - l.vendas_quantidade + l.eventos_quantidade
+            if abs(esperado - l.saldo_final_qtde) > 1e-6:
+                avisos_planilha.append(
+                    f"{l.ticker}: a planilha soma {esperado:g} cotas (inicial + compras − vendas ± eventos), mas o "
+                    f"saldo calculado é {l.saldo_final_qtde:g} — confira as linhas desse ativo.")
+        if avisos_planilha:
+            with st.expander(f"⚠️ {len(avisos_planilha)} aviso(s) sobre a planilha", expanded=True):
+                for a in avisos_planilha:
+                    st.markdown(f"- {_sem_formula(a)}")
+
         _renderizar_dashboard_agrupado(linhas_dashboard)
+        st.caption("Eventos (qtde): ações recebidas em bonificação ou desdobramento (+) e retiradas em "
+                   "grupamento (−). Desdobramento e grupamento não mudam o custo total, só a quantidade e o "
+                   "preço médio; bonificação soma ao custo o valor atribuído pela empresa. Compra com preço 0 "
+                   "é tratada como bonificação sem custo.")
 
 # =============================================================================
 # ABA 4 — Guia de Indicadores
