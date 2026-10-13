@@ -38,6 +38,8 @@ from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
+    NOMES_ABA_OPERACOES,
+    NOMES_ABA_RESUMO,
     achar_aba,
     construir_dashboard_por_ativo,
     normalizar_aba_operacoes,
@@ -609,9 +611,12 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
 st.markdown(
     "Faça upload da sua planilha (Excel) com uma ou duas abas:\n\n"
-    "- **Resumo** — posição inicial de cada ativo: `ticker`, `quantidade`, "
+    "- **Resumo** (ou **1ª Compra**, ou **Posição inicial**) — o ponto de partida de cada ativo: a "
+    "quantidade e o preço médio que você tinha na data de início, **não a posição de hoje** (a posição de "
+    "hoje o painel calcula somando as movimentações): `ticker`, `quantidade`, "
     "`preco_medio` (ou `valor_investido`), `data_inicio`.\n"
-    "- **Operações** — movimentações feitas a partir dali: `ticker`, `tipo` "
+    "- **Operações** (ou **Movimentações**, ou **Compras e vendas posteriores**) — o que aconteceu depois "
+    "da data de início: `ticker`, `tipo` "
     "(compra/venda), `quantidade`, `preco`, `data`. Eventos da empresa também entram nessa aba, "
     "com a **diferença** de ações na quantidade: `bonificação` (ações recebidas; no preço, o custo "
     "atribuído informado pela empresa, ou 0), `desdobramento` (ações recebidas; preço em branco) e "
@@ -658,12 +663,13 @@ if bytes_planilha is not None:
         st.error(f"Não consegui ler o arquivo: {e}")
         st.stop()
 
-    df_resumo_bruto = achar_aba(abas, ["Resumo", "Resumo da carteira", "Posicao", "Posição"])
-    df_operacoes_bruto = achar_aba(abas, ["Operações", "Operacoes", "Movimentações", "Movimentacoes"])
+    df_resumo_bruto = achar_aba(abas, NOMES_ABA_RESUMO)
+    df_operacoes_bruto = achar_aba(abas, NOMES_ABA_OPERACOES)
 
     if df_resumo_bruto is None and df_operacoes_bruto is None:
         st.warning(
-            "Não encontrei nenhuma aba chamada 'Resumo' ou 'Operações' (nem variações). "
+            "Não encontrei as abas da carteira. Nomes aceitos: 'Resumo', '1ª Compra' ou 'Posição inicial' "
+            "(ponto de partida) e 'Operações', 'Movimentações' ou 'Compras e vendas posteriores'. "
             "Renomeie as abas do arquivo e tente de novo."
         )
         st.stop()
