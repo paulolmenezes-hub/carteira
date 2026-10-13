@@ -49,3 +49,14 @@ def baixar_dividendos(ticker: str) -> pd.Series:
     except Exception:
         return pd.Series(dtype=float)
     return divs if divs is not None else pd.Series(dtype=float)
+
+
+def baixar_eventos(ticker: str) -> pd.Series:
+    """Desdobramentos e grupamentos registrados pelo Yahoo Finance: fator por
+    data (10.0 = desdobramento de 1 para 10; 0.1 = grupamento de 10 para 1).
+    Na B3, bonificações às vezes também aparecem aqui (ex.: 1.1)."""
+    try:
+        eventos = yf.Ticker(ticker).splits
+    except Exception:
+        return pd.Series(dtype=float)
+    return eventos if eventos is not None else pd.Series(dtype=float)

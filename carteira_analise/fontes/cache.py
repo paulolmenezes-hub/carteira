@@ -128,6 +128,20 @@ class FonteComCache:
             self._set(chave, resultado)
         return resultado
 
+    def baixar_eventos(self, ticker: str) -> pd.Series:
+        """Desdobramentos/grupamentos da fonte (ver fontes/yahoo.py). Fontes
+        sem esse método devolvem série vazia."""
+        chave = f"eventos:{ticker}"
+        em_cache = self._get(chave)
+        if em_cache is not None:
+            return em_cache
+        if not hasattr(self._fonte, "baixar_eventos"):
+            return pd.Series(dtype=float)
+        resultado = self._fonte.baixar_eventos(ticker)
+        if not resultado.empty:
+            self._set(chave, resultado)
+        return resultado
+
     def limpar(self) -> None:
         """Apaga todo o cache — útil se os dados parecerem desatualizados
         antes do TTL expirar, ou depois de uma correção na fonte original."""
