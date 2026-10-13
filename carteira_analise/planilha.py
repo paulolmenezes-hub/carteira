@@ -126,6 +126,8 @@ class LinhaCarteira:
     renda_recebida: float | None = None
     ganho_total: float | None = None
     erro: str | None = None
+    # desdobramento/grupamento conhecido pela fonte e não lançado na planilha
+    avisos_eventos: list[str] = field(default_factory=list)
 
 
 def interpretar_quantidade_operacao(tipo: str, valor) -> tuple[float | None, str | None]:
@@ -265,6 +267,100 @@ def operacoes_do_ticker(row_resumo, grupo_operacoes: pd.DataFrame | None) -> tup
     return ops, avisos, n
 
 
+
+def _fator_redondo(fator: float) -> float:
+    """10.3 -> 10; 0.098 -> 0.1; 1.1 fica 1.1 (bonificação)."""
+    if fator >= 1.5:
+        return float(round(fator))
+    if fator <= 1 / 1.5:
+        return 1 / round(1 / fator)
+    return round(fator, 2)
+
+
+def detectar_saltos_de_patamar(precos: pd.Series, janela: int = 10, fator_minimo: float = 3.0) -> list[tuple]:
+    """Mudanças de escala de um dia para o outro no histórico de preços (mesmo
+    critério da limpeza em tecnicos.py): sinal de desdobramento ou grupamento
+    que a fonte não ajustou. Devolve [(data, fator)], com fator = ações novas
+    por ação antiga (10 = desdobramento de 1 para 10)."""
+    import numpy as np
+    p = precos.dropna()
+    if getattr(p.index, "tz", None) is not None:
+        p = p.copy()
+        p.index = p.index.tz_localize(None)
+    if len(p) < 2 * janela:
+        return []
+    antes = p.rolling(janela).median().shift(1)
+    depois = p[::-1].rolling(janela).median()[::-1]
+    razao = (antes / depois).values
+    marcados = np.where((razao >= fator_minimo) | (razao <= 1 / fator_minimo))[0]
+    saltos, grupo = [], []
+    for i in marcados:
+        if grupo and i != grupo[-1] + 1:
+            saltos.append(grupo)
+            grupo = []
+        grupo.append(i)
+    if grupo:
+        saltos.append(grupo)
+    eventos = []
+    for g in saltos:
+        # dia do evento: o maior salto de um pregão para o seguinte dentro do trecho
+        vals = p.values
+        i = max(g, key=lambda k: abs(np.log(vals[k] / vals[k - 1])) if k > 0 else 0.0)
+        eventos.append((pd.Timestamp(p.index[i]), _fator_redondo(float(razao[i]))))
+    return eventos
+
+
+def verificar_eventos_nao_registrados(ops: list[dict], eventos_fonte=None, precos: pd.Series | None = None,
+                                      tolerancia_dias: int = 15) -> list[str]:
+    """Compara os desdobramentos/grupamentos conhecidos pela fonte de mercado
+    (lista de eventos e saltos de patamar no histórico de preços) com os
+    eventos lançados na planilha. Para cada evento ocorrido com a posição
+    aberta e sem lançamento próximo na planilha, devolve um aviso com a linha
+    a lançar. `ops` são as operações ANTES de aplicar os eventos (como saem de
+    `operacoes_do_ticker`). Não altera nada: a planilha é do usuário, e a
+    fonte pode errar."""
+    candidatos: list[tuple] = []
+    if eventos_fonte is not None and len(eventos_fonte):
+        for data, fator in eventos_fonte.items():
+            data = pd.Timestamp(data)
+            if data.tzinfo is not None:
+                data = data.tz_localize(None)
+            if fator and float(fator) > 0 and abs(float(fator) - 1) > 1e-9:
+                candidatos.append((data.normalize(), float(fator)))
+    if precos is not None and len(precos):
+        for data, fator in detectar_saltos_de_patamar(precos):
+            if not any(abs((data - d).days) <= tolerancia_dias for d, _ in candidatos):
+                candidatos.append((data.normalize(), fator))
+    if not candidatos or not ops:
+        return []
+    lancados = [pd.Timestamp(o["data"]) for o in ops
+                if o["tipo"] in EVENTOS_SOCIETARIOS or (o["tipo"] == "compra" and o["preco"] == 0)]
+    avisos = []
+    for data, fator in sorted(candidatos):
+        q = 0.0
+        for o in ops:
+            if pd.Timestamp(o["data"]) >= data:
+                continue
+            sinal = -1 if o["tipo"] in ("venda", "grupamento") else 1
+            q += sinal * o["quantidade"]
+        if q <= 0 or any(abs((data - d).days) <= tolerancia_dias for d in lancados):
+            continue
+        if fator > 1:
+            delta = q * (fator - 1)
+            if fator >= 1.5:
+                nome, tipo = f"desdobramento de 1 para {fator:g}", "desdobramento"
+            else:
+                nome, tipo = f"bonificação de {(fator - 1) * 100:.0f}%", "bonificação"
+        else:
+            delta = q * (1 - fator)
+            nome, tipo = f"grupamento de {1 / fator:g} para 1", "grupamento"
+        avisos.append(
+            f"{nome} em {data:%d/%m/%Y} (fonte de mercado) não está registrado na planilha. Com {q:g} cotas antes "
+            f"do evento, lance na aba Operações: tipo \"{tipo}\", quantidade {round(delta, 4):g}, data "
+            f"{data:%d/%m/%Y}. Se a quantidade da planilha já é a posterior ao evento, ignore este aviso.")
+    return avisos
+
+
 def processar_carteira_combinada(
     df_resumo: pd.DataFrame | None,
     df_operacoes: pd.DataFrame | None,
@@ -296,6 +392,7 @@ def processar_carteira_combinada(
         moeda = "R$" if ticker.endswith(".SA") else "US$"
         ops, avisos, n_operacoes_lancadas = operacoes_do_ticker(
             tickers_resumo.get(ticker), tickers_operacoes.get(ticker))
+        ops_brutas = list(ops)
         try:
             ops = aplicar_eventos_societarios(ops)
         except ValueError as e:
@@ -312,9 +409,15 @@ def processar_carteira_combinada(
             continue
 
         try:
-            preco_atual = float(fonte.baixar_precos(ticker, periodo).iloc[-1])
+            serie_precos = fonte.baixar_precos(ticker, periodo)
+            preco_atual = float(serie_precos.iloc[-1])
         except Exception:
-            preco_atual = None
+            serie_precos, preco_atual = None, None
+        try:
+            eventos_fonte = fonte.baixar_eventos(ticker) if hasattr(fonte, "baixar_eventos") else None
+        except Exception:
+            eventos_fonte = None
+        avisos_eventos = verificar_eventos_nao_registrados(ops_brutas, eventos_fonte, serie_precos)
         try:
             divs = fonte.baixar_dividendos(ticker)
         except Exception:
@@ -336,6 +439,7 @@ def processar_carteira_combinada(
 
         linhas.append(LinhaCarteira(
             ticker=ticker, moeda=moeda, situacao=situacao, origem=" + ".join(origem), avisos=avisos,
+            avisos_eventos=avisos_eventos,
             quantidade_aberta=r.quantidade_aberta, preco_medio_atual=r.preco_medio_aberto,
             preco_atual=preco_atual,
             ganho_realizado=r.ganho_realizado, ganho_nao_realizado=r.ganho_nao_realizado,
