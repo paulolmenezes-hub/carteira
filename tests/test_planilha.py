@@ -483,7 +483,7 @@ def test_eventos_da_fonte_grupamento_e_bonificacao():
     ev = pd.Series([0.1, 1.1], index=pd.to_datetime(["2024-06-03", "2024-12-20"]).tz_localize("America/Sao_Paulo"))
     avisos = verificar_eventos_nao_registrados(ops, ev)
     assert "grupamento de 10 para 1" in avisos[0] and "quantidade 900" in avisos[0]
-    assert "bonificação de 10%" in avisos[1]
+    assert "bonificação de 10%" in avisos[1] and "custo atribuído" in avisos[1] and "custo atribuído" not in avisos[0]
     # evento anterior à primeira compra não gera aviso; lançamento próximo também não
     assert verificar_eventos_nao_registrados(ops, pd.Series([2.0], index=pd.to_datetime(["2023-01-02"]))) == []
     ops.append({"data": pd.Timestamp("2024-06-05"), "tipo": "grupamento", "quantidade": 900.0, "preco": 0.0})
