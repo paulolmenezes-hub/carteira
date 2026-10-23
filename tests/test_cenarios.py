@@ -259,6 +259,12 @@ def test_gerar_cenarios_carteira_completa():
     assert venda_total["Movimento de caixa"][1] == pytest.approx(24.11 * 77.73)
     assert por["SEMD3.SA"]["grupo"] == "Outros" and por["SEMD3.SA"]["renda_mensal"] is None
     assert any("ERRO3.SA" in a for a in avisos) and any("SUMI3.SA" in a for a in avisos)
+    # régua de faixas e faixa de 12 meses em todos os cards
+    assert por["ITSA4.SA"]["regua"]["situacao"] == "realizacao"
+    assert por["POMO4.SA"]["regua"]["situacao"] == "queda"
+    assert por["VALE3.SA"]["regua"]["situacao"] == "fora"
+    assert por["VALE3.SA"]["regua"]["preco_realizacao"] == pytest.approx(68.5 * 1.25)
+    assert por["KNIP11.SA"]["faixa_12m"]["maxima"] >= por["KNIP11.SA"]["faixa_12m"]["preco"]
 
 
 def test_gerar_cenarios_notas_e_tipo_nao_confirmado():
