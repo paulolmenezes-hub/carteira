@@ -35,6 +35,8 @@ from carteira_analise.fontes.cache import FonteComCache
 from carteira_analise.backtest_cenarios import indice_cdi_acumulado
 from carteira_analise.cenarios import carregar_evidencias, frase_evidencia_fiis, gerar_cenarios
 from carteira_analise.fontes.bcb import buscar_cdi_diario
+from carteira_analise.fontes.fundamentus import buscar_proventos_fii
+from carteira_analise.contexto import ATENCAO, BOM, contexto_do_ativo, faixa_12m
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
@@ -761,6 +763,207 @@ def _html_tabela(colunas: list, linhas: list, moeda: str) -> str:
             f"background:rgba(0,0,0,.12);border-radius:8px'><tr><th></th>{th}</tr>{trs}</table>")
 
 
+# ---------------------------------------------------------------------------
+# Régua de faixas, faixa de 12 meses e contexto do ativo (cards)
+# ---------------------------------------------------------------------------
+
+_COR_TRECHO = {"queda": "#f0a93b", "fora": "#2bb3a3", "realizacao": "#7b8fff"}
+_COR_NIVEL = {BOM: "#2bb3a3", ATENCAO: "#f0a93b"}
+_ROTULO_FAIXA = {"queda": "queda", "fora": "fora das faixas", "realizacao": "realização de lucro"}
+FRASE_EVIDENCIA_TECNICA = ("no backtest, os sinais técnicos ficaram próximos de “não fazer nada”; os fundamentos "
+                           "não têm histórico gratuito para teste. Use como contexto, não como sinal.")
+FRASE_EVIDENCIA_PRECO_ATRATIVO = ("quando um FII ficou barato por essa régua, superou o CDI nos 12 meses seguintes em "
+                                  "64% das vezes, contra 46% comprando em qualquer momento (teste de 2019 a 2025; a "
+                                  "vantagem apareceu com juros intermediários e altos; com juros baixos, sem casos "
+                                  "suficientes).")
+
+
+def _pct_br(v: float, casas: int = 0, sinal: bool = False) -> str:
+    txt = f"{v * 100:{'+' if sinal else ''}.{casas}f}%".replace(".", ",")
+    return txt.replace("-", "−")
+
+
+def _html_regua(regua: dict | None, moeda: str, titulo: str = "Faixa atual", mostrar_preco_medio: bool = False) -> str:
+    """Régua de três cores (aumentar | fora das faixas | realizar) com o
+    marcador no preço de hoje e os preços em que cada faixa começa."""
+    if not regua:
+        return ""
+    sit = regua["situacao"]
+    rotulo = _ROTULO_FAIXA[sit]
+    if regua.get("degrau") is not None:
+        rotulo += f" ({_pct_br(regua['degrau'], sinal=True)})"
+    pq, pr = formatar_valor(regua["preco_queda"], moeda), formatar_valor(regua["preco_realizacao"], moeda)
+    hoje = formatar_valor(regua["preco"], moeda)
+    prox = regua.get("proximo")
+    if sit == "fora":
+        rodape = f"Hoje {hoje}: sem cenário novo enquanto o preço estiver entre {pq} e {pr}."
+    elif prox:
+        quando = "a partir de" if sit == "realizacao" else "abaixo de"
+        extra = " (venda total)" if prox.get("venda_total") else ""
+        rodape = (f"Hoje {hoje}, na faixa de {_pct_br(regua['degrau'], sinal=True)}. Próxima: "
+                  f"<b>{_pct_br(prox['faixa'], sinal=True)}{extra} {quando} {formatar_valor(prox['preco'], moeda)}</b>.")
+    else:
+        rodape = f"Hoje {hoje}, na última faixa ({_pct_br(regua['degrau'], sinal=True)})."
+    pos = regua["posicao"] * 100
+    return (
+        "<div style='margin-top:10px;background:rgba(0,0,0,.28);border-radius:12px;padding:10px 12px'>"
+        "<div style='display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap'>"
+        f"<span style='font-weight:700;font-size:.9em'>{html.escape(titulo)}: {html.escape(rotulo)}</span>"
+        + (f"<span style='font-size:.78em;opacity:.9'>preço médio {formatar_valor(regua['preco_medio'], moeda)} · "
+           f"{_pct_br(regua['variacao'], sinal=True)}</span>" if mostrar_preco_medio else "") + "</div>"
+        "<div style='position:relative;display:grid;grid-template-columns:1fr 2fr 1fr;gap:3px;height:11px;margin:9px 0 6px'>"
+        f"<div style='background:{_COR_TRECHO['queda']};border-radius:999px 0 0 999px'></div>"
+        f"<div style='background:{_COR_TRECHO['fora']}'></div>"
+        f"<div style='background:{_COR_TRECHO['realizacao']};border-radius:0 999px 999px 0'></div>"
+        f"<div style='position:absolute;left:{pos:.1f}%;top:-5px;width:4px;height:21px;margin-left:-2px;"
+        "border-radius:2px;background:#ffffff;box-shadow:0 0 0 1px rgba(0,0,0,.35)'></div></div>"
+        "<div style='display:grid;grid-template-columns:1fr 2fr 1fr;gap:3px;font-size:.74em;opacity:.95;line-height:1.3'>"
+        f"<span>Aumentar<br><b>abaixo de {pq}</b></span>"
+        f"<span style='text-align:center'>Fora das faixas<br><b>{pq} a {pr}</b></span>"
+        f"<span style='text-align:right'>Realizar<br><b>a partir de {pr}</b></span></div>"
+        f"<div style='font-size:.78em;margin-top:6px'>{rodape}</div></div>")
+
+
+def _html_faixa_12m(f: dict | None, moeda: str) -> str:
+    """Mínima e máxima de 12 meses, com o preço de hoje entre elas."""
+    if not f:
+        return ""
+    if f["abaixo_da_maxima"] < 0.005:
+        frase = "<b>na máxima de 12 meses</b>"
+    elif f["acima_da_minima"] < 0.005:
+        frase = "<b>na mínima de 12 meses</b>"
+    else:
+        frase = (f"<b>{_pct_br(f['abaixo_da_maxima'])} abaixo da máxima</b> e "
+                 f"<b>{_pct_br(f['acima_da_minima'])} acima da mínima</b>")
+    pos = f["posicao"] * 100
+    return (
+        "<div style='margin-top:8px;background:rgba(0,0,0,.2);border-radius:12px;padding:10px 12px'>"
+        "<div style='display:flex;justify-content:space-between;font-size:.76em;opacity:.92'>"
+        f"<span>Mínima 12 meses<br><b style='font-size:1.12em'>{formatar_valor(f['minima'], moeda)}</b></span>"
+        f"<span style='text-align:right'>Máxima 12 meses<br><b style='font-size:1.12em'>{formatar_valor(f['maxima'], moeda)}</b></span></div>"
+        "<div style='position:relative;height:9px;border-radius:999px;background:rgba(255,255,255,.22);margin:8px 0 6px'>"
+        f"<div style='position:absolute;left:0;top:0;bottom:0;width:{pos:.1f}%;border-radius:999px;background:rgba(255,255,255,.5)'></div>"
+        f"<div style='position:absolute;left:{pos:.1f}%;top:-5px;width:4px;height:19px;margin-left:-2px;border-radius:2px;"
+        "background:#ffffff'></div></div>"
+        f"<div style='font-size:.8em'>Hoje {formatar_valor(f['preco'], moeda)} — {frase}</div></div>")
+
+
+def _html_preco_atrativo(ctx: dict) -> str:
+    """Bloco "O preço está atrativo?" dos FIIs, em linguagem simples."""
+    pa = ctx.get("preco_atrativo")
+    fonte = ctx.get("fonte_rendimentos")
+    nota_fonte = (f"<div style='font-size:.74em;color:#6b7280;margin-top:4px'>Rendimentos: {html.escape(fonte)}.</div>"
+                  if fonte else "")
+    if not pa:
+        return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
+                "<div style='font-weight:700;color:#0f5f56'>O preço está atrativo?</div>"
+                "<div style='font-size:.86em;margin-top:4px'>Sem histórico de rendimentos suficiente para avaliar "
+                "(são precisos 3 anos de pagamentos, sem lacunas).</div>" + nota_fonte + "</div>")
+    sim = pa["atende"]
+    etiqueta = "Sim" if sim else "Não, no momento"
+    cor_etq = ("background:#0f7f73;color:#ffffff" if sim else "background:#f1f5f9;color:#334155")
+    y, m, lim = _pct_br(pa["yield"], 1), _pct_br(pa["yield_medio_24m"], 1), _pct_br(pa["limiar"], 1)
+    if sim:
+        texto = (f"Hoje o fundo rende <b>{y} ao ano</b>, acima de <b>{lim}</b> (a média de 2 anos, {m}, mais 15%), "
+                 "com rendimentos estáveis.")
+    elif pa["yield"] >= pa["limiar"] and not pa.get("estavel"):
+        texto = (f"Hoje o fundo rende <b>{y} ao ano</b>, acima de {lim}, mas os rendimentos caíram mais de 10% — "
+                 "o yield alto pode vir de um preço que já antecipa novos cortes.")
+    else:
+        texto = (f"Hoje o fundo rende <b>{y} ao ano</b>. Nos últimos 2 anos rendeu, em média, <b>{m}</b>. "
+                 f"Para estar barato em relação a ele mesmo, precisaria render pelo menos <b>{lim}</b>.")
+    return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
+            "<div style='display:flex;justify-content:space-between;align-items:center;gap:8px'>"
+            "<span style='font-weight:700;color:#0f5f56'>O preço está atrativo?</span>"
+            f"<span style='font-size:.8em;font-weight:700;padding:3px 10px;border-radius:999px;{cor_etq}'>{etiqueta}</span></div>"
+            f"<div style='font-size:.88em;line-height:1.45;margin-top:6px'>{texto}</div>"
+            f"<div style='font-size:.76em;color:#4b5563;margin-top:6px;line-height:1.4'><b>Evidência:</b> "
+            f"{FRASE_EVIDENCIA_PRECO_ATRATIVO}</div>{nota_fonte}</div>")
+
+
+def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = True) -> str:
+    """Bloco branco "Contexto do ativo": leitura combinada, indicadores e,
+    para FIIs, o preço atrativo. Não altera os cenários do card."""
+    if not ctx:
+        return ""
+    chips = ""
+    for ind in ctx["indicadores"]:
+        cor = _COR_NIVEL.get(ind["nivel"], "#9ca3af")
+        chips += ("<div style='border:1px solid #e5e7eb;border-radius:10px;padding:7px 9px;display:flex;gap:8px;"
+                  "align-items:center'>"
+                  f"<span style='width:10px;height:10px;border-radius:999px;background:{cor};flex-shrink:0'></span>"
+                  f"<div style='display:flex;flex-direction:column;line-height:1.25'><span style='font-size:.74em;"
+                  f"color:#4b5563'>{html.escape(ind['nome'])}</span><span style='font-size:.86em;font-weight:600'>"
+                  f"{html.escape(ind['valor'])} · {html.escape(ind['leitura'])}</span></div></div>")
+    detalhes = "".join(f"<li>{html.escape(_renderizar_detalhe(d))}</li>"
+                       for d in ctx.get("detalhes_timing", []) + ctx.get("detalhes_renda", []))
+    bloco_detalhes = (f"<details style='font-size:.8em'><summary style='cursor:pointer;color:#1e3a8a;font-weight:600'>"
+                      f"Ver pontuação completa</summary><ul style='margin:6px 0 0 0;padding-left:18px'>{detalhes}</ul>"
+                      "</details>") if detalhes else ""
+    leitura = (f"<div style='font-size:.88em'><b>Leitura combinada:</b> {html.escape(ctx['leitura'])}</div>"
+               if ctx.get("leitura") else "")
+    subtitulo = ("<span style='font-size:.74em;color:#4b5563'>não altera os cenários acima</span>"
+                 if aviso_cenarios else "")
+    evidencia = ("" if tipo == "fii" else
+                 f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Evidência:</b> {FRASE_EVIDENCIA_TECNICA}</div>")
+    preco_atrativo = _html_preco_atrativo(ctx) if tipo == "fii" else ""
+    return ("<div style='margin-top:12px;background:#ffffff;color:#1f2937;border-radius:14px;padding:12px 14px;"
+            "display:flex;flex-direction:column;gap:9px'>"
+            "<div style='display:flex;justify-content:space-between;align-items:baseline;gap:8px'>"
+            f"<span style='font-weight:700;color:#1e3a8a'>Contexto do ativo</span>{subtitulo}</div>"
+            f"{leitura}<div style='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px'>{chips}</div>"
+            f"{preco_atrativo}{evidencia}{bloco_detalhes}</div>")
+
+
+def _html_card_ativo(ticker: str, tipo: str, preco: float, f12: dict | None, ctx: dict | None,
+                     regua: dict | None) -> str:
+    """Card neutro da aba Ativo Específico: só dados do ativo; a régua de
+    faixas aparece apenas quando o ticker está na carteira enviada."""
+    moeda = "R$" if ticker.endswith(".SA") else "US$"
+    partes = [_html_faixa_12m(f12, moeda)]
+    if regua:
+        partes.append(_html_regua(regua, moeda, titulo="Na sua carteira", mostrar_preco_medio=True))
+        partes.append("<div style='font-size:.76em;opacity:.85;margin-top:4px'>Os cenários completos estão no card da "
+                      "aba Dashboard da Carteira.</div>")
+    partes.append(_html_contexto(ctx, tipo, aviso_cenarios=False))
+    partes.append("<div style='margin-top:8px;font-size:.72em;opacity:.85;font-style:italic'>Informação para "
+                  "investigar, não recomendação. A decisão é sempre sua.</div>")
+    return ("<div style='background:#1f2633;border:1px solid #334155;color:#f3f4f6;border-radius:16px;"
+            "padding:16px 18px;max-width:640px;box-shadow:0 6px 18px rgba(0,0,0,.15);font-family:inherit'>"
+            "<div style='display:flex;justify-content:space-between;align-items:center'>"
+            f"<div><div style='font-weight:700;font-size:1.1em'>{html.escape(ticker)}</div>"
+            f"<div style='font-size:.8em;color:#9ca3af'>{html.escape(NOMES_TIPO.get(tipo, tipo))}</div></div>"
+            f"<div style='font-weight:700;font-size:1.25em'>{formatar_valor(preco, moeda)}</div></div>"
+            f"{''.join(partes)}</div>")
+
+
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _proventos_fii_em_cache(ticker: str):
+    return buscar_proventos_fii(ticker)
+
+
+def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
+    """Contexto do card de um ativo. Para FIIs, o preço atrativo usa 5 anos de
+    preços e os rendimentos do Fundamentus (sem lacunas); se o site estiver
+    fora do ar, usa os do Yahoo Finance e avisa no card."""
+    if resultado is None:
+        return None
+    precos = divs = fonte = None
+    if getattr(resultado, "tipo", None) == "fii":
+        try:
+            precos = fonte_dados.baixar_precos(ticker, "5y")
+        except Exception:
+            precos = None
+        divs = _proventos_fii_em_cache(ticker)
+        fonte = "Fundamentus (proventos pagos)"
+        if divs is None or len(divs) == 0:
+            divs, fonte = dividendos_yahoo, "Yahoo Finance (pode ter lacunas; Fundamentus indisponível)"
+    ctx = contexto_do_ativo(resultado, precos, divs)
+    if ctx is not None:
+        ctx["fonte_rendimentos"] = fonte
+    return ctx
+
+
 def _html_card_cenario(card: dict) -> str:
     """Card de um ativo: situação, preços e contexto de mercado; tabela de
     cenários (ações/ETFs na faixa) ou próximas faixas; para FIIs, o
@@ -773,25 +976,24 @@ def _html_card_cenario(card: dict) -> str:
         f"<div style='font-size:.82em;opacity:.92'>Preço médio {formatar_valor(card['preco_medio'], moeda)} · "
         f"hoje {formatar_valor(card['preco_atual'], moeda)}</div>",
     ]
-    if card.get("abaixo_da_maxima_12m") is not None:
-        d = card["abaixo_da_maxima_12m"]
-        texto = "na máxima" if d < 0.005 else f"{d * 100:.0f}% abaixo da máxima"
-        partes.append(f"<div style='font-size:.82em;opacity:.92'>Mercado: a cota está {texto} dos últimos 12 meses</div>")
     # Evento societário não lançado: o preço médio do card fica errado, então o
     # aviso vem logo abaixo dos preços, em destaque (fundo branco, texto vermelho).
     for aviso in card.get("alertas_evento", []):
         partes.append("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#b91c1c;"
                       "border-left:5px solid #b91c1c;border-radius:8px;font-size:.84em;font-weight:700;"
                       f"line-height:1.4'>⚠️ Possível evento não lançado: {html.escape(aviso)}</div>")
+    partes.append(_html_regua(card.get("regua"), moeda))
+    partes.append(_html_faixa_12m(card.get("faixa_12m"), moeda))
     tabela = card.get("tabela")
     if tabela:
         partes.append(f"<div style='margin-top:10px;font-weight:600;font-size:.9em'>{html.escape(tabela['titulo'])}</div>")
         partes.append(_html_tabela(tabela["colunas"], tabela["linhas"], moeda))
     else:
-        f = card["faixas"]
-        partes.append(f"<div style='margin-top:10px;font-size:.85em'>Próximas faixas: realização a partir de "
-                      f"{formatar_valor(f['realizacao'], moeda)} (+25%) · aumento abaixo de "
-                      f"{formatar_valor(f['queda'], moeda)} (−15%).</div>")
+        if not card.get("regua"):
+            f = card["faixas"]
+            partes.append(f"<div style='margin-top:10px;font-size:.85em'>Próximas faixas: realização a partir de "
+                          f"{formatar_valor(f['realizacao'], moeda)} (+25%) · aumento abaixo de "
+                          f"{formatar_valor(f['queda'], moeda)} (−15%).</div>")
         if card.get("renda_mensal") and not card.get("retrospecto"):
             partes.append(f"<div style='margin-top:6px;font-size:.85em'>💵 Renda estimada: cerca de "
                           f"{formatar_valor(card['renda_mensal'], moeda)} por mês.</div>")
@@ -818,6 +1020,7 @@ def _html_card_cenario(card: dict) -> str:
     if card.get("evidencia"):
         partes.append("<div style='margin-top:10px;padding:6px 8px;background:rgba(255,255,255,.15);"
                       f"border-radius:8px;font-size:.8em'>📊 <b>O que o histórico mostra:</b> {card['evidencia']}</div>")
+    partes.append(_html_contexto(card.get("contexto"), card.get("tipo")))
     partes.append("<div style='margin-top:8px;font-size:.72em;opacity:.85;font-style:italic'>"
                   "Cenários para comparação, pela regra de faixas. A decisão é sempre sua.</div>")
     return (f"<div style='background:{fundo};color:white;border-radius:16px;padding:16px 18px;"
@@ -986,8 +1189,14 @@ with tab_carteira:
                     # planilha: o preço médio do card fica errado (caso RBVA11 na
                     # validação), então o aviso vai no próprio card e no topo.
                     eventos = {l.ticker: l.avisos_eventos for l in linhas_ganho if l.avisos_eventos}
+                    resultado_por_ticker = {t: r for t, tp, r in linhas_analise}
                     for c in cards:
                         c["alertas_evento"] = list(eventos.get(c["ticker"], []))
+                        try:
+                            c["contexto"] = _contexto_para(c["ticker"], resultado_por_ticker.get(c["ticker"]),
+                                                           dividendos_por_ticker.get(c["ticker"]))
+                        except Exception:
+                            c["contexto"] = None  # sem contexto, o card segue com os cenários
                     avisos[:0] = [f"{t}: {a}" for t, lista in eventos.items() for a in lista]
                     cenarios = (cards, avisos)
                 except Exception as e:
@@ -1128,6 +1337,14 @@ with tab_ativo:
             st.session_state["individual_horario"] = texto_horario
             st.session_state["individual_resultado"] = resultado
             st.session_state["individual_dividendos"] = dividendos_individual
+            try:
+                st.session_state["individual_contexto"] = _contexto_para(ticker_limpo, resultado, dividendos_individual)
+            except Exception:
+                st.session_state["individual_contexto"] = None
+            try:  # mínima/máxima sempre de 12 meses, qualquer que seja o período do gráfico
+                st.session_state["individual_faixa_12m"] = faixa_12m(fonte_dados.baixar_precos(ticker_limpo, "1y"))
+            except Exception:
+                st.session_state["individual_faixa_12m"] = None
 
     if "individual_resultado" in st.session_state:
         ticker_limpo = st.session_state["individual_ticker"]
@@ -1141,24 +1358,16 @@ with tab_ativo:
                 "Confira se o ticker está certo (tickers da B3 precisam do sufixo '.SA')."
             )
         else:
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Sinal de timing", resultado.sinal_timing)
-            col_b.metric("Qualidade da renda", resultado.qualidade_renda)
-            col_c.metric("Preço atual", f"{resultado.tec.preco_atual:.2f}")
-
-            st.markdown(f"**Leitura combinada:** {resultado.leitura_combinada_texto}")
-
-            col_det1, col_det2 = st.columns(2)
-            with col_det1:
-                if resultado.detalhes_timing:
-                    st.markdown("**Timing (compra/venda):**")
-                    for d in resultado.detalhes_timing:
-                        st.markdown(f"{_renderizar_detalhe(d)}")
-            with col_det2:
-                if resultado.detalhes_renda:
-                    st.markdown("**Qualidade da renda:**")
-                    for d in resultado.detalhes_renda:
-                        st.markdown(f"{_renderizar_detalhe(d)}")
+            # Card do ativo: só dados do ativo. A régua de faixas aparece só quando
+            # o ticker está na carteira enviada (o preço médio vem de lá).
+            cenarios_sessao = st.session_state.get("carteira_cenarios")
+            card_carteira = next((c for c in (cenarios_sessao[0] if cenarios_sessao else [])
+                                  if c["ticker"] == ticker_limpo), None)
+            ctx_individual = st.session_state.get("individual_contexto")
+            st.html(_html_card_ativo(
+                ticker_limpo, st.session_state["individual_tipo"], resultado.tec.preco_atual,
+                st.session_state.get("individual_faixa_12m"), ctx_individual,
+                card_carteira.get("regua") if card_carteira else None))
 
             st.markdown(f"**Histórico de preço ({OPCOES_PERIODO[st.session_state['individual_periodo']]}):**")
             st.caption(
