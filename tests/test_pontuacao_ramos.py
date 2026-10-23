@@ -139,3 +139,18 @@ class TestRenda:
 
     def test_leitura_combinada_na_e_neutra(self):
         assert leitura_combinada(0, "NA") == leitura_combinada(0, None)
+
+
+def test_detalhes_extremos_explicam_topo_e_piso_usuais():
+    """O texto deixa claro que a "máxima/mínima" do motor é o percentil
+    95%/5% do período, e não o maior/menor preço (caso ABCB4: acima do
+    topo usual sem ter batido a máxima de 12 meses)."""
+    from types import SimpleNamespace
+    from carteira_analise.pontuacao import _detalhes_extremos
+    acima = SimpleNamespace(preco_atual=29.63, dist_maxima_pct=(29.63 / 27.32 - 1) * 100, dist_minima_pct=40.0)
+    _, maxima = _detalhes_extremos(acima)
+    assert maxima == ("-1 acima do topo usual do período (95% dos fechamentos ficaram abaixo de 27,32; "
+                      "hoje 29,63)")
+    perto = SimpleNamespace(preco_atual=10.0, dist_maxima_pct=50.0, dist_minima_pct=5.0)
+    minima, _ = _detalhes_extremos(perto)
+    assert minima.startswith("+1 perto do piso usual do período (só 5% dos fechamentos ficaram abaixo de 9,52")
