@@ -28,6 +28,7 @@ from .posicoes import (
     operacoes_por_ticker,
     renda_12m_por_cota,
 )
+from .contexto import faixa_12m, regua_faixas
 from .tecnicos import limpar_outliers_precos
 from .regra_posicao import (
     CONFIG_REGRA_PADRAO,
@@ -414,7 +415,8 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
             "situacao": situacao, "rotulo_situacao": ROTULO_SITUACAO[situacao],
             "quantidade": estado["quantidade"], "preco_medio": pm, "preco_atual": preco,
             "variacao": variacao, "abaixo_da_maxima_12m": distancia_da_maxima_12m(precos),
-            "faixas": precos_das_faixas(pm), "tabela": tabela, "notas": notas, "alertas": alertas,
+            "faixas": precos_das_faixas(pm), "regua": regua_faixas(pm, preco), "faixa_12m": faixa_12m(precos),
+            "tabela": tabela, "notas": notas, "alertas": alertas,
             "renda_mensal": (renda_cota / 12 * estado["quantidade"]) if renda_cota else None,
             "evidencia": frase_evidencia_card(evidencias, tipo, situacao) if tabela else None,
             "retrospecto": None,
