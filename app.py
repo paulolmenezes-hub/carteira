@@ -1458,10 +1458,12 @@ with tab_guia:
             "indicar sobrecompra (o ativo subiu rápido demais, pode estar 'esticado'); "
             "**abaixo de 30-40** indica sobrevenda (pode estar descontado, mas também pode "
             "ser sinal de queda estrutural — o painel não distingue as duas coisas).\n\n"
-            "**Distância da mínima/máxima do período** — compara o preço atual com o "
-            "percentil 5% (mínima) e 95% (máxima) de todo o histórico buscado. Perto da "
-            "mínima pode ser oportunidade ou pode ser queda continuada; perto da máxima, "
-            "o oposto."
+            "**Piso e topo usuais do período** — compara o preço atual com o percentil 5% "
+            "(piso usual) e 95% (topo usual) do histórico buscado: só 5% dos fechamentos "
+            "ficaram abaixo do piso, e 95% abaixo do topo. Não são o menor e o maior preço "
+            "— por isso a cota pode ficar acima do topo usual sem ter batido um recorde; o "
+            "maior e o menor preço dos últimos 12 meses aparecem na faixa de 12 meses do card. "
+            "Perto do piso pode ser oportunidade ou queda continuada; perto do topo, o oposto."
         )
 
     with st.expander("🏢 Indicadores fundamentalistas — Ações (B3 e EUA)"):
