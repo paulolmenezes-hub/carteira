@@ -48,17 +48,23 @@ def _detalhes_extremos(tec: IndicadoresTecnicos) -> tuple[str | None, str | None
     patamar que na verdade ele já ultrapassou."""
     minima, maxima = _valores_extremos_periodo(tec)
     detalhe_minima = detalhe_maxima = None
+
+    def br(v: float) -> str:
+        return f"{v:.2f}".replace(".", ",")
+
+    # "Topo/piso usual" deixa claro que é o percentil 95%/5% do período, e não o
+    # maior/menor preço: ficar acima do topo usual não é bater um recorde.
     if tec.dist_minima_pct < 15:
-        verbo = "abaixo da" if tec.preco_atual < minima else "próximo da"
+        verbo = "abaixo do" if tec.preco_atual < minima else "perto do"
         detalhe_minima = (
-            f"+1 {verbo} mínima do período (atual {tec.preco_atual:.2f}, "
-            f"mínima {minima:.2f})"
+            f"+1 {verbo} piso usual do período (só 5% dos fechamentos ficaram abaixo de "
+            f"{br(minima)}; hoje {br(tec.preco_atual)})"
         )
     if tec.dist_maxima_pct > -5:
-        verbo = "acima da" if tec.preco_atual > maxima else "próximo da"
+        verbo = "acima do" if tec.preco_atual > maxima else "perto do"
         detalhe_maxima = (
-            f"-1 {verbo} máxima do período (atual {tec.preco_atual:.2f}, "
-            f"máxima {maxima:.2f})"
+            f"-1 {verbo} topo usual do período (95% dos fechamentos ficaram abaixo de "
+            f"{br(maxima)}; hoje {br(tec.preco_atual)})"
         )
     return detalhe_minima, detalhe_maxima
 
