@@ -158,6 +158,10 @@ def _achar_coluna_tipo_ativo(df: pd.DataFrame, usadas: set) -> object | None:
     return None
 
 
+_ROTULO_TIPO_CURTO = {"acao": "Ação", "acao_us": "Ação (EUA)", "fii": "FII",
+                      "etf_br": "ETF", "etf_us": "ETF (EUA)"}
+
+
 def tipos_da_planilha(df_resumo: pd.DataFrame | None,
                       df_operacoes: pd.DataFrame | None) -> tuple[dict[str, str], list[str]]:
     """Tipo de cada ativo informado na planilha (coluna opcional
@@ -166,26 +170,34 @@ def tipos_da_planilha(df_resumo: pd.DataFrame | None,
     (ou o mais frequente nas Operações) e sai um aviso."""
     do_resumo: dict[str, str] = {}
     das_operacoes: dict[str, list[str]] = {}
-    for df, destino in ((df_resumo, "resumo"), (df_operacoes, "operacoes")):
+    onde: dict[str, dict[str, list[str]]] = {}  # ticker -> tipo -> ["Resumo linha 3", ...]
+    for df, aba in ((df_resumo, "Resumo"), (df_operacoes, "Operações")):
         if df is None or "tipo_ativo" not in df.columns:
             continue
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             ticker = normalizar_ticker(row["ticker"])[0]
             tipo = normalizar_tipo_ativo(row["tipo_ativo"], ticker)
             if not tipo:
                 continue
-            if destino == "resumo":
+            if aba == "Resumo":
                 do_resumo.setdefault(ticker, tipo)
             else:
                 das_operacoes.setdefault(ticker, []).append(tipo)
+            # linha no Excel: índice do pandas + 2 (cabeçalho na linha 1)
+            linha = f"{aba} linha {idx + 2}" if isinstance(idx, int) else aba
+            onde.setdefault(ticker, {}).setdefault(tipo, []).append(linha)
     tipos, avisos = {}, []
     for ticker in sorted(set(do_resumo) | set(das_operacoes)):
         lista = ([do_resumo[ticker]] if ticker in do_resumo else []) + das_operacoes.get(ticker, [])
         escolhido = do_resumo.get(ticker) or max(sorted(set(lista)), key=lista.count)
         tipos[ticker] = escolhido
         if len(set(lista)) > 1:
-            avisos.append(f"{ticker}: tipo de ativo diferente entre linhas da planilha "
-                          f"({', '.join(sorted(set(lista)))}) — usado {escolhido}; confira.")
+            partes = []
+            for tipo, linhas in sorted(onde[ticker].items()):
+                mostra = ", ".join(linhas[:5]) + (f" e mais {len(linhas) - 5}" if len(linhas) > 5 else "")
+                partes.append(f"{_ROTULO_TIPO_CURTO.get(tipo, tipo)} em {mostra}")
+            avisos.append(f"{ticker}: tipo de ativo diferente entre linhas da planilha — "
+                          f"{'; '.join(partes)}. Usado: {_ROTULO_TIPO_CURTO.get(escolhido, escolhido)}; confira.")
     return tipos, avisos
 
 
