@@ -49,6 +49,146 @@ def _normalizar_nome_coluna(c: str) -> str:
     return c.replace("_", " ")
 
 
+_MILHAR_SEM_DECIMAL = re.compile(r"^-?\d{1,3}(\.\d{3})+$")
+_DATA_ISO = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}")
+_EPOCA_EXCEL = pd.Timestamp("1899-12-30")
+
+
+def ler_numero(valor):
+    """Número de uma célula, no formato brasileiro ou não.
+
+    Células digitadas como texto ou coladas do extrato da corretora chegam
+    como '6,20', '1.000', 'R$ 4,33' — antes, ``float()`` recusava a vírgula
+    (e a linha era ignorada) e lia '1.000' como 1. Vazio vira NaN; texto que
+    não é número levanta ValueError."""
+    if valor is None or isinstance(valor, bool):
+        raise ValueError(f"número ilegível ({valor!r})")
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    texto = str(valor).strip().replace("\xa0", "").replace(" ", "")
+    for simbolo in ("R$", "US$", "$"):
+        texto = texto.replace(simbolo, "")
+    if texto == "" or texto.lower() == "nan":
+        return float("nan")
+    if "," in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    elif _MILHAR_SEM_DECIMAL.match(texto):
+        texto = texto.replace(".", "")
+    return float(texto)
+
+
+def ler_data(valor) -> pd.Timestamp:
+    """Data de uma célula: data do Excel, texto dd/mm/aaaa (dia primeiro —
+    pd.Timestamp('03/07/2024') daria 7 de março) ou número de série do
+    Excel (célula sem formato de data). Levanta ValueError se ilegível."""
+    if isinstance(valor, bool):
+        raise ValueError(f"data ilegível ({valor!r})")
+    if isinstance(valor, (int, float)):
+        if valor != valor:
+            raise ValueError("data vazia")
+        if 20000 <= valor <= 80000:  # de 1954 a 2119 como número de série
+            return _EPOCA_EXCEL + pd.Timedelta(days=float(valor))
+        raise ValueError(f"data ilegível ({valor!r})")
+    if isinstance(valor, str):
+        texto = valor.strip()
+        data = pd.to_datetime(texto, dayfirst=not _DATA_ISO.match(texto), errors="coerce")
+    else:
+        data = pd.Timestamp(valor)
+    if data is None or pd.isna(data):
+        raise ValueError(f"data ilegível ({valor!r})")
+    return pd.Timestamp(data)
+
+
+def _converter_coluna(serie: pd.Series, leitor) -> pd.Series:
+    """Aplica o leitor célula a célula; o que não der para ler fica como
+    estava, para o aviso de linha ignorada mostrar o valor original."""
+    def conv(v):
+        try:
+            return leitor(v)
+        except (ValueError, TypeError, OverflowError):
+            return v
+    return serie.map(conv).astype(object)
+
+
+# ---------------------------------------------------------------- tipo de ativo
+# Coluna opcional nas abas Resumo e Operações (ex.: "Tipo de ativo" com
+# "Ação", "FII", "ETF"). O mercado (B3 ou EUA) vem do ticker: .SA é B3.
+_NOMES_COLUNA_TIPO_ATIVO = ("tipo ativo", "tipo de ativo", "tipo do ativo", "classe", "classe de ativo",
+                            "classe do ativo", "categoria", "tipo de investimento", "ativo tipo")
+_ROTULOS_TIPO_ATIVO = {
+    "acao": "acao", "acoes": "acao", "acao b3": "acao", "acao (b3)": "acao", "acao br": "acao",
+    "stock": "acao", "acao eua": "acao", "acao (eua)": "acao", "acao us": "acao",
+    "fii": "fii", "fiis": "fii", "fii (b3)": "fii", "fii b3": "fii", "fundo imobiliario": "fii",
+    "fundos imobiliarios": "fii", "fundo de investimento imobiliario": "fii",
+    "etf": "etf", "etfs": "etf", "etf b3": "etf", "etf (b3)": "etf", "etf eua": "etf", "etf (eua)": "etf",
+    "etf us": "etf",
+}
+
+
+def normalizar_tipo_ativo(valor, ticker: str) -> str | None:
+    """'Ação', 'FII', 'ETF', 'Ação (EUA)'... -> 'acao', 'fii', 'acao_us',
+    'etf_br' ou 'etf_us' (o mercado sai do ticker). None se vazio ou
+    desconhecido."""
+    if valor is None or (isinstance(valor, float) and valor != valor):
+        return None
+    base = _ROTULOS_TIPO_ATIVO.get(" ".join(_normalizar_nome_coluna(str(valor)).split()))
+    if base is None:
+        return None
+    b3 = normalizar_ticker(ticker)[0].endswith(".SA")
+    if base == "fii":
+        return "fii"
+    if base == "acao":
+        return "acao" if b3 else "acao_us"
+    return "etf_br" if b3 else "etf_us"
+
+
+def _achar_coluna_tipo_ativo(df: pd.DataFrame, usadas: set) -> object | None:
+    """Coluna do tipo de ativo: pelo cabeçalho ou, sem cabeçalho conhecido,
+    uma coluna extra cujos valores preenchidos são todos tipos de ativo."""
+    for col in df.columns:
+        if col not in usadas and " ".join(_normalizar_nome_coluna(col).split()) in _NOMES_COLUNA_TIPO_ATIVO:
+            return col
+    for col in df.columns:
+        if col in usadas:
+            continue
+        valores = df[col].dropna()
+        valores = valores[valores.astype(str).str.strip() != ""]
+        if len(valores) and all(normalizar_tipo_ativo(v, "X") is not None for v in valores):
+            return col
+    return None
+
+
+def tipos_da_planilha(df_resumo: pd.DataFrame | None,
+                      df_operacoes: pd.DataFrame | None) -> tuple[dict[str, str], list[str]]:
+    """Tipo de cada ativo informado na planilha (coluna opcional
+    ``tipo_ativo`` das abas Resumo e Operações). Devolve (tipos, avisos);
+    se o mesmo ticker aparecer com tipos diferentes, vale o da aba Resumo
+    (ou o mais frequente nas Operações) e sai um aviso."""
+    do_resumo: dict[str, str] = {}
+    das_operacoes: dict[str, list[str]] = {}
+    for df, destino in ((df_resumo, "resumo"), (df_operacoes, "operacoes")):
+        if df is None or "tipo_ativo" not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            ticker = normalizar_ticker(row["ticker"])[0]
+            tipo = normalizar_tipo_ativo(row["tipo_ativo"], ticker)
+            if not tipo:
+                continue
+            if destino == "resumo":
+                do_resumo.setdefault(ticker, tipo)
+            else:
+                das_operacoes.setdefault(ticker, []).append(tipo)
+    tipos, avisos = {}, []
+    for ticker in sorted(set(do_resumo) | set(das_operacoes)):
+        lista = ([do_resumo[ticker]] if ticker in do_resumo else []) + das_operacoes.get(ticker, [])
+        escolhido = do_resumo.get(ticker) or max(sorted(set(lista)), key=lista.count)
+        tipos[ticker] = escolhido
+        if len(set(lista)) > 1:
+            avisos.append(f"{ticker}: tipo de ativo diferente entre linhas da planilha "
+                          f"({', '.join(sorted(set(lista)))}) — usado {escolhido}; confira.")
+    return tipos, avisos
+
+
 def normalizar_aba_resumo(df: pd.DataFrame) -> pd.DataFrame:
     """Colunas esperadas: ticker, quantidade, data_inicio, e preco_medio OU
     valor_investido (pelo menos um dos dois)."""
@@ -74,7 +214,16 @@ def normalizar_aba_resumo(df: pd.DataFrame) -> pd.DataFrame:
     for opcional in ("preco_medio", "valor_investido"):
         if opcional not in df_novo.columns:
             df_novo[opcional] = None
-    return df_novo[["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"]]
+    col_tipo = _achar_coluna_tipo_ativo(df_novo, set(mapa) | set(mapa.values()))
+    colunas = ["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"]
+    if col_tipo is not None:
+        df_novo = df_novo.rename(columns={col_tipo: "tipo_ativo"})
+        colunas.append("tipo_ativo")
+    df_novo = df_novo[colunas].copy()
+    for col in ("quantidade", "preco_medio", "valor_investido"):
+        df_novo[col] = _converter_coluna(df_novo[col], ler_numero)
+    df_novo["data_inicio"] = _converter_coluna(df_novo["data_inicio"], ler_data)
+    return df_novo
 
 
 def normalizar_aba_operacoes(df: pd.DataFrame) -> pd.DataFrame:
@@ -96,7 +245,16 @@ def normalizar_aba_operacoes(df: pd.DataFrame) -> pd.DataFrame:
     faltando = [c for c in ("ticker", "tipo", "quantidade", "preco", "data") if c not in df_novo.columns]
     if faltando:
         raise ValueError(f"Colunas obrigatórias não encontradas na aba Operações: {faltando}.")
-    return df_novo[["ticker", "tipo", "quantidade", "preco", "data"]]
+    col_tipo = _achar_coluna_tipo_ativo(df_novo, set(mapa) | set(mapa.values()))
+    colunas = ["ticker", "tipo", "quantidade", "preco", "data"]
+    if col_tipo is not None:
+        df_novo = df_novo.rename(columns={col_tipo: "tipo_ativo"})
+        colunas.append("tipo_ativo")
+    df_novo = df_novo[colunas].copy()
+    for col in ("quantidade", "preco"):
+        df_novo[col] = _converter_coluna(df_novo[col], ler_numero)
+    df_novo["data"] = _converter_coluna(df_novo["data"], ler_data)
+    return df_novo
 
 
 def _construir_operacao_da_posicao_inicial(row) -> Operacao:
