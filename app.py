@@ -48,6 +48,7 @@ from carteira_analise.planilha import (
     normalizar_aba_resumo,
     normalizar_ticker,
     processar_carteira_combinada,
+    tipos_da_planilha,
 )
 from carteira_analise.tecnicos import calcular_rsi
 
@@ -639,10 +640,16 @@ arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", ty
 df_resumo = None
 df_operacoes = None
 tickers_encontrados: list[str] = []
+tipos_planilha: dict[str, str] = {}
+avisos_tipos_planilha: list[str] = []
 bytes_planilha = None
 
 if arquivo is not None:
     bytes_planilha = arquivo.getvalue()
+    if st.session_state.get("planilha_bytes") not in (None, bytes_planilha):
+        # planilha nova: cards e extrato calculados com a anterior deixam de valer
+        for chave in ("carteira_cenarios", "carteira_linhas_ganho", "carteira_linhas_analise"):
+            st.session_state.pop(chave, None)
     st.session_state["planilha_bytes"] = bytes_planilha
     st.session_state["planilha_nome"] = arquivo.name
 elif st.session_state.get("planilha_bytes") is not None:
@@ -694,6 +701,7 @@ if bytes_planilha is not None:
     if df_operacoes is not None:
         tickers_encontrados += [normalizar_ticker(t)[0] for t in df_operacoes["ticker"]]
     tickers_encontrados = sorted(set(tickers_encontrados))
+    tipos_planilha, avisos_tipos_planilha = tipos_da_planilha(df_resumo, df_operacoes)
 
 
 def _sem_formula(texto: str) -> str:
@@ -982,6 +990,17 @@ def _html_card_cenario(card: dict) -> str:
         partes.append("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#b91c1c;"
                       "border-left:5px solid #b91c1c;border-radius:8px;font-size:.84em;font-weight:700;"
                       f"line-height:1.4'>⚠️ Possível evento não lançado: {html.escape(aviso)}</div>")
+    # Linha da aba Operações que não entrou no cálculo: o preço médio e a
+    # quantidade do card ficam errados (caso POMO4), então o aviso fica no card.
+    linhas_fora = card.get("alertas_planilha", [])
+    if linhas_fora:
+        itens = "".join(f"<li>{html.escape(a)}</li>" for a in linhas_fora[:6])
+        resto = f"<li>… e mais {len(linhas_fora) - 6}</li>" if len(linhas_fora) > 6 else ""
+        partes.append("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#b91c1c;"
+                      "border-left:5px solid #b91c1c;border-radius:8px;font-size:.84em;line-height:1.4'>"
+                      f"<b>⚠️ {len(linhas_fora)} linha(s) da planilha não entraram no cálculo — preço médio e "
+                      f"quantidade deste card podem estar errados:</b><ul style='margin:4px 0 0 18px;padding:0'>"
+                      f"{itens}{resto}</ul></div>")
     partes.append(_html_regua(card.get("regua"), moeda))
     partes.append(_html_faixa_12m(card.get("faixa_12m"), moeda))
     tabela = card.get("tabela")
@@ -1134,19 +1153,33 @@ with tab_carteira:
         st.info("Envie um arquivo Excel acima para começar a análise.")
     else:
         st.subheader("Confirme o tipo de cada ativo")
-        st.caption(
-            "Adivinhamos o tipo pelo formato do ticker — confira se está certo antes de rodar "
-            "a análise, principalmente para tickers terminados em '11' (podem ser FII ou ETF)."
-        )
+        sem_tipo = [t for t in tickers_encontrados if t not in tipos_planilha]
+        if tipos_planilha and not sem_tipo:
+            st.caption("Tipos lidos da coluna de tipo de ativo da planilha. Para corrigir algum, mude aqui "
+                       "ou na planilha.")
+        elif tipos_planilha:
+            st.caption(f"Tipos lidos da planilha. Sem tipo na planilha ({', '.join(sem_tipo)}): adivinhamos "
+                       f"pelo ticker (⚠️) — confira, principalmente os terminados em '11' (FII ou ETF).")
+        else:
+            st.caption(
+                "Adivinhamos o tipo pelo formato do ticker — confira se está certo antes de rodar "
+                "a análise, principalmente para tickers terminados em '11' (podem ser FII ou ETF). "
+                "Dica: uma coluna 'Tipo de ativo' (Ação, FII ou ETF) na planilha dispensa esta etapa."
+            )
+        for aviso in avisos_tipos_planilha:
+            st.caption(f"⚠️ {aviso}")
 
         tipos_confirmados: dict[str, str] = {}
         colunas = st.columns(3)
         for i, ticker in enumerate(tickers_encontrados):
-            chute = _heuristica_tipo(ticker)
+            chute = tipos_planilha.get(ticker) or _heuristica_tipo(ticker)
+            # a chave muda com o tipo da planilha: planilha corrigida não fica presa à escolha anterior
+            chave = f"tipo_{ticker}_{tipos_planilha.get(ticker, 'auto')}"
             with colunas[i % 3]:
                 escolha = st.selectbox(
-                    ticker, options=OPCOES_TIPO, index=OPCOES_TIPO.index(chute),
-                    format_func=lambda t: NOMES_TIPO[t], key=f"tipo_{ticker}",
+                    ticker if ticker in tipos_planilha or not tipos_planilha else f"{ticker} ⚠️",
+                    options=OPCOES_TIPO, index=OPCOES_TIPO.index(chute),
+                    format_func=lambda t: NOMES_TIPO[t], key=chave,
                 )
                 tipos_confirmados[ticker] = escolha
 
@@ -1190,8 +1223,10 @@ with tab_carteira:
                     # validação), então o aviso vai no próprio card e no topo.
                     eventos = {l.ticker: l.avisos_eventos for l in linhas_ganho if l.avisos_eventos}
                     resultado_por_ticker = {t: r for t, tp, r in linhas_analise}
+                    linhas_fora = {l.ticker: l.avisos for l in linhas_ganho if l.avisos}
                     for c in cards:
                         c["alertas_evento"] = list(eventos.get(c["ticker"], []))
+                        c["alertas_planilha"] = list(linhas_fora.get(c["ticker"], []))
                         try:
                             c["contexto"] = _contexto_para(c["ticker"], resultado_por_ticker.get(c["ticker"]),
                                                            dividendos_por_ticker.get(c["ticker"]))
