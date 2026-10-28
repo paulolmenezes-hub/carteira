@@ -85,5 +85,44 @@ def test_resumo_conferencia_colunas_fixas():
     assert linha["Fonte usada"] == "Fundamentus"
     assert linha["Conferência"] == "✅ confirmado"
     assert linha["Concorda c/ Fundamentus"] == "(usada)"
-    assert linha["Concorda c/ CVM"] == "100% de 24 meses, defasagem -1 mês"
+    assert linha["Concorda c/ CVM"] == "100% de 12 janelas de 12m"
     assert linha["Concorda c/ Yahoo"] == "—"
+
+
+def test_cvm_comparada_pela_soma_de_12_meses():
+    fund = _mensal([1.0] * 36)
+    # CVM com o mesmo total anual, mas distribuído em meses diferentes (competência x pagamento)
+    cvm = _mensal([0.7, 1.3] * 18)
+    assert comparar_mes_a_mes(fund, cvm)["taxa"] < 0.5
+    r = conferir_fontes({"fundamentus": fund, "cvm": cvm})
+    assert r["comparacoes"]["cvm"]["metodo"] == "soma12"
+    assert r["selo"] == "confirmado"
+    assert "janelas de 12m" in resumo_conferencia(r)["Concorda c/ CVM"]
+
+
+def test_somas_12m_ignoram_janelas_com_lacuna():
+    from carteira_analise.fontes.rendimentos import comparar_somas_12m
+    fund = _mensal([1.0] * 36)
+    yahoo = fund.drop(fund.index[[5, 7, 20]])  # meses faltando: janelas com 2+ lacunas não entram
+    r = comparar_somas_12m(fund, yahoo)
+    assert r["taxa"] == 1.0
+
+
+def test_diagnostico_de_desdobramento_nao_ajustado():
+    from carteira_analise.fontes.rendimentos import diagnosticar_escala
+    yahoo = _mensal([0.1] * 48)
+    fund = yahoo.copy()
+    fund.iloc[:24] = 1.0  # Fundamentus sem ajuste antes do desdobramento de 1 para 10
+    d = diagnosticar_escala(fund, yahoo)
+    assert d == {"fator": 10.0, "ate": "2024-01"}
+    r = conferir_fontes({"fundamentus": fund, "yahoo": yahoo})
+    assert r["selo"] == "divergente"
+    assert "10x maiores" in r["texto"] and "01/2024" in r["texto"]
+    assert "desdobramento" in resumo_conferencia(r)["Observação"]
+
+
+def test_sem_diagnostico_quando_a_divergencia_e_espalhada():
+    from carteira_analise.fontes.rendimentos import diagnosticar_escala
+    yahoo = _mensal([1.0] * 48)
+    fund = _mensal([1.0, 1.3] * 24)
+    assert diagnosticar_escala(fund, yahoo) is None
