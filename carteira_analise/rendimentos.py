@@ -175,9 +175,119 @@ def _texto_escala(escala: dict, usada: str, outra: str) -> str:
             f"{NOMES_FONTES.get(outra, outra)} — possível desdobramento/grupamento não ajustado numa das fontes")
 
 
+def ajustar_por_desdobramentos(serie: pd.Series | None, eventos: pd.Series | None,
+                               janela_meses: int = 6, folga: float = 0.35) -> tuple:
+    """Põe na escala de hoje os rendimentos registrados por cota da época.
+
+    ``eventos``: desdobramentos/grupamentos do Yahoo (data -> fator; 10 =
+    desdobramento de 1 para 10). Para cada evento, compara a mediana dos
+    rendimentos nos ``janela_meses`` antes e depois da data: se a razão
+    estiver perto do fator, a série não foi ajustada e os valores anteriores
+    ao evento são divididos pelo fator. Se a razão ficar perto de 1, a fonte
+    já estava ajustada e nada muda. Bonificações (fator perto de 1) são
+    ignoradas. Devolve (série, [(data, fator) aplicados])."""
+    if serie is None or len(serie) == 0 or eventos is None or len(eventos) == 0:
+        return serie, []
+    s = pd.Series(serie).copy().astype(float)
+    indice = pd.DatetimeIndex(s.index)
+    if indice.tz is not None:
+        indice = indice.tz_localize(None)
+    s.index = indice
+    aplicados = []
+    for data, fator in pd.Series(eventos).sort_index().items():
+        data = pd.Timestamp(data)
+        if data.tzinfo is not None:
+            data = data.tz_localize(None)
+        fator = float(fator)
+        if not fator or abs(fator - 1) < 0.3:
+            continue
+        antes = s[(s.index < data) & (s.index >= data - pd.DateOffset(months=janela_meses))]
+        depois = s[(s.index >= data) & (s.index < data + pd.DateOffset(months=janela_meses))]
+        antes, depois = antes[antes > 0], depois[depois > 0]
+        if len(antes) < 2 or len(depois) < 2:
+            continue
+        razao = antes.median() / depois.median()
+        if abs(razao / fator - 1) <= folga:
+            s[s.index < data] = s[s.index < data] / fator
+            aplicados.append((data, fator))
+    return s, aplicados
+
+
+def _texto_evento(data: pd.Timestamp, fator: float) -> str:
+    nome = f"desdobramento de 1 para {fator:g}" if fator > 1 else f"grupamento de {1 / fator:g} para 1"
+    operacao = f"divididos por {fator:g}" if fator > 1 else f"multiplicados por {1 / fator:g}"
+    return (f"{nome} em {data:%m/%Y} (Yahoo): rendimentos do Fundamentus e da CVM antes dessa data "
+            f"{operacao}, para ficar na escala dos preços")
+
+
+def reescalar_ate(serie: pd.Series | None, fator: float, ate: str) -> pd.Series | None:
+    """Divide por ``fator`` os rendimentos até o mês ``ate`` (inclusive)."""
+    if serie is None or len(serie) == 0:
+        return serie
+    s = pd.Series(serie).copy().astype(float)
+    indice = pd.DatetimeIndex(s.index)
+    if indice.tz is not None:
+        indice = indice.tz_localize(None)
+    antes = indice.to_period("M") <= pd.Period(ate, freq="M")
+    s[antes] = s[antes] / fator
+    return s
+
+
 def conferir_fontes(series: dict[str, pd.Series | None], ordem=ORDEM_PADRAO,
                     tolerancia: float = TOLERANCIA_MES, taxa_minima: float = TAXA_MINIMA,
-                    meses_minimos: int = MESES_MINIMOS, tolerancia_12m: float = TOLERANCIA_12M) -> dict:
+                    meses_minimos: int = MESES_MINIMOS, tolerancia_12m: float = TOLERANCIA_12M,
+                    ajustar_escala: bool = True, eventos: pd.Series | None = None) -> dict:
+    """Escolhe a fonte usada e confere com as demais (ver ``_conferir``).
+
+    Os preços do pacote vêm do Yahoo, já ajustados por desdobramentos e
+    grupamentos; Fundamentus e CVM guardam o valor por cota da época. Se a
+    comparação com o Yahoo mostrar um fator constante até certa data
+    (``diagnosticar_escala``), os valores do Fundamentus e da CVM até ali
+    são divididos por esse fator — senão o yield antigo sairia 10x maior —
+    e a conferência é refeita com as séries corrigidas (``ajuste_escala``
+    registra o fator e a data).
+
+    ``eventos`` (opcional): desdobramentos/grupamentos registrados pelo
+    Yahoo. Quando informados, são aplicados antes, com a checagem de
+    ``ajustar_por_desdobramentos`` — pega o caso em que o Yahoo tem poucos
+    rendimentos para comparar mês a mês."""
+    args = (ordem, tolerancia, taxa_minima, meses_minimos, tolerancia_12m)
+    # 1º: desdobramentos/grupamentos conhecidos (eventos do Yahoo), conferidos na própria série
+    obs_eventos = []
+    if eventos is not None and len(eventos):
+        series = dict(series)
+        for nome in list(series):
+            if nome == "yahoo":
+                continue
+            series[nome], aplicados = ajustar_por_desdobramentos(series[nome], eventos)
+            for data, fator in aplicados:
+                texto = _texto_evento(data, fator)
+                if texto not in obs_eventos:
+                    obs_eventos.append(texto)
+    r = _conferir(series, *args)
+    r["ajuste_eventos"] = obs_eventos
+    r["observacoes"] = obs_eventos + r["observacoes"]
+    escala = (r["comparacoes"].get("yahoo") or {}).get("escala")
+    if not ajustar_escala or not escala or r["usada"] == "yahoo":
+        r["ajuste_escala"] = None
+        return r
+    corrigidas = {n: (s if n == "yahoo" else reescalar_ate(s, escala["fator"], escala["ate"]))
+                  for n, s in series.items()}
+    r2 = _conferir(corrigidas, *args)
+    r2["ajuste_escala"] = escala
+    r2["ajuste_eventos"] = obs_eventos
+    f = escala["fator"]
+    operacao = f"divididos por {f:g}" if f > 1 else f"multiplicados por {1 / f:g}"
+    mes = pd.Period(escala["ate"], freq="M").strftime("%m/%Y")
+    r2["observacoes"] = [f"escala corrigida: valores do Fundamentus e da CVM até {mes} {operacao}, para ficar na "
+                         f"escala dos preços do Yahoo (desdobramento/grupamento)"] + obs_eventos + r2["observacoes"]
+    r2["texto"] += f" (escala corrigida até {mes})"
+    return r2
+
+
+def _conferir(series: dict[str, pd.Series | None], ordem=ORDEM_PADRAO,
+              tolerancia: float = TOLERANCIA_MES, taxa_minima: float = TAXA_MINIMA,
+              meses_minimos: int = MESES_MINIMOS, tolerancia_12m: float = TOLERANCIA_12M) -> dict:
     """Escolhe a fonte usada e confere com as demais. A comparação com a
     CVM usa a soma de 12 meses; entre as outras fontes, mês a mês.
 
