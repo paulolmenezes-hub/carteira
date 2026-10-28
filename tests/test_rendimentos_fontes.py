@@ -115,7 +115,7 @@ def test_diagnostico_de_desdobramento_nao_ajustado():
     fund.iloc[:24] = 1.0  # Fundamentus sem ajuste antes do desdobramento de 1 para 10
     d = diagnosticar_escala(fund, yahoo)
     assert d == {"fator": 10.0, "ate": "2024-01"}
-    r = conferir_fontes({"fundamentus": fund, "yahoo": yahoo})
+    r = conferir_fontes({"fundamentus": fund, "yahoo": yahoo}, ajustar_escala=False)
     assert r["selo"] == "divergente"
     assert "10x maiores" in r["texto"] and "01/2024" in r["texto"]
     assert "desdobramento" in resumo_conferencia(r)["Observação"]
@@ -126,3 +126,53 @@ def test_sem_diagnostico_quando_a_divergencia_e_espalhada():
     yahoo = _mensal([1.0] * 48)
     fund = _mensal([1.0, 1.3] * 24)
     assert diagnosticar_escala(fund, yahoo) is None
+
+
+def test_escala_corrigida_pelo_yahoo_e_conferencia_refeita():
+    yahoo = _mensal([0.1] * 48)
+    fund = yahoo.copy()
+    fund.iloc[:24] = 1.0  # Fundamentus e CVM com o valor por cota de antes do desdobramento 1:10
+    cvm = fund.copy()
+    r = conferir_fontes({"fundamentus": fund, "cvm": cvm, "yahoo": yahoo})
+    assert r["ajuste_escala"] == {"fator": 10.0, "ate": "2024-01"}
+    assert r["serie"].iloc[0] == pytest.approx(0.1) and r["serie"].iloc[-1] == pytest.approx(0.1)
+    assert r["selo"] == "confirmado" and set(r["confirmada_por"]) == {"cvm", "yahoo"}
+    assert r["observacoes"][0].startswith("escala corrigida: valores do Fundamentus e da CVM até 01/2024 divididos por 10")
+    sem = conferir_fontes({"fundamentus": fund, "yahoo": yahoo}, ajustar_escala=False)
+    assert sem["ajuste_escala"] is None and sem["selo"] == "divergente"
+
+
+def _cpts():
+    """CPTS11: desdobramento de 1 para 10 em 09/2023; Fundamentus e CVM com o
+    valor por cota da época; Yahoo com poucos rendimentos antes do evento."""
+    fund = _mensal([1.0] * 30 + [0.1] * 30, inicio="2021-01-10")
+    yahoo = fund[fund.index >= "2023-06-01"] / 1.0
+    yahoo[yahoo.index < "2023-08-01"] = 0.1
+    eventos = pd.Series([10.0], index=[pd.Timestamp("2023-08-01")])
+    return fund, yahoo, eventos
+
+
+def test_ajustar_por_desdobramentos_divide_antes_do_evento():
+    from carteira_analise.fontes.rendimentos import ajustar_por_desdobramentos
+    fund, _, eventos = _cpts()
+    s, aplicados = ajustar_por_desdobramentos(fund, eventos)
+    assert aplicados == [(pd.Timestamp("2023-08-01"), 10.0)]
+    assert s.max() == pytest.approx(0.1) and s.min() == pytest.approx(0.1)
+
+
+def test_ajustar_por_desdobramentos_nao_mexe_em_serie_ja_ajustada_nem_em_bonificacao():
+    from carteira_analise.fontes.rendimentos import ajustar_por_desdobramentos
+    ajustada = _mensal([0.1] * 60, inicio="2021-01-10")
+    s, aplicados = ajustar_por_desdobramentos(ajustada, pd.Series([10.0], index=[pd.Timestamp("2023-08-01")]))
+    assert aplicados == [] and s.equals(ajustada.astype(float))
+    _, aplicados = ajustar_por_desdobramentos(ajustada, pd.Series([1.1], index=[pd.Timestamp("2023-08-01")]))
+    assert aplicados == []
+
+
+def test_conferir_com_eventos_do_yahoo():
+    fund, yahoo, eventos = _cpts()
+    cvm = fund.copy()
+    r = conferir_fontes({"fundamentus": fund, "cvm": cvm, "yahoo": yahoo}, eventos=eventos)
+    assert r["serie"].max() == pytest.approx(0.1)
+    assert r["selo"] == "confirmado" and "cvm" in r["confirmada_por"]
+    assert r["observacoes"][0].startswith("desdobramento de 1 para 10 em 08/2023 (Yahoo)")
