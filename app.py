@@ -33,10 +33,11 @@ from carteira_analise.carteira import analisar_ativo
 from carteira_analise.fontes import yahoo as fonte_yahoo
 from carteira_analise.fontes.cache import FonteComCache
 from carteira_analise.backtest_cenarios import indice_cdi_acumulado
-from carteira_analise.cenarios import carregar_evidencias, frase_evidencia_fiis, gerar_cenarios
+from carteira_analise.cenarios import (calcular_participacao, carregar_evidencias, frase_evidencia_fiis,
+                                       gerar_cenarios)
 from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.fundamentus import buscar_proventos_fii
-from carteira_analise.contexto import ATENCAO, BOM, contexto_do_ativo, faixa_12m
+from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
@@ -50,7 +51,7 @@ from carteira_analise.planilha import (
     processar_carteira_combinada,
     tipos_da_planilha,
 )
-from carteira_analise.tecnicos import calcular_rsi
+from carteira_analise.tecnicos import calcular_rsi, movimento_brusco_recente
 
 st.set_page_config(page_title="Análise de Carteira", page_icon="📊", layout="wide")
 
@@ -461,7 +462,7 @@ _COLUNAS_DASHBOARD_MOEDA = {
 
 def _linha_dashboard_para_dict(l) -> dict:
     return {
-        "Ticker": l.ticker,
+        "Ticker": getattr(l, "rotulo", "") or l.ticker,
         "Saldo Inicial (data)": _fmt_data(l.saldo_inicial_data),
         "Saldo Inicial (valor)": _fmt_moeda(l.saldo_inicial_valor, l.moeda),
         "Preço Médio (PM)": _fmt_moeda(l.preco_medio, l.moeda),
@@ -541,7 +542,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
                 linhas_grupo = [l for l in linhas_bloco if l.tipo_grupo == tipo_grupo]
                 if not linhas_grupo:
                     continue
-                for l in sorted(linhas_grupo, key=lambda x: x.ticker):
+                for l in sorted(linhas_grupo, key=lambda x: (x.ticker, getattr(x, "ciclo", 1))):
                     linhas_html.append(_linha_dashboard_para_dict(l))
                     tipos_marcador.append("dado")
                 linhas_html.append(_linha_subtotal_para_dict(f"Total {tipo_grupo}", linhas_grupo, moeda_bloco))
@@ -731,6 +732,14 @@ def _cdi_do_banco_central():
         return None, (f"CDI do Banco Central indisponível no momento — o retrospecto dos FIIs usa "
                       f"{CDI_RESERVA_AA * 100:.0f}% ao ano para o dinheiro em caixa.")
     return serie, None
+
+
+def _cdi_liquido_atual() -> float:
+    """CDI dos últimos 12 meses, líquido de IR: a régua do dividend yield no
+    "Contexto do ativo". Sem o Banco Central, usa a taxa de reserva."""
+    serie, _ = _cdi_do_banco_central()
+    valor = cdi_liquido_12m(serie)
+    return valor if valor else CDI_RESERVA_AA * (1 - 0.175)
 
 
 # Cor de fundo (gradiente), ícone e cor de destaque de cada situação. Sem cinza
@@ -924,11 +933,11 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
 
 
 def _html_card_ativo(ticker: str, tipo: str, preco: float, f12: dict | None, ctx: dict | None,
-                     regua: dict | None) -> str:
+                     regua: dict | None, movimento: dict | None = None) -> str:
     """Card neutro da aba Ativo Específico: só dados do ativo; a régua de
     faixas aparece apenas quando o ticker está na carteira enviada."""
     moeda = "R$" if ticker.endswith(".SA") else "US$"
-    partes = [_html_faixa_12m(f12, moeda)]
+    partes = [_html_movimento_brusco(movimento, moeda), _html_faixa_12m(f12, moeda)]
     if regua:
         partes.append(_html_regua(regua, moeda, titulo="Na sua carteira", mostrar_preco_medio=True))
         partes.append("<div style='font-size:.76em;opacity:.85;margin-top:4px'>Os cenários completos estão no card da "
@@ -966,10 +975,48 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
         fonte = "Fundamentus (proventos pagos)"
         if divs is None or len(divs) == 0:
             divs, fonte = dividendos_yahoo, "Yahoo Finance (pode ter lacunas; Fundamentus indisponível)"
-    ctx = contexto_do_ativo(resultado, precos, divs)
+    ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual())
     if ctx is not None:
         ctx["fonte_rendimentos"] = fonte
     return ctx
+
+
+def _html_caixas_preco(pm: float, preco: float, var: float | None, moeda: str) -> str:
+    """Preço médio, preço de hoje e variação em destaque: três caixas brancas,
+    valores em negrito; a variação em vermelho quando negativa e em verde
+    quando positiva (fundo branco para o vermelho ser legível em qualquer card)."""
+    cor = "#b91c1c" if (var or 0) < 0 else ("#15803d" if (var or 0) > 0 else "#111827")
+    texto_var = "—" if var is None else f"{'+' if var > 0 else '−' if var < 0 else ''}{abs(var) * 100:.1f}%".replace(".", ",")
+
+    def caixa(rotulo, valor, cor_valor="#111827"):
+        return ("<div style='flex:1;min-width:0;background:#ffffff;border-radius:10px;padding:6px 10px'>"
+                f"<div style='font-size:.72em;color:#4b5563;font-weight:600'>{rotulo}</div>"
+                f"<div style='font-size:1.12em;font-weight:800;color:{cor_valor};white-space:nowrap'>{valor}</div></div>")
+    return ("<div style='display:flex;gap:8px;margin-top:10px'>"
+            + caixa("Preço médio", formatar_valor(pm, moeda)) + caixa("Hoje", formatar_valor(preco, moeda))
+            + caixa("Variação", texto_var, cor) + "</div>")
+
+
+def _html_movimento_brusco(mov: dict | None, moeda: str) -> str:
+    if not mov:
+        return ""
+    direcao = "Queda" if mov["variacao"] < 0 else "Alta"
+    return ("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#92400e;"
+            "border-left:5px solid #d97706;border-radius:8px;font-size:.82em;line-height:1.4'>"
+            f"<b>{'📉' if mov['variacao'] < 0 else '📈'} {direcao} de {abs(mov['variacao']) * 100:.0f}% em poucos pregões</b> "
+            f"({formatar_valor(mov['referencia'], moeda)} → {formatar_valor(mov['preco'], moeda)}). Pode ser movimento "
+            "de mercado ou um evento societário (desdobramento, grupamento) ainda não ajustado pela fonte; "
+            "confira antes de usar os cenários.</div>")
+
+
+def _html_alertas_compras(alertas: list[str]) -> str:
+    if not alertas:
+        return ""
+    itens = "".join(f"<li>{html.escape(a)}</li>" for a in alertas)
+    return ("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#92400e;"
+            "border-left:5px solid #d97706;border-radius:8px;font-size:.8em;line-height:1.4'>"
+            "<b>🛒 Compras fora da regra de faixas (ciclo atual, últimos 12 meses):</b>"
+            f"<ul style='margin:4px 0 0 18px;padding:0'>{itens}</ul></div>")
 
 
 def _html_card_cenario(card: dict) -> str:
@@ -981,9 +1028,14 @@ def _html_card_cenario(card: dict) -> str:
     var = card["variacao"]
     partes = [
         f"<div style='font-size:1.3em;font-weight:700;margin-top:10px'>{html.escape(card['rotulo_situacao'])}</div>",
-        f"<div style='font-size:.82em;opacity:.92'>Preço médio {formatar_valor(card['preco_medio'], moeda)} · "
-        f"hoje {formatar_valor(card['preco_atual'], moeda)}</div>",
+        _html_caixas_preco(card["preco_medio"], card["preco_atual"], var, moeda),
     ]
+    part = card.get("participacao")
+    if part:
+        txt = (f"{part['carteira'] * 100:.1f}% da carteira · " if part.get("carteira") is not None else "")
+        txt += f"{part['grupo'] * 100:.1f}% {part['nome_grupo']}"
+        partes.append(f"<div style='font-size:.8em;margin-top:6px;opacity:.95'>📊 {txt.replace('.', ',')}</div>")
+    partes.append(_html_movimento_brusco(card.get("movimento_brusco"), moeda))
     # Evento societário não lançado: o preço médio do card fica errado, então o
     # aviso vem logo abaixo dos preços, em destaque (fundo branco, texto vermelho).
     for aviso in card.get("alertas_evento", []):
@@ -1001,6 +1053,7 @@ def _html_card_cenario(card: dict) -> str:
                       f"<b>⚠️ {len(linhas_fora)} linha(s) da planilha não entraram no cálculo — preço médio e "
                       f"quantidade deste card podem estar errados:</b><ul style='margin:4px 0 0 18px;padding:0'>"
                       f"{itens}{resto}</ul></div>")
+    partes.append(_html_alertas_compras(card.get("alertas_compras", [])))
     partes.append(_html_regua(card.get("regua"), moeda))
     partes.append(_html_faixa_12m(card.get("faixa_12m"), moeda))
     tabela = card.get("tabela")
@@ -1233,6 +1286,11 @@ with tab_carteira:
                         except Exception:
                             c["contexto"] = None  # sem contexto, o card segue com os cenários
                     avisos[:0] = [f"{t}: {a}" for t, lista in eventos.items() for a in lista]
+                    try:  # cotação do dólar para somar ativos dos EUA à carteira
+                        usd_brl = float(fonte_dados.baixar_precos("BRL=X", "5d").dropna().iloc[-1])
+                    except Exception:
+                        usd_brl = None
+                    calcular_participacao(cards, usd_brl)
                     cenarios = (cards, avisos)
                 except Exception as e:
                     cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
@@ -1402,7 +1460,8 @@ with tab_ativo:
             st.html(_html_card_ativo(
                 ticker_limpo, st.session_state["individual_tipo"], resultado.tec.preco_atual,
                 st.session_state.get("individual_faixa_12m"), ctx_individual,
-                card_carteira.get("regua") if card_carteira else None))
+                card_carteira.get("regua") if card_carteira else None,
+                movimento_brusco_recente(resultado.tec.historico)))
 
             st.markdown(f"**Histórico de preço ({OPCOES_PERIODO[st.session_state['individual_periodo']]}):**")
             st.caption(
@@ -1456,7 +1515,7 @@ with tab_dashboard:
             esperado = (l.qtde_inicial or 0.0) + l.compras_quantidade - l.vendas_quantidade + l.eventos_quantidade
             if abs(esperado - l.saldo_final_qtde) > 1e-6:
                 avisos_planilha.append(
-                    f"{l.ticker}: a planilha soma {esperado:g} cotas (inicial + compras − vendas ± eventos), mas o "
+                    f"{getattr(l, 'rotulo', '') or l.ticker}: a planilha soma {esperado:g} cotas (inicial + compras − vendas ± eventos), mas o "
                     f"saldo calculado é {l.saldo_final_qtde:g} — confira as linhas desse ativo.")
         if avisos_planilha:
             with st.expander(f"⚠️ {len(avisos_planilha)} aviso(s) sobre a planilha", expanded=True):
