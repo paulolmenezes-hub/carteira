@@ -50,6 +50,7 @@ def limpar_outliers_precos(
     iteracoes: int = 3,
     janela_salto: int = 10,
     fator_salto: float = 3.0,
+    protecao_final: int | None = None,
 ) -> tuple[pd.Series, int, int]:
     """Corrige preços claramente errados em duas etapas, NESTA ORDEM:
 
@@ -70,8 +71,18 @@ def limpar_outliers_precos(
        apagaria a história dos ativos que mais caíram (viés de
        sobrevivência).
 
+    Os últimos ``protecao_final`` pregões (padrão: metade da janela) nunca
+    são corrigidos na etapa 1: no fim da série não há pregões seguintes para
+    mostrar se um preço muito diferente é erro ou o novo patamar, e trocar o
+    preço mais recente pelo anterior escondia quedas reais — caso MRVE3 em
+    26/10/2026, queda de cerca de 50% após o 2º turno eleitoral, que o card
+    mostrava como R$ 8,23 em vez de R$ 4,07. Movimentos assim são sinalizados
+    por ``movimento_brusco_recente``.
+
     Retorna (serie_limpa, total_pontos_corrigidos, dias_truncados).
     """
+    if protecao_final is None:
+        protecao_final = janela // 2
     serie = fechamento.copy()
 
     total_corrigidos = 0
@@ -79,6 +90,8 @@ def limpar_outliers_precos(
         mediana_movel = serie.rolling(janela, center=True, min_periods=1).median()
         desvio_relativo = (serie - mediana_movel).abs() / mediana_movel
         suspeitos = desvio_relativo > limite
+        if protecao_final > 0:
+            suspeitos.iloc[-protecao_final:] = False  # pregões recentes: preço real, nunca "corrigido"
         n_suspeitos = int(suspeitos.sum())
         if n_suspeitos == 0:
             break
@@ -116,6 +129,26 @@ def limpar_outliers_precos(
                 total_corrigidos += n_truncados
 
     return serie, total_corrigidos, n_truncados
+
+
+def movimento_brusco_recente(precos: pd.Series, dias: int = 10, limite: float = 0.30) -> dict | None:
+    """Variação forte e rápida no fim da série: compara o preço atual com a
+    mediana dos pregões de 10 a 30 dias antes do trecho recente. Devolve
+    {"variacao", "referencia", "preco"} se a variação passar de ``limite``
+    (para cima ou para baixo), ou None. Serve para avisar o usuário, porque
+    pode ser movimento de mercado ou um evento societário ainda não ajustado
+    pela fonte."""
+    p = precos.dropna() if precos is not None else pd.Series(dtype=float)
+    if len(p) < dias + 20:
+        return None
+    referencia = float(p.iloc[-(dias + 20):-dias].median())
+    preco = float(p.iloc[-1])
+    if referencia <= 0:
+        return None
+    variacao = preco / referencia - 1
+    if abs(variacao) < limite:
+        return None
+    return {"variacao": variacao, "referencia": referencia, "preco": preco}
 
 
 @dataclass

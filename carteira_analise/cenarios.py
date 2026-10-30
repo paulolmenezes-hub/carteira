@@ -29,12 +29,13 @@ from .posicoes import (
     renda_12m_por_cota,
 )
 from .contexto import faixa_12m, regua_faixas
-from .tecnicos import limpar_outliers_precos
+from .tecnicos import limpar_outliers_precos, movimento_brusco_recente
 from .regra_posicao import (
     CONFIG_REGRA_PADRAO,
     decidir_posicao,
     estado_a_partir_de_operacoes,
     filtro_fundamentos_compra,
+    formatar_valor,
     quantidade_para_acao,
 )
 
@@ -142,6 +143,106 @@ def tabela_cenario(estado: dict, preco: float, decisao: dict, quantidade: float,
                   f"aumentar {fracao * 100:.0f}% da posição")
     linhas = [(nome, fmt, manter[i], alternativa[i]) for i, (nome, fmt) in enumerate(LINHAS_CENARIO)]
     return {"titulo": titulo, "colunas": ["Manter tudo", rotulo], "linhas": linhas}
+
+
+_NOME_GRUPO_PARTICIPACAO = {
+    ("B3", "Ações"): "das Ações B3", ("B3", "FIIs"): "dos FIIs", ("B3", "ETF"): "dos ETFs B3",
+    ("EUA", "Ações"): "das Ações EUA", ("EUA", "ETF"): "dos ETFs EUA",
+}
+
+
+def calcular_participacao(cards: list[dict], usd_brl: float | None = None) -> None:
+    """Acrescenta a cada card a participação da posição (valor de hoje) na
+    carteira e no seu grupo (mercado + tipo de ativo). Posições em dólar
+    entram na carteira convertidas por ``usd_brl``; sem a cotação, a
+    participação na carteira fica sem valor quando houver ativos dos EUA (a
+    do grupo, na mesma moeda, continua valendo). Só informa: a carteira
+    ainda não tem metas de alocação para comparar."""
+    def valor(c):
+        return float(c.get("quantidade") or 0) * float(c.get("preco_atual") or 0)
+
+    tem_dolar = any(c.get("moeda") == "US$" for c in cards)
+    total = None
+    if not tem_dolar or usd_brl:
+        total = sum(valor(c) * (usd_brl if c.get("moeda") == "US$" else 1.0) for c in cards)
+    por_grupo: dict[tuple, float] = {}
+    for c in cards:
+        chave = (c.get("mercado"), c.get("grupo"))
+        por_grupo[chave] = por_grupo.get(chave, 0.0) + valor(c)
+    for c in cards:
+        chave = (c.get("mercado"), c.get("grupo"))
+        v = valor(c)
+        v_brl = v * (usd_brl if c.get("moeda") == "US$" and usd_brl else 1.0)
+        c["participacao"] = {
+            "carteira": (v_brl / total) if total else None,
+            "grupo": (v / por_grupo[chave]) if por_grupo[chave] else 0.0,
+            "nome_grupo": _NOME_GRUPO_PARTICIPACAO.get(chave, "do grupo"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Compras feitas fora da regra de faixas (ciclo atual, últimos 12 meses)
+# ---------------------------------------------------------------------------
+
+def compras_fora_da_regra(ops: list[dict], precos: pd.Series | None, data_ref, moeda: str = "R$",
+                          dias: int = 365, config=None, maximo: int = 3) -> list[str]:
+    """Compras do ciclo atual (desde a última vez que a posição zerou), nos
+    últimos ``dias``, que a regra de faixas não teria sugerido: preço acima
+    da faixa de aumento (a regra só aumenta a partir de −15% sobre o preço
+    médio da época), quantidade maior que a sugerida pela faixa ou aumento
+    além do limite por ciclo de queda. A compra que abre o ciclo e as
+    bonificações não contam. Devolve frases para o card (as mais recentes
+    primeiro, no máximo ``maximo``, e a contagem do restante)."""
+    if not ops:
+        return []
+    ops = sorted(ops, key=lambda o: (pd.Timestamp(o["data"]), 0 if o["tipo"] == "compra" else 1))
+    inicio, q = 0, 0.0
+    for i, op in enumerate(ops):
+        q += op["quantidade"] if op["tipo"] == "compra" else -op["quantidade"]
+        if op["tipo"] == "venda" and q <= 1e-9:
+            inicio, q = i + 1, 0.0
+    limite_data = pd.Timestamp(data_ref) - pd.Timedelta(days=dias)
+    p = _sem_fuso(precos).dropna() if precos is not None else pd.Series(dtype=float)
+    cfg = {**CONFIG_REGRA_PADRAO, **(config or {})}
+    frases = []
+    for k in range(inicio + 1, len(ops)):
+        op = ops[k]
+        data = pd.Timestamp(op["data"])
+        if op["tipo"] != "compra" or op.get("evento") or op["preco"] <= 0 or data < limite_data:
+            continue
+        hist = p[p.index < data] if len(p) else p
+        estado = estado_a_partir_de_operacoes(ops[:k], historico_precos=hist if len(hist) else None,
+                                              config=config)
+        if estado["quantidade"] <= 0 or estado["preco_medio"] <= 0:
+            continue
+        pm, q_antes = estado["preco_medio"], estado["quantidade"]
+        decisao = decidir_posicao(op["preco"], estado, config=config)
+        var = op["preco"] / pm - 1
+        motivo = None
+        if decisao["acao"] == "comprar":
+            sugerida = q_antes * decisao["fracao"]
+            if op["quantidade"] > max(sugerida * 1.5, sugerida + 1):
+                motivo = (f"quantidade de {op['quantidade'] / q_antes * 100:.0f}% da posição, acima dos "
+                          f"{decisao['fracao'] * 100:.0f}% sugeridos na faixa de "
+                          f"−{abs(decisao['faixa']) * 100:.0f}%")
+        elif decisao["acao"] == "manter_nao_aumente":
+            motivo = (f"na faixa de aumento, mas além do limite de {cfg['max_reforcos']} aumentos por ciclo de "
+                      f"queda")
+        elif var >= 0:
+            motivo = (f"preço {var * 100:.0f}% acima do preço médio da época "
+                      f"({formatar_valor(pm, moeda)}); a regra só aumenta a posição em quedas")
+        else:
+            limiar = max(f[0] for f in cfg["faixas_compra"])
+            motivo = (f"preço {abs(var) * 100:.0f}% abaixo do preço médio da época "
+                      f"({formatar_valor(pm, moeda)}); a regra só aumenta a partir de −{abs(limiar) * 100:.0f}%")
+        if motivo:
+            frases.append((data, f"Compra de {data:%d/%m/%Y} ({op['quantidade']:g} a "
+                                 f"{formatar_valor(op['preco'], moeda)}) fora da regra de faixas: {motivo}."))
+    frases.sort(key=lambda f: f[0], reverse=True)
+    saida = [f for _, f in frases[:maximo]]
+    if len(frases) > maximo:
+        saida.append(f"… e mais {len(frases) - maximo} compra(s) fora da regra nos últimos 12 meses.")
+    return saida
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +521,8 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
             "renda_mensal": (renda_cota / 12 * estado["quantidade"]) if renda_cota else None,
             "evidencia": frase_evidencia_card(evidencias, tipo, situacao) if tabela else None,
             "retrospecto": None,
+            "alertas_compras": compras_fora_da_regra(ops, precos, data_ref, moeda),
+            "movimento_brusco": movimento_brusco_recente(precos),
         }
         if tipo == "fii":
             if renda_cota:

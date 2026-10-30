@@ -90,6 +90,19 @@ def regua_faixas(preco_medio: float, preco: float, config: dict | None = None) -
     }
 
 
+def cdi_liquido_12m(cdi_diario: pd.Series | None, ir: float = 0.175) -> float | None:
+    """CDI acumulado dos últimos 12 meses, líquido de IR (17,5%, aplicação de
+    6 meses a 2 anos), a partir da série diária do Banco Central (% ao dia)."""
+    if cdi_diario is None or len(cdi_diario) == 0:
+        return None
+    s = cdi_diario.dropna()
+    s = s[s.index > s.index[-1] - pd.Timedelta(days=365)]
+    if s.empty:
+        return None
+    bruto = float((1 + s / 100).prod() - 1)
+    return bruto * (1 - ir)
+
+
 def faixa_12m(precos: pd.Series) -> dict | None:
     """Mínima e máxima dos últimos 12 meses, o preço de hoje e a posição dele
     entre as duas (0 = na mínima, 1 = na máxima)."""
@@ -183,6 +196,21 @@ def _dy(div, limite, nome="Dividend yield 12m"):
                 BOM if dy > limite else NEUTRO)
 
 
+def _renda_vs_cdi(valor, cdi_liquido, nome, extra=""):
+    """Dividend yield (ou yield de FII) comparado ao CDI líquido de IR:
+    dividendos de ações e rendimentos de FIIs são isentos, então a régua
+    justa é o que o mesmo dinheiro renderia no CDI depois do imposto. Bom:
+    igual ou acima do CDI líquido; neutro: de 70% a 100% dele; atenção:
+    abaixo de 70%. A régua acompanha os juros: com a Selic alta, um yield
+    de 6% não aparece mais como positivo."""
+    ref = f"CDI líquido ({_pct(cdi_liquido)})"
+    if valor >= cdi_liquido:
+        return _ind(nome, _pct(valor), extra + "acima do " + ref, BOM)
+    if valor >= 0.7 * cdi_liquido:
+        return _ind(nome, _pct(valor), extra + "abaixo do " + ref, NEUTRO)
+    return _ind(nome, _pct(valor), extra + "bem abaixo do " + ref, ATENCAO)
+
+
 def _pl(fund, bom_abaixo, atencao_acima):
     pl = _num((fund or {}).get("pl"))
     if pl is None or pl <= 0:
@@ -200,20 +228,29 @@ def eh_fii_de_tijolo(fund: dict | None) -> bool:
 
 
 def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
-                         preco_atrativo: dict | None = None) -> list[dict]:
+                         preco_atrativo: dict | None = None, cdi_liquido_aa: float | None = None) -> list[dict]:
     """Os indicadores do bloco "Contexto do ativo", por tipo.
 
     FIIs: yield 12 meses (contra a própria média, quando houver), P/VP,
     rendimentos estáveis e vacância (só FII de tijolo) — sem tendência nem
     RSI, que num FII refletem mais o ciclo de juros e o curtíssimo prazo.
-    Ações e ETFs: tendência (MM200), RSI, P/L (ações) e dividend yield."""
+    Ações e ETFs: tendência (MM200), RSI, P/L (ações) e dividend yield.
+
+    Com ``cdi_liquido_aa`` (CDI dos últimos 12 meses, líquido de IR), o
+    yield de FIIs, ações B3 e ETFs B3 é comparado a ele (``_renda_vs_cdi``);
+    sem ele, valem os limites fixos do motor de pontuação."""
     fund = fund or {}
     if tipo == "fii":
         itens = []
         dy = _num(getattr(div, "dy_12m_real", None)) if div else None
-        if preco_atrativo:
+        if preco_atrativo and cdi_liquido_aa:
+            y, m = preco_atrativo["yield"], preco_atrativo["yield_medio_24m"]
+            itens.append(_renda_vs_cdi(y, cdi_liquido_aa, "Yield 12 meses", f"média de 2 anos: {_pct(m)} · "))
+        elif preco_atrativo:
             y, m = preco_atrativo["yield"], preco_atrativo["yield_medio_24m"]
             itens.append(_ind("Yield 12 meses", _pct(y), f"média de 2 anos: {_pct(m)}", BOM if y >= m else NEUTRO))
+        elif dy is not None and cdi_liquido_aa:
+            itens.append(_renda_vs_cdi(dy, cdi_liquido_aa, "Yield 12 meses"))
         elif dy is not None:
             itens.append(_ind("Yield 12 meses", _pct(dy), "sem média de 2 anos", NEUTRO))
         else:
@@ -247,19 +284,26 @@ def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
                 itens.append(_ind("Vacância", _pct(vac), "moderada", NEUTRO))
         return itens
     itens = [_tendencia(tec), _rsi(tec)]
+
+    def dy_b3(limite_fixo):
+        dy = _num(getattr(div, "dy_12m_real", None)) if div else None
+        if dy is not None and cdi_liquido_aa:
+            return _renda_vs_cdi(dy, cdi_liquido_aa, "Dividend yield 12m")
+        return _dy(div, limite_fixo)
+
     if tipo == "acao":
-        itens += [_pl(fund, 15, 25), _dy(div, 0.06)]
+        itens += [_pl(fund, 15, 25), dy_b3(0.06)]
     elif tipo == "acao_us":
         itens += [_pl(fund, 25, 40), _dy(div, 0.02)]
     elif tipo in ("etf_br", "etf_us"):
-        itens.append(_dy(div, 0.04 if tipo == "etf_br" else 0.015))
+        itens.append(dy_b3(0.04) if tipo == "etf_br" else _dy(div, 0.015))
     else:
-        itens.append(_dy(div, 0.06))
+        itens.append(dy_b3(0.06))
     return itens
 
 
 def contexto_do_ativo(resultado, precos: pd.Series | None = None,
-                      dividendos_fii: pd.Series | None = None) -> dict | None:
+                      dividendos_fii: pd.Series | None = None, cdi_liquido_aa: float | None = None) -> dict | None:
     """Junta, a partir do resultado de ``analisar_ativo``, o que o card
     mostra: leitura combinada, indicadores, detalhes da pontuação e, para
     FIIs, o preço atrativo de hoje (com os rendimentos de ``dividendos_fii``)."""
@@ -278,7 +322,7 @@ def contexto_do_ativo(resultado, precos: pd.Series | None = None,
     return {
         "leitura": getattr(resultado, "leitura_combinada_texto", None),
         "indicadores": indicadores_contexto(tipo, tec, getattr(resultado, "fund", None),
-                                            getattr(resultado, "div", None), pa),
+                                            getattr(resultado, "div", None), pa, cdi_liquido_aa),
         "detalhes_timing": list(getattr(resultado, "detalhes_timing", []) or []),
         "detalhes_renda": list(getattr(resultado, "detalhes_renda", []) or []),
         "preco_atrativo": pa,

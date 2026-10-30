@@ -35,6 +35,28 @@ def _soma_dividendos_desde(dividendos: pd.Series | None, data_inicio) -> float:
     return float(serie[serie.index >= corte].sum())
 
 
+def _renda_pela_quantidade_na_data(dividendos: pd.Series | None, ops_ordenadas) -> float:
+    """Soma de provento por cota x quantidade mantida antes da data de cada
+    provento (operações do mesmo dia não contam: a data do provento é a
+    data-ex)."""
+    if dividendos is None or len(dividendos) == 0 or not ops_ordenadas:
+        return 0.0
+    serie = dividendos.copy()
+    if getattr(serie.index, "tz", None) is not None:
+        serie.index = serie.index.tz_localize(None)
+    total = 0.0
+    for data, valor in serie.items():
+        data = pd.Timestamp(data)
+        q = 0.0
+        for op in ops_ordenadas:
+            if pd.Timestamp(op.data) >= data:
+                break
+            q += op.quantidade if op.tipo == "compra" else -op.quantidade
+        if q > 1e-9:
+            total += float(valor) * q
+    return total
+
+
 # =============================================================================
 # 1) Ganho de posição aberta — dado agregado (Nível 1)
 # =============================================================================
@@ -146,13 +168,10 @@ def avaliar_operacoes(
       for informado);
     - a renda recebida (dividendos) no período coberto pelas operações.
 
-    Limitação conhecida, documentada por transparência: a renda recebida é
-    somada por período coberto pelas operações (da primeira à última data
-    informada, ou até hoje se a posição seguir aberta), não célula a célula
-    por operação — uma simplificação aceitável para o nível de precisão
-    desta funcionalidade (Seção 3.2.2 do relatório), mas que pode
-    superestimar a renda em carteiras com posição zerada por períodos longos
-    entre operações.
+    A renda recebida usa, para cada provento, a quantidade que se tinha
+    na véspera da data do provento (data-ex, no Yahoo). A versão anterior
+    multiplicava todos os proventos do período pela quantidade média e
+    contava até os pagos depois de a posição ser zerada.
     """
     if not operacoes:
         raise ValueError("é necessário informar ao menos uma operação")
@@ -194,17 +213,7 @@ def avaliar_operacoes(
     if quantidade_aberta > 0 and preco_atual is not None:
         ganho_nao_realizado = (preco_atual - custo_medio) * quantidade_aberta
 
-    data_inicio = ops_ordenadas[0].data
-    renda_recebida = _soma_dividendos_desde(dividendos, data_inicio)
-    # aproxima pela quantidade média mantida ao longo do período coberto —
-    # simplificação documentada na docstring desta função
-    quantidades = []
-    qtd_acum = 0.0
-    for op in ops_ordenadas:
-        qtd_acum += op.quantidade if op.tipo == "compra" else -op.quantidade
-        quantidades.append(max(qtd_acum, 0.0))
-    quantidade_media_periodo = sum(quantidades) / len(quantidades) if quantidades else 0.0
-    renda_recebida *= quantidade_media_periodo
+    renda_recebida = _renda_pela_quantidade_na_data(dividendos, ops_ordenadas)
 
     ganho_total = ganho_realizado + (ganho_nao_realizado or 0.0) + renda_recebida
 

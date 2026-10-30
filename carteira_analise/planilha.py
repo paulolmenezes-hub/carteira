@@ -298,6 +298,12 @@ class LinhaCarteira:
     erro: str | None = None
     # desdobramento/grupamento conhecido pela fonte e não lançado na planilha
     avisos_eventos: list[str] = field(default_factory=list)
+    # Ciclo da posição: cada vez que a quantidade zera, o ciclo fecha e a
+    # compra seguinte abre outro (preço médio, ganho e proventos separados)
+    ciclo: int = 1
+    n_ciclos: int = 1
+    ciclo_inicio: object = None  # date da primeira operação do ciclo
+    ciclo_fim: object = None  # date da venda que zerou a posição (None se aberto)
 
 
 def interpretar_quantidade_operacao(tipo: str, valor) -> tuple[float | None, str | None]:
@@ -389,6 +395,33 @@ def aplicar_eventos_societarios(ops: list[dict]) -> list[dict]:
     return saida
 
 
+def dividir_em_ciclos(ops: list[dict]) -> list[list[dict]]:
+    """Separa as operações de um ativo em ciclos de posição: quando uma
+    venda zera a quantidade, o ciclo fecha, e a operação seguinte abre outro.
+    Recomprar um ativo vendido por inteiro começa uma posição nova — com
+    preço médio, ganho e proventos próprios —, em vez de misturar os números
+    com os da posição encerrada (caso BBAS3: encerrada em 15/06/2026 e
+    recomprada em 26/10/2026). Mesma ordem de ``aplicar_eventos_societarios``
+    (no mesmo dia, compras, depois vendas, depois eventos)."""
+    ordem = {"compra": 0, "venda": 1}
+    ops = sorted(ops, key=lambda o: (pd.Timestamp(o["data"]), ordem.get(o["tipo"], 2)))
+    ciclos: list[list[dict]] = []
+    atual: list[dict] = []
+    q = 0.0
+    for op in ops:
+        atual.append(op)
+        if op["tipo"] in ("venda", "grupamento"):
+            q -= op["quantidade"]
+        else:
+            q += op["quantidade"]
+        if op["tipo"] == "venda" and q <= 1e-9:
+            ciclos.append(atual)
+            atual, q = [], 0.0
+    if atual:
+        ciclos.append(atual)
+    return ciclos
+
+
 def operacoes_do_ticker(row_resumo, grupo_operacoes: pd.DataFrame | None) -> tuple[list[dict], list[str], int]:
     """Operações válidas de um ativo (posição inicial da aba Resumo + aba
     Operações), já com os eventos societários aplicados. Devolve
@@ -399,7 +432,7 @@ def operacoes_do_ticker(row_resumo, grupo_operacoes: pd.DataFrame | None) -> tup
         try:
             op = _construir_operacao_da_posicao_inicial(row_resumo)
             ops.append({"data": pd.Timestamp(op.data), "tipo": "compra",
-                        "quantidade": float(op.quantidade), "preco": float(op.preco)})
+                        "quantidade": float(op.quantidade), "preco": float(op.preco), "inicial": True})
         except (ValueError, TypeError) as e:
             avisos.append(f"posição inicial (aba Resumo) inválida — {e}")
     n = 0
@@ -562,19 +595,9 @@ def processar_carteira_combinada(
 
     for ticker in todos_tickers:
         moeda = "R$" if ticker.endswith(".SA") else "US$"
-        ops, avisos, n_operacoes_lancadas = operacoes_do_ticker(
+        ops_brutas, avisos, _ = operacoes_do_ticker(
             tickers_resumo.get(ticker), tickers_operacoes.get(ticker))
-        ops_brutas = list(ops)
-        try:
-            ops = aplicar_eventos_societarios(ops)
-        except ValueError as e:
-            linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
-                                         origem="", avisos=avisos, erro=str(e)))
-            continue
-        operacoes = [Operacao(data=o["data"].date(), tipo=o["tipo"], quantidade=o["quantidade"],
-                              preco=o["preco"]) for o in ops]
-
-        if not operacoes:
+        if not ops_brutas:
             linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
                                          origem="", avisos=avisos,
                                          erro="nenhuma posição/operação válida"))
@@ -595,28 +618,39 @@ def processar_carteira_combinada(
         except Exception:
             divs = pd.Series(dtype=float)
 
-        try:
-            r = avaliar_operacoes(operacoes, preco_atual=preco_atual, dividendos=divs)
-        except ValueError as e:
-            linhas.append(LinhaCarteira(ticker=ticker, moeda=moeda, situacao="erro",
-                                         origem="", avisos=avisos, erro=str(e)))
-            continue
+        ciclos = dividir_em_ciclos(ops_brutas)
+        for n, ciclo in enumerate(ciclos, 1):
+            ultimo = n == len(ciclos)
+            # avisos da planilha e de eventos vão só no ciclo atual (sem repetir)
+            avisos_ciclo = avisos if ultimo else []
+            base = dict(ticker=ticker, moeda=moeda, origem="", ciclo=n, n_ciclos=len(ciclos),
+                        ciclo_inicio=pd.Timestamp(ciclo[0]["data"]).date())
+            try:
+                ops = aplicar_eventos_societarios(ciclo)
+                operacoes = [Operacao(data=o["data"].date(), tipo=o["tipo"], quantidade=o["quantidade"],
+                                      preco=o["preco"]) for o in ops]
+                r = avaliar_operacoes(operacoes, preco_atual=preco_atual, dividendos=divs)
+            except ValueError as e:
+                linhas.append(LinhaCarteira(**base, situacao="erro", avisos=avisos_ciclo, erro=str(e)))
+                continue
 
-        situacao = "Aberta" if r.quantidade_aberta > 0 else "Encerrada"
-        origem = []
-        if ticker in tickers_resumo:
-            origem.append("posição inicial")
-        if n_operacoes_lancadas:
-            origem.append(f"{n_operacoes_lancadas} operação(ões)")
-
-        linhas.append(LinhaCarteira(
-            ticker=ticker, moeda=moeda, situacao=situacao, origem=" + ".join(origem), avisos=avisos,
-            avisos_eventos=avisos_eventos,
-            quantidade_aberta=r.quantidade_aberta, preco_medio_atual=r.preco_medio_aberto,
-            preco_atual=preco_atual,
-            ganho_realizado=r.ganho_realizado, ganho_nao_realizado=r.ganho_nao_realizado,
-            renda_recebida=r.renda_recebida, ganho_total=r.ganho_total,
-        ))
+            situacao = "Aberta" if r.quantidade_aberta > 0 else "Encerrada"
+            origem = []
+            if any(o.get("inicial") for o in ciclo):
+                origem.append("posição inicial")
+            n_lancadas = sum(1 for o in ciclo if not o.get("inicial"))
+            if n_lancadas:
+                origem.append(f"{n_lancadas} operação(ões)")
+            base["origem"] = " + ".join(origem)
+            linhas.append(LinhaCarteira(
+                **base, situacao=situacao, avisos=avisos_ciclo,
+                avisos_eventos=avisos_eventos if ultimo else [],
+                ciclo_fim=None if r.quantidade_aberta > 0 else pd.Timestamp(ciclo[-1]["data"]).date(),
+                quantidade_aberta=r.quantidade_aberta, preco_medio_atual=r.preco_medio_aberto,
+                preco_atual=preco_atual,
+                ganho_realizado=r.ganho_realizado, ganho_nao_realizado=r.ganho_nao_realizado,
+                renda_recebida=r.renda_recebida, ganho_total=r.ganho_total,
+            ))
 
     return linhas
 
@@ -657,6 +691,9 @@ class LinhaDashboardAtivo:
     ticker: str
     moeda: str
     mercado: str = "B3"  # "B3" ou "EUA"
+    ciclo: int = 1  # ciclo da posição (ver ``dividir_em_ciclos``)
+    n_ciclos: int = 1
+    rotulo: str = ""  # ticker como aparece no extrato (com o período, se houver mais de um ciclo)
     tipo_grupo: str = "Ações"  # "Ações", "FIIs" ou "ETF" — agrupamento amplo p/ exibição
     situacao: str = "Ativa"  # "Ativa" ou "Encerrada"
     saldo_inicial_valor: float | None = None
@@ -710,7 +747,7 @@ def construir_dashboard_por_ativo(
     — o ativo aparece numa linha só, em "Ativa", com o ganho já realizado
     daquela venda somado ao ganho não realizado do que sobrou."""
     tipos = tipos or {}
-    linhas_ganho_por_ticker = {l.ticker: l for l in (linhas_ganho or [])}
+    linhas_ganho_por_chave = {(l.ticker, getattr(l, "ciclo", 1)): l for l in (linhas_ganho or [])}
 
     tickers_resumo: dict[str, object] = {}
     if df_resumo is not None:
@@ -730,97 +767,81 @@ def construir_dashboard_por_ativo(
     for ticker in todos_tickers:
         moeda = "R$" if ticker.endswith(".SA") else "US$"
         tipo_ativo = tipos.get(ticker)
-        linha = LinhaDashboardAtivo(
-            ticker=ticker, moeda=moeda,
-            mercado="B3" if ticker.endswith(".SA") else "EUA",
-            tipo_grupo=_TIPO_PARA_GRUPO.get(tipo_ativo, "Ações"),
-            rotulo_renda="Rendimentos" if tipo_ativo == "fii" else "Dividendos/JCP",
-        )
+        # mesmas operações válidas do cálculo de ganho (linhas ilegíveis ficam
+        # de fora e são avisadas), separadas em ciclos de posição
+        ops, _, _ = operacoes_do_ticker(tickers_resumo.get(ticker), tickers_operacoes.get(ticker))
+        ciclos = dividir_em_ciclos(ops) if ops else [[]]
+        for n, ciclo in enumerate(ciclos, 1):
+            linha = LinhaDashboardAtivo(
+                ticker=ticker, moeda=moeda, ciclo=n, n_ciclos=len(ciclos), rotulo=ticker,
+                mercado="B3" if ticker.endswith(".SA") else "EUA",
+                tipo_grupo=_TIPO_PARA_GRUPO.get(tipo_ativo, "Ações"),
+                rotulo_renda="Rendimentos" if tipo_ativo == "fii" else "Dividendos/JCP",
+            )
+            for op in ciclo:
+                q, preco, tipo = op["quantidade"], op["preco"], op["tipo"]
+                if op.get("inicial"):
+                    linha.qtde_inicial = q
+                    linha.saldo_inicial_valor = q * preco
+                    linha.saldo_inicial_data = pd.Timestamp(op["data"]).date()
+                elif tipo == "desdobramento":
+                    linha.eventos_quantidade += q
+                elif tipo == "grupamento":
+                    linha.eventos_quantidade -= q
+                elif tipo == "bonificacao" or (tipo == "compra" and preco == 0):
+                    linha.eventos_quantidade += q
+                    linha.eventos_custo += q * preco
+                elif tipo == "compra":
+                    linha.compras_quantidade += q
+                    linha.compras_valor += q * preco
+                elif tipo == "venda":
+                    linha.vendas_quantidade += q
+                    linha.vendas_valor += q * preco
 
-        if ticker in tickers_resumo:
-            row = tickers_resumo[ticker]
-            try:
-                quantidade = float(row["quantidade"])
-                preco_medio_resumo = row.get("preco_medio")
-                if preco_medio_resumo is None or (
-                    isinstance(preco_medio_resumo, float) and pd.isna(preco_medio_resumo)
-                ):
-                    preco_medio_resumo = float(row["valor_investido"]) / quantidade
-                linha.saldo_inicial_valor = quantidade * float(preco_medio_resumo)
-                linha.saldo_inicial_data = pd.Timestamp(row["data_inicio"]).date()
-                linha.qtde_inicial = quantidade
-            except (ValueError, TypeError, KeyError):
-                pass  # posição inicial inválida — dashboard mostra em branco, sem quebrar
+            # Custo médio ponderado de TUDO que foi comprado no ciclo (posição
+            # inicial + compras + custo atribuído das bonificações); a posição
+            # aberta usa abaixo o mesmo preço médio dos cards.
+            qtde_total_comprada = (linha.qtde_inicial or 0.0) + linha.compras_quantidade + linha.eventos_quantidade
+            valor_total_comprado = (linha.saldo_inicial_valor or 0.0) + linha.compras_valor + linha.eventos_custo
+            if qtde_total_comprada > 0:
+                linha.preco_medio = valor_total_comprado / qtde_total_comprada
 
-        if ticker in tickers_operacoes:
-            for _, row in tickers_operacoes[ticker].iterrows():
-                tipo = normalizar_tipo_operacao(row["tipo"])
-                quantidade_op, _ = interpretar_quantidade_operacao(
-                    "venda" if tipo == "grupamento" else (tipo or "compra"), row["quantidade"])
-                if tipo is None or quantidade_op is None:
-                    continue  # linha inválida — mesma tolerância de processar_carteira_combinada
-                if tipo in ("desdobramento", "grupamento"):
-                    linha.eventos_quantidade += quantidade_op if tipo == "desdobramento" else -quantidade_op
-                    continue
-                try:
-                    preco_op = float(row["preco"])
-                except (ValueError, TypeError):
-                    if tipo != "bonificacao":
-                        continue
-                    preco_op = 0.0
-                if preco_op != preco_op:  # vazio
-                    if tipo != "bonificacao":
-                        continue
-                    preco_op = 0.0
-                if tipo == "bonificacao" or (tipo == "compra" and preco_op == 0):
-                    linha.eventos_quantidade += quantidade_op
-                    linha.eventos_custo += quantidade_op * preco_op
-                elif tipo == "compra" and preco_op > 0:
-                    linha.compras_quantidade += quantidade_op
-                    linha.compras_valor += quantidade_op * preco_op
-                elif tipo == "venda" and preco_op > 0:
-                    linha.vendas_quantidade += quantidade_op
-                    linha.vendas_valor += quantidade_op * preco_op
+            resultado_ganho = linhas_ganho_por_chave.get((ticker, n))
+            if resultado_ganho is not None and resultado_ganho.situacao != "erro":
+                linha.situacao = "Ativa" if resultado_ganho.quantidade_aberta else "Encerrada"
+                linha.saldo_final_qtde = resultado_ganho.quantidade_aberta
+                linha.preco_final = resultado_ganho.preco_atual
+                if resultado_ganho.quantidade_aberta and resultado_ganho.preco_atual is not None:
+                    linha.saldo_final_valor = resultado_ganho.quantidade_aberta * resultado_ganho.preco_atual
+                    linha.saldo_final_data = data_analise
+                elif not resultado_ganho.quantidade_aberta:
+                    linha.saldo_final_data = getattr(resultado_ganho, "ciclo_fim", None)
+                if resultado_ganho.quantidade_aberta and resultado_ganho.preco_medio_atual is not None:
+                    linha.preco_medio = resultado_ganho.preco_medio_atual
+                linha.ganho_realizado = resultado_ganho.ganho_realizado
+                linha.ganho_nao_realizado = resultado_ganho.ganho_nao_realizado
+                linha.renda_recebida = resultado_ganho.renda_recebida
 
-        # Custo médio ponderado de TUDO que já foi comprado (posição inicial
-        # + compras), independente do ativo ainda estar aberto ou não —
-        # não depende do estado transitório do ganhos.py, então funciona
-        # igual pra posição aberta ou já totalmente encerrada.
-        qtde_total_comprada = (linha.qtde_inicial or 0.0) + linha.compras_quantidade + linha.eventos_quantidade
-        valor_total_comprado = (linha.saldo_inicial_valor or 0.0) + linha.compras_valor + linha.eventos_custo
-        if qtde_total_comprada > 0:
-            linha.preco_medio = valor_total_comprado / qtde_total_comprada
+                partes_rentabilidade = [
+                    v for v in (resultado_ganho.ganho_realizado, resultado_ganho.ganho_nao_realizado,
+                                resultado_ganho.renda_recebida) if v is not None
+                ]
+                if partes_rentabilidade:
+                    linha.rentabilidade_total = sum(partes_rentabilidade)
+                    if valor_total_comprado > 0:
+                        linha.rentabilidade_pct = linha.rentabilidade_total / valor_total_comprado
+            else:
+                # Sem linhas_ganho ainda (usuário não clicou "Analisar carteira") —
+                # só dá pra saber se está aberta olhando compra vs. venda acumulada.
+                qtde_liquida = qtde_total_comprada - linha.vendas_quantidade
+                linha.situacao = "Ativa" if qtde_liquida > 1e-9 else "Encerrada"
 
-        resultado_ganho = linhas_ganho_por_ticker.get(ticker)
-        if resultado_ganho is not None:
-            linha.situacao = "Ativa" if resultado_ganho.quantidade_aberta else "Encerrada"
-            linha.saldo_final_qtde = resultado_ganho.quantidade_aberta
-            linha.preco_final = resultado_ganho.preco_atual
-            if resultado_ganho.quantidade_aberta and resultado_ganho.preco_atual is not None:
-                linha.saldo_final_valor = resultado_ganho.quantidade_aberta * resultado_ganho.preco_atual
-                linha.saldo_final_data = data_analise
-            # posição aberta: mesmo preço médio dos cards (custo médio ponderado
-            # da posição em aberto, regra da Receita); encerrada: custo de tudo comprado
-            if resultado_ganho.quantidade_aberta and resultado_ganho.preco_medio_atual is not None:
-                linha.preco_medio = resultado_ganho.preco_medio_atual
-            linha.ganho_realizado = resultado_ganho.ganho_realizado
-            linha.ganho_nao_realizado = resultado_ganho.ganho_nao_realizado
-            linha.renda_recebida = resultado_ganho.renda_recebida
-
-            partes_rentabilidade = [
-                v for v in (resultado_ganho.ganho_realizado, resultado_ganho.ganho_nao_realizado,
-                            resultado_ganho.renda_recebida) if v is not None
-            ]
-            if partes_rentabilidade:
-                linha.rentabilidade_total = sum(partes_rentabilidade)
-                if valor_total_comprado > 0:
-                    linha.rentabilidade_pct = linha.rentabilidade_total / valor_total_comprado
-        else:
-            # Sem linhas_ganho ainda (usuário não clicou "Analisar carteira") —
-            # só dá pra saber se está aberta olhando compra vs. venda acumulada.
-            qtde_liquida = qtde_total_comprada - linha.vendas_quantidade
-            linha.situacao = "Ativa" if qtde_liquida > 1e-9 else "Encerrada"
-
-        linhas.append(linha)
+            if len(ciclos) > 1 and ciclo:
+                inicio = pd.Timestamp(ciclo[0]["data"])
+                if linha.situacao == "Encerrada":
+                    linha.rotulo = f"{ticker} · até {pd.Timestamp(ciclo[-1]['data']):%d/%m/%Y}"
+                else:
+                    linha.rotulo = f"{ticker} · desde {inicio:%d/%m/%Y}"
+            linhas.append(linha)
 
     return linhas
