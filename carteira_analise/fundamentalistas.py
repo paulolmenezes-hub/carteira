@@ -48,7 +48,7 @@ class HistoricoDividendos:
 
 
 def calcular_historico_dividendos(
-    dividendos: pd.Series, preco_atual: float
+    dividendos: pd.Series, preco_atual: float, data_ref=None
 ) -> HistoricoDividendos | None:
     """Calcula yield efetivo (12m), crescimento ano contra ano e
     regularidade dos pagamentos, a partir do histórico REAL de dividendos
@@ -56,7 +56,8 @@ def calcular_historico_dividendos(
     só reflete um instante e tem escala inconsistente entre tickers.
 
     `dividendos` deve ser uma pandas.Series indexada por data (timezone
-    naive), com o valor pago em cada evento.
+    naive), com o valor pago em cada evento. `data_ref`: fim da janela de
+    12 meses (padrão: hoje).
     """
     if dividendos is None or dividendos.empty:
         return None
@@ -65,7 +66,12 @@ def calcular_historico_dividendos(
         dividendos = dividendos.copy()
         dividendos.index = dividendos.index.tz_localize(None)
 
-    hoje = dividendos.index.max()
+    # Os 12 meses contam a partir de HOJE (ou da data de referência), não do
+    # último pagamento: um ativo que parou de pagar há anos mostrava o yield
+    # daquela época sobre o preço atual (caso MRVE3: 13,8%, "acima do CDI").
+    hoje = pd.Timestamp(data_ref) if data_ref is not None else pd.Timestamp.today().normalize()
+    if hoje.tzinfo is not None:
+        hoje = hoje.tz_localize(None)
     ult_12m = dividendos[dividendos.index > hoje - pd.Timedelta(days=365)]
     anterior_12m = dividendos[
         (dividendos.index <= hoje - pd.Timedelta(days=365))

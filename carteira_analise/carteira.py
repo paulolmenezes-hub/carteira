@@ -91,7 +91,7 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> A
 
     info = fonte.baixar_info(ticker)
     dividendos = fonte.baixar_dividendos(ticker)
-    div = calcular_historico_dividendos(dividendos, tec.preco_atual)
+    div = calcular_historico_dividendos(dividendos, tec.preco_atual, data_ref=tec.historico.index[-1])
 
     if tipo == "fii":
         fund = extrair_fundamentalistas_fii(info)

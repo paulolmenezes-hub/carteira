@@ -184,17 +184,28 @@ def calcular_participacao(cards: list[dict], usd_brl: float | None = None) -> No
 # Compras feitas fora da regra de faixas (ciclo atual, últimos 12 meses)
 # ---------------------------------------------------------------------------
 
+def texto_regra_compra(config=None) -> str:
+    """A regra de aumento na queda, em uma frase (para citar uma vez só)."""
+    cfg = {**CONFIG_REGRA_PADRAO, **(config or {})}
+    faixas = sorted(cfg["faixas_compra"], reverse=True)  # −15% antes de −25%
+    partes = [f"{fr * 100:.0f}% da posição a partir de −{abs(lim) * 100:.0f}%" for lim, fr in faixas]
+    return (f"aumentar {' e '.join(partes)} sobre o preço médio, no máximo {cfg['max_reforcos']} vezes "
+            f"por queda.")
+
+
 def compras_fora_da_regra(ops: list[dict], precos: pd.Series | None, data_ref, moeda: str = "R$",
-                          dias: int = 365, config=None, maximo: int = 3) -> list[str]:
+                          dias: int = 365, config=None, maximo: int = 4) -> dict | None:
     """Compras do ciclo atual (desde a última vez que a posição zerou), nos
     últimos ``dias``, que a regra de faixas não teria sugerido: preço acima
-    da faixa de aumento (a regra só aumenta a partir de −15% sobre o preço
-    médio da época), quantidade maior que a sugerida pela faixa ou aumento
-    além do limite por ciclo de queda. A compra que abre o ciclo e as
-    bonificações não contam. Devolve frases para o card (as mais recentes
-    primeiro, no máximo ``maximo``, e a contagem do restante)."""
+    da faixa de aumento, quantidade maior que a sugerida pela faixa ou
+    aumento além do limite por queda. A compra que abre o ciclo e as
+    bonificações não contam.
+
+    Devolve None ou {"compras": [{data, quantidade, preco, motivo}] (as mais
+    recentes primeiro, no máximo ``maximo``), "restantes": int, "regra":
+    texto}, com motivos curtos — a regra vai uma vez só no card."""
     if not ops:
-        return []
+        return None
     ops = sorted(ops, key=lambda o: (pd.Timestamp(o["data"]), 0 if o["tipo"] == "compra" else 1))
     inicio, q = 0, 0.0
     for i, op in enumerate(ops):
@@ -204,7 +215,7 @@ def compras_fora_da_regra(ops: list[dict], precos: pd.Series | None, data_ref, m
     limite_data = pd.Timestamp(data_ref) - pd.Timedelta(days=dias)
     p = _sem_fuso(precos).dropna() if precos is not None else pd.Series(dtype=float)
     cfg = {**CONFIG_REGRA_PADRAO, **(config or {})}
-    frases = []
+    encontradas = []
     for k in range(inicio + 1, len(ops)):
         op = ops[k]
         data = pd.Timestamp(op["data"])
@@ -222,28 +233,22 @@ def compras_fora_da_regra(ops: list[dict], precos: pd.Series | None, data_ref, m
         if decisao["acao"] == "comprar":
             sugerida = q_antes * decisao["fracao"]
             if op["quantidade"] > max(sugerida * 1.5, sugerida + 1):
-                motivo = (f"quantidade de {op['quantidade'] / q_antes * 100:.0f}% da posição, acima dos "
-                          f"{decisao['fracao'] * 100:.0f}% sugeridos na faixa de "
-                          f"−{abs(decisao['faixa']) * 100:.0f}%")
+                motivo = (f"{op['quantidade'] / q_antes * 100:.0f}% da posição (a faixa de "
+                          f"−{abs(decisao['faixa']) * 100:.0f}% sugere {decisao['fracao'] * 100:.0f}%)")
         elif decisao["acao"] == "manter_nao_aumente":
-            motivo = (f"na faixa de aumento, mas além do limite de {cfg['max_reforcos']} aumentos por ciclo de "
-                      f"queda")
+            motivo = f"{estado['n_reforcos'] + 1}º aumento na mesma queda"
         elif var >= 0:
-            motivo = (f"preço {var * 100:.0f}% acima do preço médio da época "
-                      f"({formatar_valor(pm, moeda)}); a regra só aumenta a posição em quedas")
+            motivo = f"{var * 100:.0f}% acima do preço médio"
         else:
-            limiar = max(f[0] for f in cfg["faixas_compra"])
-            motivo = (f"preço {abs(var) * 100:.0f}% abaixo do preço médio da época "
-                      f"({formatar_valor(pm, moeda)}); a regra só aumenta a partir de −{abs(limiar) * 100:.0f}%")
+            motivo = f"{abs(var) * 100:.0f}% abaixo do preço médio, antes da faixa de aumento"
         if motivo:
-            frases.append((data, f"Compra de {data:%d/%m/%Y} ({op['quantidade']:g} a "
-                                 f"{formatar_valor(op['preco'], moeda)}) fora da regra de faixas: {motivo}."))
-    frases.sort(key=lambda f: f[0], reverse=True)
-    saida = [f for _, f in frases[:maximo]]
-    if len(frases) > maximo:
-        saida.append(f"… e mais {len(frases) - maximo} compra(s) fora da regra nos últimos 12 meses.")
-    return saida
-
+            encontradas.append({"data": data, "quantidade": op["quantidade"], "preco": op["preco"],
+                                "motivo": motivo})
+    if not encontradas:
+        return None
+    encontradas.sort(key=lambda c: c["data"], reverse=True)
+    return {"compras": encontradas[:maximo], "restantes": max(len(encontradas) - maximo, 0),
+            "regra": texto_regra_compra(config)}
 
 # ---------------------------------------------------------------------------
 # FIIs: o que teria acontecido nos últimos 12 meses com reinvestimento
