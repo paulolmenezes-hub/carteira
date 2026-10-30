@@ -341,11 +341,13 @@ def test_compras_fora_da_regra_preco_acima_e_quantidade_maior():
            _op("2026-03-10", "compra", 50, 21.0),           # acima do preço médio
            _op("2026-06-10", "compra", 40, 16.0),           # −20%: faixa de 10%, comprou 40%
            _op("2026-07-10", "compra", 5, 0.0, evento=True)]  # bonificação: não conta
-    alertas = compras_fora_da_regra(ops, None, "2026-10-30")
-    assert len(alertas) == 2
-    assert alertas[0].startswith("Compra de 10/06/2026 (40 a R$ 16,00) fora da regra de faixas: quantidade")
-    assert "acima dos 10% sugeridos na faixa de −15%" in alertas[0]
-    assert "preço 5% acima do preço médio da época (R$ 20,00)" in alertas[1]
+    r = compras_fora_da_regra(ops, None, "2026-10-30")
+    assert [c["data"] for c in r["compras"]] == [pd.Timestamp("2026-06-10"), pd.Timestamp("2026-03-10")]
+    assert r["compras"][0]["motivo"] == "27% da posição (a faixa de −15% sugere 10%)"
+    assert r["compras"][1]["motivo"] == "5% acima do preço médio"
+    assert r["restantes"] == 0
+    assert r["regra"] == ("aumentar 10% da posição a partir de −15% e 25% da posição a partir de −25% sobre o "
+                          "preço médio, no máximo 2 vezes por queda.")
 
 
 def test_compras_dentro_da_regra_antigas_ou_de_ciclo_encerrado_nao_alertam():
@@ -355,19 +357,21 @@ def test_compras_dentro_da_regra_antigas_ou_de_ciclo_encerrado_nao_alertam():
            _op("2025-06-15", "venda", 200, 30.0),    # zera: ciclo encerrado
            _op("2026-01-10", "compra", 100, 18.0),   # abre o novo ciclo
            _op("2026-05-10", "compra", 10, 15.0)]    # −17%: 10% da posição, dentro da regra
-    assert compras_fora_da_regra(ops, None, "2026-10-30") == []
+    assert compras_fora_da_regra(ops, None, "2026-10-30") is None
 
 
-def test_compra_alem_do_limite_de_aumentos_e_pequena_queda():
+def test_compra_alem_do_limite_de_aumentos_e_pequena_queda_e_restantes():
     from carteira_analise.cenarios import compras_fora_da_regra
     ops = [_op("2026-01-05", "compra", 100, 20.0),
            _op("2026-02-05", "compra", 10, 16.0),
            _op("2026-03-05", "compra", 10, 14.0),
            _op("2026-04-05", "compra", 10, 12.0),   # 3º aumento no mesmo ciclo de queda
            _op("2026-05-05", "compra", 10, 18.0)]   # cerca de −3% sobre o preço médio: queda pequena
-    alertas = compras_fora_da_regra(ops, None, "2026-10-30", maximo=5)
-    assert any("além do limite de 2 aumentos" in a for a in alertas)
-    assert any("a regra só aumenta a partir de −15%" in a for a in alertas)
+    r = compras_fora_da_regra(ops, None, "2026-10-30", maximo=1)
+    assert r["compras"][0]["motivo"].endswith("abaixo do preço médio, antes da faixa de aumento")
+    assert r["restantes"] == 1
+    todos = compras_fora_da_regra(ops, None, "2026-10-30")
+    assert todos["compras"][1]["motivo"] == "3º aumento na mesma queda"
 
 
 def test_participacao_na_carteira_e_no_grupo():

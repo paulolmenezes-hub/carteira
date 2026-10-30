@@ -59,21 +59,27 @@ class TestCalcularHistoricoDividendos:
     def test_yield_calculado_a_partir_de_dividendos_reais(self, dividendos_crescentes):
         # preco_atual escolhido para dar um yield redondo e fácil de conferir
         preco_atual = 8.0  # soma dos últimos 12m = 12 * 0.8 = 9.6 -> yield 120%... vamos conferir
-        div = calcular_historico_dividendos(dividendos_crescentes, preco_atual)
+        div = calcular_historico_dividendos(dividendos_crescentes, preco_atual, data_ref="2025-07-15")
         assert div is not None
         assert div.soma_12m == aproximadamente(9.6)
         assert div.dy_12m_real == aproximadamente(9.6 / 8.0)
 
     def test_crescimento_ano_contra_ano_positivo(self, dividendos_crescentes):
-        div = calcular_historico_dividendos(dividendos_crescentes, 100.0)
+        div = calcular_historico_dividendos(dividendos_crescentes, 100.0, data_ref="2025-07-15")
         assert div is not None
         # 12 * 0.8 vs 12 * 0.5 -> crescimento de 60%
         assert div.crescimento_yoy == aproximadamente(0.6)
 
     def test_numero_de_pagamentos_conta_apenas_ultimos_12_meses(self, dividendos_crescentes):
-        div = calcular_historico_dividendos(dividendos_crescentes, 100.0)
+        div = calcular_historico_dividendos(dividendos_crescentes, 100.0, data_ref="2025-07-15")
         assert div is not None
         assert div.n_pagamentos_12m == 12
+
+    def test_ativo_que_parou_de_pagar_nao_mostra_yield_antigo(self, dividendos_crescentes):
+        """Caso MRVE3: os 12 meses contam a partir de hoje, não do último
+        pagamento — sem proventos recentes, o yield é zero."""
+        div = calcular_historico_dividendos(dividendos_crescentes, 4.0, data_ref="2026-10-30")
+        assert div.soma_12m == 0 and div.dy_12m_real == 0 and div.n_pagamentos_12m == 0
 
     def test_yield_nao_e_calculado_sem_preco(self, dividendos_crescentes):
         div = calcular_historico_dividendos(dividendos_crescentes, 0.0)
