@@ -274,7 +274,7 @@ def _grafico_preco_completo(historico: pd.Series, dividendos: pd.Series) -> alt.
         x=alt.X("data:T", title=None),
         y=alt.Y("valor:Q", title=None),
         color=alt.Color(
-            "média:N", scale=alt.Scale(range=["#ff7f0e", "#d62728"]),
+            "média:N", scale=alt.Scale(domain=["MM50", "MM200"], range=["#ff7f0e", "#d62728"]),
             legend=alt.Legend(title=None, orient="bottom", direction="horizontal"),
         ),
     )
@@ -385,6 +385,13 @@ def _fmt_qtde(valor: float | None) -> str:
         return f"{valor:.0f}"
     texto = f"{valor:,.2f}"
     return texto.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _fmt_qtde_milhar(valor: float) -> str:
+    """1000 -> '1.000' (frações com vírgula)."""
+    if float(valor).is_integer():
+        return f"{int(valor):,}".replace(",", ".")
+    return _fmt_qtde(valor)
 
 
 def _fmt_data(d) -> str:
@@ -800,7 +807,8 @@ def _pct_br(v: float, casas: int = 0, sinal: bool = False) -> str:
     return txt.replace("-", "−")
 
 
-def _html_regua(regua: dict | None, moeda: str, titulo: str = "Faixa atual", mostrar_preco_medio: bool = False) -> str:
+def _html_regua(regua: dict | None, moeda: str, titulo: str = "Faixa atual", mostrar_preco_medio: bool = False,
+                mostrar_rotulo: bool = True) -> str:
     """Régua de três cores (aumentar | fora das faixas | realizar) com o
     marcador no preço de hoje e os preços em que cada faixa começa."""
     if not regua:
@@ -825,7 +833,8 @@ def _html_regua(regua: dict | None, moeda: str, titulo: str = "Faixa atual", mos
     return (
         "<div style='margin-top:10px;background:rgba(0,0,0,.28);border-radius:12px;padding:10px 12px'>"
         "<div style='display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap'>"
-        f"<span style='font-weight:700;font-size:.9em'>{html.escape(titulo)}: {html.escape(rotulo)}</span>"
+        f"<span style='font-weight:700;font-size:.9em'>{html.escape(titulo)}"
+        f"{(': ' + html.escape(rotulo)) if mostrar_rotulo else ''}</span>"
         + (f"<span style='font-size:.78em;opacity:.9'>preço médio {formatar_valor(regua['preco_medio'], moeda)} · "
            f"{_pct_br(regua['variacao'], sinal=True)}</span>" if mostrar_preco_medio else "") + "</div>"
         "<div style='position:relative;display:grid;grid-template-columns:1fr 2fr 1fr;gap:3px;height:11px;margin:9px 0 6px'>"
@@ -1009,14 +1018,20 @@ def _html_movimento_brusco(mov: dict | None, moeda: str) -> str:
             "confira antes de usar os cenários.</div>")
 
 
-def _html_alertas_compras(alertas: list[str]) -> str:
-    if not alertas:
+def _html_alertas_compras(alertas: dict | None, moeda: str = "R$") -> str:
+    """Compras fora da regra: uma linha curta por compra e a regra uma vez só."""
+    if not alertas or not alertas.get("compras"):
         return ""
-    itens = "".join(f"<li>{html.escape(a)}</li>" for a in alertas)
+    itens = "".join(
+        f"<li><b>{c['data']:%d/%m/%Y}</b> · {_fmt_qtde_milhar(c['quantidade'])} a {formatar_valor(c['preco'], moeda)} — "
+        f"{html.escape(c['motivo'])}</li>" for c in alertas["compras"])
+    if alertas.get("restantes"):
+        itens += f"<li>… e mais {alertas['restantes']}</li>"
     return ("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#92400e;"
             "border-left:5px solid #d97706;border-radius:8px;font-size:.8em;line-height:1.4'>"
-            "<b>🛒 Compras fora da regra de faixas (ciclo atual, últimos 12 meses):</b>"
-            f"<ul style='margin:4px 0 0 18px;padding:0'>{itens}</ul></div>")
+            "<b>🛒 Compras fora da regra de faixas (últimos 12 meses)</b>"
+            f"<ul style='margin:4px 0 4px 18px;padding:0'>{itens}</ul>"
+            f"<div style='font-size:.92em;color:#78350f'>Regra: {html.escape(alertas['regra'])}</div></div>")
 
 
 def _html_card_cenario(card: dict) -> str:
@@ -1053,8 +1068,9 @@ def _html_card_cenario(card: dict) -> str:
                       f"<b>⚠️ {len(linhas_fora)} linha(s) da planilha não entraram no cálculo — preço médio e "
                       f"quantidade deste card podem estar errados:</b><ul style='margin:4px 0 0 18px;padding:0'>"
                       f"{itens}{resto}</ul></div>")
-    partes.append(_html_alertas_compras(card.get("alertas_compras", [])))
-    partes.append(_html_regua(card.get("regua"), moeda))
+    partes.append(_html_alertas_compras(card.get("alertas_compras"), moeda))
+    # a situação já está no título do card: a régua não a repete
+    partes.append(_html_regua(card.get("regua"), moeda, titulo="Régua de faixas", mostrar_rotulo=False))
     partes.append(_html_faixa_12m(card.get("faixa_12m"), moeda))
     tabela = card.get("tabela")
     if tabela:
@@ -1102,9 +1118,7 @@ def _html_card_cenario(card: dict) -> str:
             f"<div style='background:rgba(255,255,255,.22);border-radius:10px;width:36px;height:36px;display:flex;"
             f"align-items:center;justify-content:center;font-size:19px'>{icone}</div>"
             f"<div style='font-weight:700;font-size:1.1em'>{html.escape(card['ticker'])}</div></div>"
-            f"<div title='variação sobre o seu preço médio' style='font-size:.85em;font-weight:600;"
-            f"background:rgba(255,255,255,.2);border-radius:999px;padding:3px 10px;white-space:nowrap'>"
-            f"{var * 100:+.0f}%</div></div>{''.join(partes)}</div>")
+            f"</div>{''.join(partes)}</div>")
 
 
 def _html_resumo_cenarios(cards: list) -> str:
