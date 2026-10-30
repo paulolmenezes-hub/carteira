@@ -212,3 +212,37 @@ def test_contexto_do_fii_calcula_preco_atrativo_com_os_rendimentos_dados():
     ctx = contexto_do_ativo(res, precos, divs)
     assert ctx["preco_atrativo"] is not None
     assert ctx["indicadores"][0]["nome"] == "Yield 12 meses"
+
+
+# ---------------------------------------------------------------- yield x CDI líquido
+
+def test_dividend_yield_comparado_ao_cdi_liquido():
+    cdi = 0.117
+    itens = {i["nome"]: i for i in indicadores_contexto("acao", _tec(), {"pl": 10.0}, _div(dy=0.067),
+                                                         cdi_liquido_aa=cdi)}
+    dy = itens["Dividend yield 12m"]
+    assert dy["nivel"] == ATENCAO  # 6,7% < 70% de 11,7%
+    assert "CDI líquido (11,7%)" in dy["leitura"]
+    alto = indicadores_contexto("acao", _tec(), {}, _div(dy=0.12), cdi_liquido_aa=cdi)[-1]
+    assert alto["nivel"] == BOM
+    perto = indicadores_contexto("etf_br", _tec(), {}, _div(dy=0.09), cdi_liquido_aa=cdi)[-1]
+    assert perto["nivel"] == NEUTRO
+    # EUA: sem comparação com o CDI
+    us = indicadores_contexto("acao_us", _tec(), {}, _div(dy=0.03), cdi_liquido_aa=cdi)[-1]
+    assert "CDI" not in us["leitura"]
+
+
+def test_yield_de_fii_comparado_ao_cdi_liquido_com_media_no_detalhe():
+    pa = {"yield": 0.125, "yield_medio_24m": 0.11, "limiar": 0.13, "estavel": True, "atende": False}
+    y = indicadores_contexto("fii", _tec(), {}, _div(), pa, cdi_liquido_aa=0.117)[0]
+    assert y["nivel"] == BOM and "média de 2 anos: 11,0%" in y["leitura"] and "acima do CDI líquido" in y["leitura"]
+
+
+def test_cdi_liquido_12m():
+    from carteira_analise.contexto import cdi_liquido_12m
+    idx = pd.bdate_range(end="2026-10-29", periods=400)
+    serie = pd.Series(0.05, index=idx)  # 0,05% ao dia útil
+    janela = serie[serie.index > idx[-1] - pd.Timedelta(days=365)]
+    esperado = ((1.0005) ** len(janela) - 1) * (1 - 0.175)
+    assert cdi_liquido_12m(serie) == pytest.approx(esperado)
+    assert cdi_liquido_12m(None) is None

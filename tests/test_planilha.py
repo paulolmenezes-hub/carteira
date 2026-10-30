@@ -530,3 +530,50 @@ def test_aceita_nomes_alternativos_das_abas():
         abas = {nome_r: r, nome_o: o}
         assert achar_aba(abas, NOMES_ABA_RESUMO) is r and achar_aba(abas, NOMES_ABA_OPERACOES) is o
     assert achar_aba({"Plan1": r}, NOMES_ABA_RESUMO) is None
+
+
+# ---------------------------------------------------------------- ciclos de posição (caso BBAS3)
+
+def test_posicao_encerrada_e_reaberta_vira_dois_ciclos():
+    from datetime import date
+    from carteira_analise.planilha import dividir_em_ciclos
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return pd.Series([16.69], index=[pd.Timestamp("2026-10-29")])
+
+        def baixar_dividendos(self, t):
+            # um provento em cada ciclo e um entre eles (sem posição)
+            return pd.Series([1.0, 0.5, 0.3], index=pd.to_datetime(["2025-06-10", "2026-08-10", "2026-10-28"]))
+
+    ops = pd.DataFrame([["BBAS3", "Compra", 100, 25.0, "10/01/2025"],
+                        ["BBAS3", "Venda", 100, 20.0, "15/06/2026"],
+                        ["BBAS3", "Compra", 50, 17.89, "26/10/2026"]],
+                       columns=["ticker", "tipo", "quantidade", "preco", "data"])
+    ops["data"] = pd.to_datetime(ops["data"], dayfirst=True)
+    linhas = processar_carteira_combinada(None, ops, Fonte())
+    assert [(l.ciclo, l.situacao) for l in linhas] == [(1, "Encerrada"), (2, "Aberta")]
+    fechado, aberto = linhas
+    assert fechado.ganho_realizado == pytest.approx(-500.0)
+    assert fechado.renda_recebida == pytest.approx(100.0)
+    assert fechado.ciclo_fim == date(2026, 6, 15)
+    assert aberto.preco_medio_atual == pytest.approx(17.89) and aberto.quantidade_aberta == 50
+    assert aberto.ganho_realizado == pytest.approx(0.0)
+    assert aberto.renda_recebida == pytest.approx(15.0)  # só o provento depois da recompra
+
+    dash = construir_dashboard_por_ativo(None, ops, linhas_ganho=linhas, data_analise=date(2026, 10, 30))
+    assert [(d.rotulo, d.situacao) for d in dash] == [("BBAS3.SA · até 15/06/2026", "Encerrada"),
+                                                      ("BBAS3.SA · desde 26/10/2026", "Ativa")]
+    assert dash[0].compras_quantidade == 100 and dash[0].vendas_quantidade == 100
+    assert dash[0].saldo_final_data == date(2026, 6, 15)
+    assert dash[1].compras_quantidade == 50 and dash[1].vendas_quantidade == 0
+    assert dash[1].preco_medio == pytest.approx(17.89)
+
+    assert len(dividir_em_ciclos([])) == 0
+
+
+def test_posicao_com_um_ciclo_mantem_rotulo_simples():
+    ops = pd.DataFrame([["X", "Compra", 10, 5.0, "2024-01-02"], ["X", "Venda", 4, 6.0, "2024-02-02"]],
+                       columns=["ticker", "tipo", "quantidade", "preco", "data"])
+    [d] = construir_dashboard_por_ativo(None, ops)
+    assert d.rotulo == "X" and d.n_ciclos == 1 and d.situacao == "Ativa"

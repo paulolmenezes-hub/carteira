@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from carteira_analise.tecnicos import (
     agrupar_datas_em_ciclos,
@@ -150,3 +151,26 @@ class TestLimpezaNaoApagaQuedasReais:
 
     def test_serie_curta_sem_janela_suficiente(self):
         assert limpar_outliers_precos(self._serie([10.0] * 15))[2] == 0
+
+
+def test_queda_brusca_recente_nao_e_corrigida_e_e_sinalizada():
+    """Caso MRVE3 (26/10/2026): queda real de ~50% nos últimos pregões. A
+    limpeza não pode trocar o preço de hoje pelo anterior."""
+    import numpy as np
+    from carteira_analise.tecnicos import (calcular_indicadores_tecnicos, limpar_outliers_precos,
+                                           movimento_brusco_recente)
+    idx = pd.bdate_range(end="2026-10-30", periods=300)
+    valores = np.linspace(9.0, 8.3, 300)
+    valores[-4:] = [4.2, 4.1, 4.07, 4.07]
+    serie = pd.Series(valores, index=idx)
+    limpa, corrigidos, _ = limpar_outliers_precos(serie)
+    assert limpa.iloc[-1] == 4.07 and corrigidos == 0
+    assert calcular_indicadores_tecnicos(serie).preco_atual == 4.07
+    mov = movimento_brusco_recente(serie)
+    assert mov["variacao"] == pytest.approx(4.07 / mov["referencia"] - 1) and mov["variacao"] < -0.45
+    # erro isolado no meio do histórico continua sendo corrigido
+    valores2 = np.linspace(9.0, 8.3, 300)
+    valores2[150] = 20.0
+    limpa2, corrigidos2, _ = limpar_outliers_precos(pd.Series(valores2, index=idx))
+    assert corrigidos2 == 1 and limpa2.iloc[150] < 10
+    assert movimento_brusco_recente(pd.Series(valores2, index=idx)) is None

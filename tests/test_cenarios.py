@@ -327,3 +327,60 @@ def test_frase_de_queda_usa_proporcao_de_casos_atingidos_e_nao_medianas_iguais()
         "cenario": 315, "referencia": 315, "pct_agiu": 39, "pct_vence_quando_agiu": 75}}}}
     f = frase_evidencia_card(e, "acao", "queda")
     assert "75%" in f and "atingida em 39%" in f and "315" not in f
+
+
+# ---------------------------------------------------------------- compras fora da regra
+
+def _op(data, tipo, q, p, **kw):
+    return {"data": pd.Timestamp(data), "tipo": tipo, "quantidade": q, "preco": p, **kw}
+
+
+def test_compras_fora_da_regra_preco_acima_e_quantidade_maior():
+    from carteira_analise.cenarios import compras_fora_da_regra
+    ops = [_op("2025-01-10", "compra", 100, 20.0),          # abre o ciclo: não conta
+           _op("2026-03-10", "compra", 50, 21.0),           # acima do preço médio
+           _op("2026-06-10", "compra", 40, 16.0),           # −20%: faixa de 10%, comprou 40%
+           _op("2026-07-10", "compra", 5, 0.0, evento=True)]  # bonificação: não conta
+    alertas = compras_fora_da_regra(ops, None, "2026-10-30")
+    assert len(alertas) == 2
+    assert alertas[0].startswith("Compra de 10/06/2026 (40 a R$ 16,00) fora da regra de faixas: quantidade")
+    assert "acima dos 10% sugeridos na faixa de −15%" in alertas[0]
+    assert "preço 5% acima do preço médio da época (R$ 20,00)" in alertas[1]
+
+
+def test_compras_dentro_da_regra_antigas_ou_de_ciclo_encerrado_nao_alertam():
+    from carteira_analise.cenarios import compras_fora_da_regra
+    ops = [_op("2024-01-10", "compra", 100, 20.0),
+           _op("2024-03-10", "compra", 100, 25.0),   # fora da regra, mas há mais de 12 meses
+           _op("2025-06-15", "venda", 200, 30.0),    # zera: ciclo encerrado
+           _op("2026-01-10", "compra", 100, 18.0),   # abre o novo ciclo
+           _op("2026-05-10", "compra", 10, 15.0)]    # −17%: 10% da posição, dentro da regra
+    assert compras_fora_da_regra(ops, None, "2026-10-30") == []
+
+
+def test_compra_alem_do_limite_de_aumentos_e_pequena_queda():
+    from carteira_analise.cenarios import compras_fora_da_regra
+    ops = [_op("2026-01-05", "compra", 100, 20.0),
+           _op("2026-02-05", "compra", 10, 16.0),
+           _op("2026-03-05", "compra", 10, 14.0),
+           _op("2026-04-05", "compra", 10, 12.0),   # 3º aumento no mesmo ciclo de queda
+           _op("2026-05-05", "compra", 10, 18.0)]   # cerca de −3% sobre o preço médio: queda pequena
+    alertas = compras_fora_da_regra(ops, None, "2026-10-30", maximo=5)
+    assert any("além do limite de 2 aumentos" in a for a in alertas)
+    assert any("a regra só aumenta a partir de −15%" in a for a in alertas)
+
+
+def test_participacao_na_carteira_e_no_grupo():
+    from carteira_analise.cenarios import calcular_participacao
+    cards = [{"ticker": "A", "moeda": "R$", "mercado": "B3", "grupo": "Ações", "quantidade": 100, "preco_atual": 10.0},
+             {"ticker": "B", "moeda": "R$", "mercado": "B3", "grupo": "Ações", "quantidade": 100, "preco_atual": 30.0},
+             {"ticker": "C", "moeda": "R$", "mercado": "B3", "grupo": "FIIs", "quantidade": 10, "preco_atual": 100.0},
+             {"ticker": "D", "moeda": "US$", "mercado": "EUA", "grupo": "ETF", "quantidade": 2, "preco_atual": 100.0}]
+    calcular_participacao(cards, usd_brl=5.0)  # total: 1000 + 3000 + 1000 + 1000 = 6000
+    assert cards[0]["participacao"]["carteira"] == pytest.approx(1000 / 6000)
+    assert cards[0]["participacao"]["grupo"] == pytest.approx(0.25)
+    assert cards[0]["participacao"]["nome_grupo"] == "das Ações B3"
+    assert cards[2]["participacao"]["nome_grupo"] == "dos FIIs"
+    assert cards[3]["participacao"]["carteira"] == pytest.approx(1000 / 6000)
+    calcular_participacao(cards, usd_brl=None)  # sem dólar: só a participação no grupo
+    assert cards[0]["participacao"]["carteira"] is None and cards[3]["participacao"]["grupo"] == 1.0
