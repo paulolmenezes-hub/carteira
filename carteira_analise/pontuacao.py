@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .fundamentalistas import HistoricoDividendos
+from .fundamentalistas import HistoricoDividendos, tem_imoveis
 from .tecnicos import IndicadoresTecnicos
 
 TipoAtivo = str  # "acao" | "fii"
@@ -316,10 +316,11 @@ def pontuar_fii(
     # fornece dados de vacância/cap rate de FIIs) — ver Seção 3.2.2 do
     # Relatório. Não se aplica a FIIs "de papel" (recebíveis/CRIs), que não
     # possuem imóveis físicos — vacância e cap rate são conceitos exclusivos
-    # de FIIs "de tijolo". Usa qtd_imoveis (também vindo do Fundamentus)
-    # como sinal: 0 imóveis = FII de papel, pula essa parte da pontuação
-    # (ver caso real do RECR11.SA, Seção 4.2 do Relatório).
-    eh_fii_de_tijolo = fund.get("qtd_imoveis") not in (None, 0)
+    # de FIIs "de tijolo" (e híbridos). A classificação usa o segmento do
+    # Fundamentus (``classificar_fii``); a quantidade de imóveis só vale sem
+    # segmento — um fundo de recebíveis com um imóvel recebido em pagamento
+    # de dívida (RECR11) não é FII de tijolo.
+    eh_fii_de_tijolo = tem_imoveis(fund)
 
     vacancia = fund.get("vacancia_media")
     if eh_fii_de_tijolo and vacancia is not None:

@@ -94,3 +94,38 @@ def calcular_historico_dividendos(
         dy_12m_real=dy_12m_real,
         n_pagamentos_12m=int(len(ult_12m)),
     )
+
+
+# ---------------------------------------------------------------------------
+# Tipo de FII: papel, tijolo ou híbrido
+# ---------------------------------------------------------------------------
+
+_SEGMENTOS_PAPEL = ("titulos", "val. mob", "val mob", "valores mobiliarios", "papel", "recebiveis", "cri",
+                    "fundo de fundos", "fof")
+
+
+def classificar_fii(fund: dict | None) -> str | None:
+    """'papel', 'tijolo', 'hibrido' ou None (sem dado), pelo SEGMENTO que o
+    Fundamentus informa. A versão anterior olhava só a quantidade de imóveis:
+    um fundo de recebíveis que recebe um imóvel em pagamento de uma dívida
+    (caso RECR11) passava a ser tratado como tijolo, com "vacância de 100%".
+    Sem segmento (ou "Outros"), continua valendo a quantidade de imóveis."""
+    import unicodedata
+    fund = fund or {}
+    seg = str(fund.get("segmento") or "")
+    seg = "".join(c for c in unicodedata.normalize("NFD", seg) if unicodedata.category(c) != "Mn").lower().strip()
+    if seg and seg not in ("outros", "nan", "none", "-"):
+        if "hibrido" in seg:
+            return "hibrido"
+        if any(chave in seg for chave in _SEGMENTOS_PAPEL):
+            return "papel"
+        return "tijolo"
+    qtd = fund.get("qtd_imoveis")
+    if qtd in (None, ""):
+        return None
+    return "tijolo" if qtd not in (0, 0.0) else "papel"
+
+
+def tem_imoveis(fund: dict | None) -> bool:
+    """Vacância e cap rate só se aplicam a FIIs de tijolo ou híbridos."""
+    return classificar_fii(fund) in ("tijolo", "hibrido")

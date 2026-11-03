@@ -20,6 +20,8 @@ import math
 
 import pandas as pd
 
+from .fundamentalistas import classificar_fii, tem_imoveis
+
 from .oportunidades import DESCONTO_MINIMO_YIELD, avaliar_fii_mes_a_mes
 from .regra_posicao import CONFIG_REGRA_PADRAO
 
@@ -223,8 +225,9 @@ def _pl(fund, bom_abaixo, atencao_acima):
 
 
 def eh_fii_de_tijolo(fund: dict | None) -> bool:
-    """Mesmo critério do motor (pontuar_fii): FII com imóveis cadastrados."""
-    return (fund or {}).get("qtd_imoveis") not in (None, 0)
+    """Mesmo critério do motor (pontuar_fii): tijolo ou híbrido, pelo segmento
+    (``classificar_fii``)."""
+    return tem_imoveis(fund)
 
 
 def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
@@ -274,14 +277,15 @@ def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
                               "queda de até 10%" if estavel else "caíram mais de 10%", BOM if estavel else ATENCAO))
         if eh_fii_de_tijolo(fund):
             vac = _num(fund.get("vacancia_media"))
+            nome_vac = "Vacância (híbrido)" if classificar_fii(fund) == "hibrido" else "Vacância"
             if vac is None:
-                itens.append(_ind("Vacância", "—", "sem dado", NEUTRO))
+                itens.append(_ind(nome_vac, "—", "sem dado", NEUTRO))
             elif vac < 0.05:
-                itens.append(_ind("Vacância", _pct(vac), "baixa", BOM))
+                itens.append(_ind(nome_vac, _pct(vac), "baixa", BOM))
             elif vac > 0.15:
-                itens.append(_ind("Vacância", _pct(vac), "alta", ATENCAO))
+                itens.append(_ind(nome_vac, _pct(vac), "alta", ATENCAO))
             else:
-                itens.append(_ind("Vacância", _pct(vac), "moderada", NEUTRO))
+                itens.append(_ind(nome_vac, _pct(vac), "moderada", NEUTRO))
         return itens
     itens = [_tendencia(tec), _rsi(tec)]
 

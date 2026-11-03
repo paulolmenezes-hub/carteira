@@ -17,6 +17,14 @@ Critérios (fixados ANTES de ver os resultados, para não ajustar ao passado):
   Tesouro IPCA+) ao menos 1 ponto percentual acima da média do próprio
   prêmio nos 24 meses anteriores, com rendimentos estáveis.
 
+- Caminho 4 — P/VP (incluído em 03/11/2026, com critérios fixados antes de
+  rodar; o valor patrimonial por cota vem dos informes mensais da CVM e
+  entra com 1 mês de defasagem, o prazo de publicação do informe):
+  4a: P/VP abaixo de 0,95, com rendimentos estáveis;
+  4b: P/VP 10% ou mais abaixo da média do próprio FII nos 24 meses
+      anteriores, com rendimentos estáveis;
+  4c: caminho 2 E P/VP abaixo de 0,95 (o yield alto confirmado pelo desconto).
+
 Lacunas na fonte: o histórico de rendimentos de FIIs no Yahoo Finance tem
 meses sem registro. Só janelas de 12 meses com ao menos 10 pagamentos contam
 (no histórico dos critérios e nos 12 meses seguintes), e a média de 24 meses
@@ -41,6 +49,8 @@ QUEDA_MAXIMA_RENDIMENTOS = 0.10  # rendimentos "estáveis": queda de no máximo 
 MIN_PAGAMENTOS_12M = 10          # janela de 12 meses "completa": ao menos 10 pagamentos mensais
 MESES_MEDIA = 24
 IR_CDI_12M = 0.175               # IR de aplicação entre 361 e 720 dias
+PVP_DESCONTO = 0.95              # caminho 4a/4c: P/VP abaixo de 0,95
+PVP_ABAIXO_DA_MEDIA = 0.10       # caminho 4b: P/VP 10% abaixo da própria média
 
 
 def _sem_fuso(serie):
@@ -52,11 +62,30 @@ def _sem_fuso(serie):
     return serie.sort_index()
 
 
+def _vp_com_defasagem(valor_patrimonial: pd.Series | None, datas) -> pd.Series:
+    """Valor patrimonial por cota conhecido em cada data: o do informe de
+    referência do mês ANTERIOR (o informe sai cerca de um mês depois),
+    para não usar no passado um dado que ainda não tinha sido publicado."""
+    if valor_patrimonial is None or len(valor_patrimonial) == 0:
+        return pd.Series(np.nan, index=datas)
+    vp = _sem_fuso(valor_patrimonial).dropna()
+    vp = vp[vp > 0]
+    vp = vp.groupby(vp.index.to_period("M")).last()
+    saida = []
+    for t in datas:
+        ref = pd.Timestamp(t).to_period("M") - 1
+        disponiveis = vp[vp.index <= ref]
+        saida.append(float(disponiveis.iloc[-1]) if len(disponiveis) else np.nan)
+    return pd.Series(saida, index=datas)
+
+
 def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: pd.Series,
-                          juro_real: pd.Series | None = None) -> pd.DataFrame:
+                          juro_real: pd.Series | None = None,
+                          valor_patrimonial: pd.Series | None = None) -> pd.DataFrame:
     """Uma linha por fim de mês avaliável de um FII: yield, média do próprio
-    yield, prêmio sobre o Tesouro IPCA+, critérios (caminhos 2 e 3), retorno
-    dos 12 meses seguintes e CDI líquido do mesmo período."""
+    yield, prêmio sobre o Tesouro IPCA+, P/VP (se ``valor_patrimonial`` vier,
+    da CVM, na mesma escala dos preços), critérios (caminhos 2, 3 e 4),
+    retorno dos 12 meses seguintes e CDI líquido do mesmo período."""
     p = _sem_fuso(precos).dropna()
     d = _sem_fuso(dividendos)
     if len(p) < 60 or len(d) == 0:
@@ -124,6 +153,18 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
     crit_p = (df["premio"] >= df["premio_medio_24m"] + PREMIO_EXTRA_MINIMO) & df["estavel"]
     df["criterio_yield"] = np.where(df["yield_medio_24m"].isna() | sem_comparacao, np.nan, crit_y.astype(float))
     df["criterio_premio"] = np.where(df["premio_medio_24m"].isna() | sem_comparacao, np.nan, crit_p.astype(float))
+
+    # caminho 4: P/VP (valor patrimonial da CVM, com 1 mês de defasagem)
+    vp = _vp_com_defasagem(valor_patrimonial, df["data"])
+    df["pvp"] = (df["preco"] / vp.values).where(vp.values > 0)
+    df["pvp_medio_24m"] = df["pvp"].shift(1).rolling(MESES_MEDIA, min_periods=MESES_MEDIA).mean()
+    sem_pvp = df["pvp"].isna() | sem_comparacao
+    crit_4a = (df["pvp"] < PVP_DESCONTO) & df["estavel"]
+    crit_4b = (df["pvp"] <= (1 - PVP_ABAIXO_DA_MEDIA) * df["pvp_medio_24m"]) & df["estavel"]
+    crit_4c = crit_y & (df["pvp"] < PVP_DESCONTO)
+    df["criterio_pvp"] = np.where(sem_pvp, np.nan, crit_4a.astype(float))
+    df["criterio_pvp_historico"] = np.where(sem_pvp | df["pvp_medio_24m"].isna(), np.nan, crit_4b.astype(float))
+    df["criterio_yield_pvp"] = np.where(sem_pvp | df["yield_medio_24m"].isna(), np.nan, crit_4c.astype(float))
 
     # resultado: retorno total em 12 meses x CDI líquido do mesmo período
     ultimo = p.index[-1]
