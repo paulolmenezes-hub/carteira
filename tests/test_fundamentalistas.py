@@ -85,3 +85,21 @@ class TestCalcularHistoricoDividendos:
         div = calcular_historico_dividendos(dividendos_crescentes, 0.0)
         assert div is not None
         assert div.dy_12m_real is None
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("fund, esperado", [
+    ({"segmento": "Títulos e Val. Mob.", "qtd_imoveis": 1}, "papel"),   # RECR11: imóvel recebido em pagamento
+    ({"segmento": "Logística", "qtd_imoveis": 0}, "tijolo"),
+    ({"segmento": "Lajes Corporativas"}, "tijolo"),
+    ({"segmento": "Híbrido", "qtd_imoveis": 5}, "hibrido"),
+    ({"segmento": "Outros", "qtd_imoveis": 3}, "tijolo"),              # sem segmento útil: vale a quantidade
+    ({"segmento": "", "qtd_imoveis": 0}, "papel"),
+    ({}, None),
+])
+def test_classificar_fii_pelo_segmento(fund, esperado):
+    from carteira_analise.fundamentalistas import classificar_fii, tem_imoveis
+    assert classificar_fii(fund) == esperado
+    assert tem_imoveis(fund) == (esperado in ("tijolo", "hibrido"))

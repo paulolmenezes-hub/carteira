@@ -246,3 +246,13 @@ def test_cdi_liquido_12m():
     esperado = ((1.0005) ** len(janela) - 1) * (1 - 0.175)
     assert cdi_liquido_12m(serie) == pytest.approx(esperado)
     assert cdi_liquido_12m(None) is None
+
+
+def test_fii_de_recebiveis_com_imovel_nao_mostra_vacancia():
+    """Caso RECR11: segmento Títulos e Val. Mob., 1 imóvel e vacância de 100%."""
+    fund = {"segmento": "Títulos e Val. Mob.", "qtd_imoveis": 1, "vacancia_media": 1.0, "pvp": 0.8}
+    nomes = [i["nome"] for i in indicadores_contexto("fii", _tec(), fund, _div())]
+    assert "Vacância" not in nomes
+    hib = indicadores_contexto("fii", _tec(), {"segmento": "Híbrido", "qtd_imoveis": 4, "vacancia_media": 0.02},
+                               _div())
+    assert hib[-1]["nome"] == "Vacância (híbrido)"

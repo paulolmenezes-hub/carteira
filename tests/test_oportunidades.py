@@ -147,3 +147,32 @@ def test_lacuna_nos_12_meses_seguintes_exclui_o_caso():
     df = avaliar_fii_mes_a_mes(p, d, None)
     afetados = df[df["lacuna_futuro"]]
     assert len(afetados) and afetados["superou_cdi"].isna().all()
+
+
+# ---------------------------------------------------------------- caminho 4 (P/VP, valor patrimonial da CVM)
+
+def test_pvp_com_um_mes_de_defasagem_e_criterios_4():
+    # preço cai de 100 para 80 em 2022; VP constante em 100; rendimento constante
+    p, d = _fii(lambda i: 100.0 if DATAS[i] < pd.Timestamp("2022-01-01") else 80.0)
+    vp = pd.Series(100.0, index=MESES)
+    df = avaliar_fii_mes_a_mes(p, d, None, valor_patrimonial=vp)
+    linha = df[df["data"] == df["data"][df["data"] >= "2022-03-01"].min()].iloc[0]
+    assert linha["pvp"] == pytest.approx(0.8)
+    assert linha["criterio_pvp"] == 1.0            # 0,80 < 0,95, rendimentos estáveis
+    assert linha["criterio_pvp_historico"] == 1.0  # 0,80 ≤ 90% da média de 24 meses (1,00)
+    antes = df[df["data"] < "2021-12-01"]
+    assert (antes["criterio_pvp"].dropna() == 0).all()
+    # o VP de um mês só é usado a partir do mês seguinte (prazo de publicação do informe)
+    vp2 = pd.Series(100.0, index=MESES)
+    vp2[vp2.index >= "2023-06-01"] = 50.0
+    df2 = avaliar_fii_mes_a_mes(p, d, None, valor_patrimonial=vp2)
+    junho = df2[(df2["data"].dt.year == 2023) & (df2["data"].dt.month == 6)].iloc[0]
+    julho = df2[(df2["data"].dt.year == 2023) & (df2["data"].dt.month == 7)].iloc[0]
+    assert junho["pvp"] == pytest.approx(0.8) and julho["pvp"] == pytest.approx(1.6)
+
+
+def test_sem_valor_patrimonial_os_criterios_4_ficam_vazios():
+    p, d = _fii(lambda i: 100.0)
+    df = avaliar_fii_mes_a_mes(p, d, None)
+    assert df["pvp"].isna().all() and df["criterio_pvp"].isna().all()
+    assert df["criterio_yield_pvp"].isna().all()
