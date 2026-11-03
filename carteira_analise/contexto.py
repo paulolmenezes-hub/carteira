@@ -22,7 +22,12 @@ import pandas as pd
 
 from .fundamentalistas import classificar_fii, tem_imoveis
 
-from .oportunidades import DESCONTO_MINIMO_YIELD, avaliar_fii_mes_a_mes
+from .oportunidades import (
+    DESCONTO_MINIMO_YIELD,
+    PVP_ABAIXO_DA_MEDIA,
+    PVP_DESCONTO,
+    avaliar_fii_mes_a_mes,
+)
 from .regra_posicao import CONFIG_REGRA_PADRAO
 
 # Escala da régua: trecho de queda | fora das faixas | realização, nas
@@ -123,11 +128,23 @@ def faixa_12m(precos: pd.Series) -> dict | None:
     }
 
 
-def preco_atrativo_hoje(precos: pd.Series, dividendos: pd.Series) -> dict | None:
-    """Critério de preço atrativo de FIIs (caminho 2 do teste da Seção 13)
-    no mês de hoje. ``None`` quando o histórico não permite calcular (menos
-    de 3 anos de rendimentos completos ou lacunas recentes)."""
-    df = avaliar_fii_mes_a_mes(precos, dividendos, None)
+def preco_atrativo_hoje(precos: pd.Series, dividendos: pd.Series,
+                        valor_patrimonial: pd.Series | None = None, pvp_atual: float | None = None) -> dict | None:
+    """Critérios de preço atrativo de FIIs do teste da Seção 13 no mês de hoje.
+
+    ``nivel`` resume a resposta do card:
+    - "forte": caminho 2 (yield 15% acima da própria média, rendimentos
+      estáveis) E P/VP abaixo de 0,95 — caminho 4c, o sinal mais forte do teste;
+    - "sim": só o caminho 2;
+    - "desconto": rendimentos estáveis e P/VP abaixo de 0,95 ou 10% abaixo da
+      própria média de 24 meses (4a/4b), sem o caminho 2 — evidência só com
+      juros altos;
+    - "nao": nenhum critério.
+    O P/VP vem do valor patrimonial da CVM (``valor_patrimonial``, na escala
+    dos preços); sem ele, usa ``pvp_atual`` (Fundamentus), sem a média de 24
+    meses. ``None`` quando o histórico de rendimentos não permite calcular
+    (menos de 3 anos completos ou lacunas recentes)."""
+    df = avaliar_fii_mes_a_mes(precos, dividendos, None, valor_patrimonial=valor_patrimonial)
     if df.empty:
         return None
     ultima = df.iloc[-1]
@@ -136,9 +153,27 @@ def preco_atrativo_hoje(precos: pd.Series, dividendos: pd.Series) -> dict | None
         return None
     limiar = (1 + DESCONTO_MINIMO_YIELD) * media
     estavel = bool(ultima.get("estavel")) if pd.notna(ultima.get("estavel")) else None
+    pvp = ultima.get("pvp")
+    pvp = float(pvp) if pvp is not None and pd.notna(pvp) else (float(pvp_atual) if pvp_atual else None)
+    pvp_medio = ultima.get("pvp_medio_24m")
+    pvp_medio = float(pvp_medio) if pvp_medio is not None and pd.notna(pvp_medio) else None
+    yield_alto = bool(y >= limiar)
+    desconto_abs = pvp is not None and pvp < PVP_DESCONTO
+    desconto_hist = pvp is not None and pvp_medio is not None and pvp <= (1 - PVP_ABAIXO_DA_MEDIA) * pvp_medio
+    caminho2 = yield_alto and bool(estavel)
+    if caminho2 and desconto_abs:
+        nivel = "forte"
+    elif caminho2:
+        nivel = "sim"
+    elif estavel and (desconto_abs or desconto_hist):
+        nivel = "desconto"
+    else:
+        nivel = "nao"
     return {
         "yield": float(y), "yield_medio_24m": float(media), "limiar": float(limiar),
-        "estavel": estavel, "atende": bool(y >= limiar and estavel),
+        "estavel": estavel, "atende": caminho2, "yield_alto": yield_alto,
+        "pvp": pvp, "pvp_medio_24m": pvp_medio, "desconto": bool(desconto_abs or desconto_hist),
+        "nivel": nivel,
     }
 
 
@@ -230,6 +265,21 @@ def eh_fii_de_tijolo(fund: dict | None) -> bool:
     return tem_imoveis(fund)
 
 
+def _vacancia(fund: dict) -> list[dict]:
+    """Vacância, só para FIIs de tijolo e híbridos (``classificar_fii``)."""
+    if not eh_fii_de_tijolo(fund):
+        return []
+    vac = _num(fund.get("vacancia_media"))
+    nome = "Vacância (híbrido)" if classificar_fii(fund) == "hibrido" else "Vacância"
+    if vac is None:
+        return [_ind(nome, "—", "sem dado", NEUTRO)]
+    if vac < 0.05:
+        return [_ind(nome, _pct(vac), "baixa", BOM)]
+    if vac > 0.15:
+        return [_ind(nome, _pct(vac), "alta", ATENCAO)]
+    return [_ind(nome, _pct(vac), "moderada", NEUTRO)]
+
+
 def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
                          preco_atrativo: dict | None = None, cdi_liquido_aa: float | None = None) -> list[dict]:
     """Os indicadores do bloco "Contexto do ativo", por tipo.
@@ -247,8 +297,11 @@ def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
         itens = []
         dy = _num(getattr(div, "dy_12m_real", None)) if div else None
         if preco_atrativo and cdi_liquido_aa:
-            y, m = preco_atrativo["yield"], preco_atrativo["yield_medio_24m"]
-            itens.append(_renda_vs_cdi(y, cdi_liquido_aa, "Yield 12 meses", f"média de 2 anos: {_pct(m)} · "))
+            # yield x própria média, P/VP e estabilidade ficam nas caixinhas do
+            # "O preço está atrativo?": aqui só a comparação com o CDI e a vacância
+            itens.append(_renda_vs_cdi(preco_atrativo["yield"], cdi_liquido_aa, "Yield 12 meses"))
+            itens += _vacancia(fund)
+            return itens
         elif preco_atrativo:
             y, m = preco_atrativo["yield"], preco_atrativo["yield_medio_24m"]
             itens.append(_ind("Yield 12 meses", _pct(y), f"média de 2 anos: {_pct(m)}", BOM if y >= m else NEUTRO))
@@ -275,17 +328,7 @@ def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
         else:
             itens.append(_ind("Rendimentos", "estáveis" if estavel else "em queda",
                               "queda de até 10%" if estavel else "caíram mais de 10%", BOM if estavel else ATENCAO))
-        if eh_fii_de_tijolo(fund):
-            vac = _num(fund.get("vacancia_media"))
-            nome_vac = "Vacância (híbrido)" if classificar_fii(fund) == "hibrido" else "Vacância"
-            if vac is None:
-                itens.append(_ind(nome_vac, "—", "sem dado", NEUTRO))
-            elif vac < 0.05:
-                itens.append(_ind(nome_vac, _pct(vac), "baixa", BOM))
-            elif vac > 0.15:
-                itens.append(_ind(nome_vac, _pct(vac), "alta", ATENCAO))
-            else:
-                itens.append(_ind(nome_vac, _pct(vac), "moderada", NEUTRO))
+        itens += _vacancia(fund)
         return itens
     itens = [_tendencia(tec), _rsi(tec)]
 
@@ -307,7 +350,8 @@ def indicadores_contexto(tipo: str | None, tec, fund: dict | None, div,
 
 
 def contexto_do_ativo(resultado, precos: pd.Series | None = None,
-                      dividendos_fii: pd.Series | None = None, cdi_liquido_aa: float | None = None) -> dict | None:
+                      dividendos_fii: pd.Series | None = None, cdi_liquido_aa: float | None = None,
+                      valor_patrimonial: pd.Series | None = None) -> dict | None:
     """Junta, a partir do resultado de ``analisar_ativo``, o que o card
     mostra: leitura combinada, indicadores, detalhes da pontuação e, para
     FIIs, o preço atrativo de hoje (com os rendimentos de ``dividendos_fii``)."""
@@ -320,7 +364,8 @@ def contexto_do_ativo(resultado, precos: pd.Series | None = None,
         serie_precos = precos if precos is not None else getattr(tec, "historico", None)
         if serie_precos is not None:
             try:
-                pa = preco_atrativo_hoje(serie_precos, dividendos_fii)
+                pvp_atual = (getattr(resultado, "fund", None) or {}).get("pvp")
+                pa = preco_atrativo_hoje(serie_precos, dividendos_fii, valor_patrimonial, pvp_atual)
             except Exception:
                 pa = None
     return {
