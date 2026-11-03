@@ -103,3 +103,24 @@ def test_classificar_fii_pelo_segmento(fund, esperado):
     from carteira_analise.fundamentalistas import classificar_fii, tem_imoveis
     assert classificar_fii(fund) == esperado
     assert tem_imoveis(fund) == (esperado in ("tijolo", "hibrido"))
+
+
+@_pytest.mark.parametrize("fund, esperado", [
+    ({"segmento": "Multicategoria", "qtd_imoveis": 1, "imoveis_pl": 0.032}, "papel"),   # RECR11
+    ({"segmento": "Multicategoria", "qtd_imoveis": 8, "imoveis_pl": 0.35}, "hibrido"),
+    ({"segmento": "Outros", "qtd_imoveis": 12, "imoveis_pl": 0.92}, "tijolo"),
+    ({"segmento": "Multicategoria", "qtd_imoveis": 3}, "tijolo"),                       # sem Imóveis/PL
+    ({"segmento": "Logística", "imoveis_pl": 0.05}, "tijolo"),                          # segmento claro manda
+])
+def test_segmento_generico_usa_imoveis_sobre_pl(fund, esperado):
+    from carteira_analise.fundamentalistas import classificar_fii
+    assert classificar_fii(fund) == esperado
+
+
+def test_imoveis_pl_da_pagina_de_detalhes():
+    from carteira_analise.fontes.fundamentus import imoveis_pl_de_html
+    html = ('<tr><td class="label w2"><span class="help tips" title="x">?</span><span class="txt">Imóveis/PL do FII'
+            '</span></td><td class="data w1"><span class="txt">3,2%</span></td></tr>'
+            '<tr><td><span class="txt">Preço do m2</span></td><td><span class="txt">5.109</span></td></tr>')
+    assert imoveis_pl_de_html(html) == _pytest.approx(0.032)
+    assert imoveis_pl_de_html("<p>sem o campo</p>") is None
