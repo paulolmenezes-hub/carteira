@@ -105,7 +105,7 @@ def decidir_posicao(preco, estado, config=None, compra_permitida=True, motivos_b
             return {'acao': 'manter_nao_aumente', 'fracao': 0.0, 'variacao': var, 'faixa': limiar,
                     'motivo': (f"caiu {abs(var)*100:.0f}% sobre o seu preço médio. A regra de faixas prevê "
                                f"no máximo {cfg['max_reforcos']} aumentos por ciclo de queda, e a planilha "
-                               f"registra {estado['n_reforcos']} compras abaixo do preço médio neste ciclo; "
+                               f"registra {estado['n_reforcos']} compras dentro das faixas de aumento neste ciclo; "
                                f"por isso o cenário de aumento não é mostrado. O ciclo recomeça quando o "
                                f"preço volta a ficar {cfg['limiar_reset_reforcos']*100:.0f}% acima do preço médio.")}
         dist = cfg.get('distancia_minima_nova_compra')
@@ -168,12 +168,17 @@ def aplicar_venda(estado, quantidade, preco, config=None):
 
 def estado_a_partir_de_operacoes(operacoes, historico_precos=None, config=None):
     """Reconstrói o estado da regra a partir das operações reais do usuário
-    (aba Operações/Resumo da planilha). Uma compra feita ABAIXO do preço médio
-    da época conta como reforço na queda. Se o histórico de preços for
+    (aba Operações/Resumo da planilha). Uma compra feita dentro de uma faixa de
+    aumento (a partir de −15% sobre o preço médio da época, no padrão) conta
+    como reforço na queda; compras um pouco abaixo do preço médio, antes da
+    faixa, não gastam o limite de aumentos (antes contavam, e o card dizia
+    "6 compras abaixo do preço médio" para quem comprou a −7%). Se o histórico de preços for
     informado, os resets (preço voltou a +5% / voltou ao preço médio) são
     aplicados dia a dia entre as operações e até a data mais recente."""
     ops = sorted(operacoes, key=lambda o: pd.Timestamp(o['data']))
     estado = novo_estado(0.0, 0.0)
+    cfg = _cfg(config)
+    limiar_aumento = max(f[0] for f in cfg['faixas_compra']) if cfg['faixas_compra'] else -1.0
     hist = None
     if historico_precos is not None and len(historico_precos) > 0:
         hist = historico_precos.dropna().sort_index()
@@ -191,7 +196,7 @@ def estado_a_partir_de_operacoes(operacoes, historico_precos=None, config=None):
         _passar_precos(data_anterior, data)
         if op['tipo'] == 'compra':
             eh_reforco = (estado['quantidade'] > 0 and not op.get('evento')  # bonificação não conta
-                          and 0 < op['preco'] < estado['preco_medio'])
+                          and 0 < op['preco'] <= estado['preco_medio'] * (1 + limiar_aumento) + _EPS)
             aplicar_compra(estado, float(op['quantidade']), float(op['preco']), eh_reforco)
         elif op['tipo'] == 'venda':
             aplicar_venda(estado, float(op['quantidade']), float(op['preco']), config)

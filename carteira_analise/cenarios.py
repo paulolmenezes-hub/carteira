@@ -237,6 +237,8 @@ def compras_fora_da_regra(ops: list[dict], precos: pd.Series | None, data_ref, m
                           f"−{abs(decisao['faixa']) * 100:.0f}% sugere {decisao['fracao'] * 100:.0f}%)")
         elif decisao["acao"] == "manter_nao_aumente":
             motivo = f"{estado['n_reforcos'] + 1}º aumento na mesma queda"
+        elif abs(var) < 0.005:
+            motivo = "no próprio preço médio (a regra só aumenta a posição em quedas)"
         elif var >= 0:
             motivo = f"{var * 100:.0f}% acima do preço médio"
         else:
