@@ -369,3 +369,45 @@ def resumo_conferencia(conferencia: dict) -> dict:
         linha[f"Concorda c/ {NOMES_FONTES[fonte]}"] = "(usada)" if fonte == usada else taxa(fonte)
     linha["Observação"] = "; ".join(conferencia.get("observacoes", [])) or ""
     return linha
+
+
+class FonteComRendimentosConferidos:
+    """Embrulha a fonte de dados do pacote (protocolo ``baixar_precos``,
+    ``baixar_dividendos``...) trocando, só para FIIs, os dividendos do Yahoo
+    (com lacunas de anos em muitos fundos) pela série conferida entre as
+    fontes (``conferir_fontes``), já na escala dos preços. Assim a renda
+    recebida do extrato, a renda estimada e o retrospecto dos cards usam os
+    mesmos rendimentos do "O preço está atrativo?".
+
+    ``series_do_fii(ticker)`` devolve {"fundamentus": ..., "cvm": ...} (o
+    Yahoo vem da própria fonte). Se nenhuma fonte responder, cai no Yahoo."""
+
+    def __init__(self, fonte, tipos: dict[str, str], series_do_fii):
+        self._fonte = fonte
+        self._tipos = tipos or {}
+        self._series_do_fii = series_do_fii
+        self._cache: dict[str, pd.Series] = {}
+        self.conferencias: dict[str, dict] = {}
+
+    def __getattr__(self, nome):
+        return getattr(self._fonte, nome)
+
+    def baixar_dividendos(self, ticker: str) -> pd.Series:
+        yahoo = self._fonte.baixar_dividendos(ticker)
+        if self._tipos.get(ticker) != "fii":
+            return yahoo
+        if ticker not in self._cache:
+            try:
+                series = dict(self._series_do_fii(ticker) or {})
+                series["yahoo"] = yahoo
+                try:
+                    eventos = self._fonte.baixar_eventos(ticker)
+                except Exception:
+                    eventos = None
+                conf = conferir_fontes(series, eventos=eventos)
+                self.conferencias[ticker] = conf
+                serie = conf["serie"] if conf["usada"] else yahoo
+            except Exception:
+                serie = yahoo
+            self._cache[ticker] = serie if serie is not None else pd.Series(dtype=float)
+        return self._cache[ticker]
