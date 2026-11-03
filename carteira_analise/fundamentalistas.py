@@ -104,22 +104,44 @@ _SEGMENTOS_PAPEL = ("titulos", "val. mob", "val mob", "valores mobiliarios", "pa
                     "fundo de fundos", "fof")
 
 
+def _segmento_normalizado(fund: dict | None) -> str:
+    import unicodedata
+    seg = str((fund or {}).get("segmento") or "")
+    return "".join(c for c in unicodedata.normalize("NFD", seg) if unicodedata.category(c) != "Mn").lower().strip()
+
+
+def segmento_generico(fund: dict | None) -> bool:
+    """Segmento que não diz se o FII é de papel ou de tijolo."""
+    seg = _segmento_normalizado(fund)
+    return (not seg) or seg in ("outros", "nan", "none", "-") or "multicategoria" in seg
+
+
 def classificar_fii(fund: dict | None) -> str | None:
     """'papel', 'tijolo', 'hibrido' ou None (sem dado), pelo SEGMENTO que o
     Fundamentus informa. A versão anterior olhava só a quantidade de imóveis:
     um fundo de recebíveis que recebe um imóvel em pagamento de uma dívida
     (caso RECR11) passava a ser tratado como tijolo, com "vacância de 100%".
-    Sem segmento (ou "Outros"), continua valendo a quantidade de imóveis."""
-    import unicodedata
+    Com segmento genérico ("Multicategoria", "Outros") ou sem segmento, decide
+    a participação dos imóveis no patrimônio (``imoveis_pl``: abaixo de 20%,
+    papel; de 20% a 50%, híbrido; acima, tijolo) — o RECR11 aparece no
+    Fundamentus como "Multicategoria", com 1 imóvel que é 3,2% do patrimônio.
+    Sem esse dado, vale a quantidade de imóveis."""
     fund = fund or {}
-    seg = str(fund.get("segmento") or "")
-    seg = "".join(c for c in unicodedata.normalize("NFD", seg) if unicodedata.category(c) != "Mn").lower().strip()
-    if seg and seg not in ("outros", "nan", "none", "-"):
+    seg = _segmento_normalizado(fund)
+    generico = segmento_generico(fund)
+    if not generico:
         if "hibrido" in seg:
             return "hibrido"
         if any(chave in seg for chave in _SEGMENTOS_PAPEL):
             return "papel"
         return "tijolo"
+    # segmento genérico ("Multicategoria", "Outros"): decide a participação dos
+    # imóveis no patrimônio (Imóveis/PL, página de detalhes do Fundamentus)
+    imoveis_pl = fund.get("imoveis_pl")
+    if imoveis_pl is not None:
+        if imoveis_pl < 0.20:
+            return "papel"
+        return "hibrido" if imoveis_pl < 0.50 else "tijolo"
     qtd = fund.get("qtd_imoveis")
     if qtd in (None, ""):
         return None

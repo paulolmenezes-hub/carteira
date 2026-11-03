@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from .fundamentalistas import (
+    segmento_generico,
     HistoricoDividendos,
     calcular_historico_dividendos,
     extrair_fundamentalistas_acao,
@@ -113,6 +114,14 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> A
             fund["vacancia_media"] = fund_fundamentus.vacancia_media
             fund["cap_rate"] = fund_fundamentus.cap_rate
             fund["qtd_imoveis"] = fund_fundamentus.qtd_imoveis
+            if segmento_generico(fund) and fund_fundamentus.qtd_imoveis:
+                # segmento genérico com imóveis: a participação dos imóveis no
+                # patrimônio separa papel de tijolo (caso RECR11)
+                try:
+                    from .fontes.fundamentus import buscar_imoveis_pl_fii
+                    fund["imoveis_pl"] = buscar_imoveis_pl_fii(ticker)
+                except Exception:
+                    fund["imoveis_pl"] = None
         resultado_timing = pontuar_fii(tec, fund, div)
     elif tipo == "acao_us":
         fund = extrair_fundamentalistas_acao(info)  # mesmos campos do Yahoo servem p/ EUA
