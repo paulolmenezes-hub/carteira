@@ -176,3 +176,28 @@ def test_conferir_com_eventos_do_yahoo():
     assert r["serie"].max() == pytest.approx(0.1)
     assert r["selo"] == "confirmado" and "cvm" in r["confirmada_por"]
     assert r["observacoes"][0].startswith("desdobramento de 1 para 10 em 08/2023 (Yahoo)")
+
+
+def test_fonte_com_rendimentos_conferidos_so_troca_fiis():
+    from carteira_analise.fontes.rendimentos import FonteComRendimentosConferidos
+    yahoo_fii = _mensal([1.0] * 12, inicio="2025-10-10")  # Yahoo com só 12 meses
+    fund = _mensal([1.0] * 36)
+
+    class Fonte:
+        def baixar_dividendos(self, t):
+            return yahoo_fii if t == "FII11.SA" else _mensal([0.5] * 4)
+
+        def baixar_eventos(self, t):
+            return pd.Series(dtype=float)
+
+        def baixar_precos(self, t, p):
+            return "precos"
+
+    f = FonteComRendimentosConferidos(Fonte(), {"FII11.SA": "fii", "ACAO3.SA": "acao"},
+                                      lambda t: {"fundamentus": fund, "cvm": None})
+    assert len(f.baixar_dividendos("FII11.SA")) == 36            # série conferida (Fundamentus)
+    assert f.conferencias["FII11.SA"]["usada"] == "fundamentus"
+    assert len(f.baixar_dividendos("ACAO3.SA")) == 4             # ação: Yahoo
+    assert f.baixar_precos("X", "1y") == "precos"                # o resto passa direto
+    falha = FonteComRendimentosConferidos(Fonte(), {"FII11.SA": "fii"}, lambda t: 1 / 0)
+    assert len(falha.baixar_dividendos("FII11.SA")) == 12        # erro: cai no Yahoo
