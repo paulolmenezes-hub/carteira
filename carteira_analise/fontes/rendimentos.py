@@ -213,10 +213,17 @@ def ajustar_por_desdobramentos(serie: pd.Series | None, eventos: pd.Series | Non
     return s, aplicados
 
 
-def _texto_evento(data: pd.Timestamp, fator: float) -> str:
+def _nomes_fontes(fontes) -> str:
+    nomes = [NOMES_FONTES.get(f, f) for f in fontes]
+    artigos = {"Fundamentus": "do Fundamentus", "CVM": "da CVM"}
+    nomes = [artigos.get(n, f"de {n}") for n in nomes]
+    return " e ".join(nomes) if len(nomes) <= 2 else ", ".join(nomes[:-1]) + " e " + nomes[-1]
+
+
+def _texto_evento(data: pd.Timestamp, fator: float, fontes=("fundamentus", "cvm")) -> str:
     nome = f"desdobramento de 1 para {fator:g}" if fator > 1 else f"grupamento de {1 / fator:g} para 1"
     operacao = f"divididos por {fator:g}" if fator > 1 else f"multiplicados por {1 / fator:g}"
-    return (f"{nome} em {data:%m/%Y} (Yahoo): rendimentos do Fundamentus e da CVM antes dessa data "
+    return (f"{nome} em {data:%m/%Y} (Yahoo): rendimentos {_nomes_fontes(fontes)} antes dessa data "
             f"{operacao}, para ficar na escala dos preços")
 
 
@@ -256,14 +263,14 @@ def conferir_fontes(series: dict[str, pd.Series | None], ordem=ORDEM_PADRAO,
     obs_eventos = []
     if eventos is not None and len(eventos):
         series = dict(series)
+        ajustadas: dict[tuple, list[str]] = {}  # (data, fator) -> fontes corrigidas
         for nome in list(series):
             if nome == "yahoo":
                 continue
             series[nome], aplicados = ajustar_por_desdobramentos(series[nome], eventos)
-            for data, fator in aplicados:
-                texto = _texto_evento(data, fator)
-                if texto not in obs_eventos:
-                    obs_eventos.append(texto)
+            for evento in aplicados:
+                ajustadas.setdefault(evento, []).append(nome)
+        obs_eventos = [_texto_evento(data, fator, fontes) for (data, fator), fontes in sorted(ajustadas.items())]
     r = _conferir(series, *args)
     r["ajuste_eventos"] = obs_eventos
     r["observacoes"] = obs_eventos + r["observacoes"]
@@ -279,7 +286,8 @@ def conferir_fontes(series: dict[str, pd.Series | None], ordem=ORDEM_PADRAO,
     f = escala["fator"]
     operacao = f"divididos por {f:g}" if f > 1 else f"multiplicados por {1 / f:g}"
     mes = pd.Period(escala["ate"], freq="M").strftime("%m/%Y")
-    r2["observacoes"] = [f"escala corrigida: valores do Fundamentus e da CVM até {mes} {operacao}, para ficar na "
+    corrigidas_nomes = [n for n in ORDEM_PADRAO if n != "yahoo" and n in r2["disponiveis"]]
+    r2["observacoes"] = [f"escala corrigida: valores {_nomes_fontes(corrigidas_nomes)} até {mes} {operacao}, para ficar na "
                          f"escala dos preços do Yahoo (desdobramento/grupamento)"] + obs_eventos + r2["observacoes"]
     r2["texto"] += f" (escala corrigida até {mes})"
     return r2
