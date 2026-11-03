@@ -13,7 +13,7 @@ Resultados ficam guardados em ``st.session_state`` (não só dentro do
 clique reexecuta o script inteiro do zero, e sem essa persistência o
 resultado anterior desapareceria da tela.
 
-Organizado em 4 abas: Análise de Carteira, Ativo Específico, Dashboard da
+Organizado em 4 abas: Carteira (carregar e analisar), Ativo Específico, Dashboard da
 Carteira (cenários comparativos por ativo + extrato por ativo) e Guia de
 Indicadores (glossário).
 """
@@ -36,9 +36,9 @@ from carteira_analise.backtest_cenarios import indice_cdi_acumulado
 from carteira_analise.cenarios import (calcular_participacao, carregar_evidencias, frase_evidencia_fiis,
                                        gerar_cenarios)
 from carteira_analise.fontes.bcb import buscar_cdi_diario
-from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos
+from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
 from carteira_analise.fontes.fundamentus import buscar_proventos_fii
-from carteira_analise.fontes.rendimentos import conferir_fontes
+from carteira_analise.fontes.rendimentos import ajustar_por_desdobramentos, conferir_fontes
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
@@ -798,11 +798,7 @@ _COR_NIVEL = {BOM: "#2bb3a3", ATENCAO: "#f0a93b"}
 _ROTULO_FAIXA = {"queda": "queda", "fora": "fora das faixas", "realizacao": "realização de lucro"}
 FRASE_EVIDENCIA_TECNICA = ("no backtest, os sinais técnicos ficaram próximos de “não fazer nada”; os fundamentos "
                            "não têm histórico gratuito para teste. Use como contexto, não como sinal.")
-FRASE_EVIDENCIA_PRECO_ATRATIVO = ("quando um FII ficou barato por essa régua, superou o CDI nos 12 meses seguintes em "
-                                  "62% das vezes, contra 42% comprando em qualquer momento (teste de 2019 a 2025, com os "
-                                  "rendimentos conferidos entre três fontes; a "
-                                  "vantagem apareceu com juros intermediários e altos; com juros baixos, sem casos "
-                                  "suficientes).")
+
 
 
 def _pct_br(v: float, casas: int = 0, sinal: bool = False) -> str:
@@ -877,8 +873,28 @@ def _html_faixa_12m(f: dict | None, moeda: str) -> str:
         f"<div style='font-size:.8em'>Hoje {formatar_valor(f['preco'], moeda)} — {frase}</div></div>")
 
 
+_SELO_PRECO = {
+    "forte": ("Sim — yield alto e com desconto", "background:#0f7f73;color:#ffffff"),
+    "sim": ("Sim — yield alto", "background:#2bb3a3;color:#ffffff"),
+    "desconto": ("Com desconto", "background:#fde7c7;color:#92400e"),
+    "nao": ("Não, no momento", "background:#f1f5f9;color:#334155"),
+}
+_EVIDENCIA_PRECO = {
+    "forte": ("com yield alto e desconto juntos, superou o CDI nos 12 meses seguintes em 79% das vezes, contra 44% "
+              "(juros altos, 2021–2025). Com juros mais baixos, quase não ocorreu."),
+    "sim": ("superou o CDI nos 12 meses seguintes em 62% das vezes, contra 42% (2019–2025); a vantagem apareceu com "
+            "juros intermediários e altos."),
+    "desconto": ("com juros altos (2021–2025), cotas com desconto superaram o CDI em 63% a 70% das vezes, contra 45%. "
+                 "Com juros intermediários, não deu para concluir."),
+    "nao": ("o critério de yield superou o CDI em 62% das vezes, contra 42% (2019–2025); com yield alto e desconto "
+            "juntos, em 79% (juros altos)."),
+}
+
+
 def _html_preco_atrativo(ctx: dict) -> str:
-    """Bloco "O preço está atrativo?" dos FIIs, em linguagem simples."""
+    """Bloco "O preço está atrativo?" dos FIIs: selo em quatro níveis (yield
+    alto e com desconto, yield alto, com desconto, não), três caixinhas com o
+    que foi checado e a evidência do teste de cada nível (Seção 13)."""
     pa = ctx.get("preco_atrativo")
     conf = ctx.get("conferencia_rendimentos")
     nota_fonte = ""
@@ -892,26 +908,51 @@ def _html_preco_atrativo(ctx: dict) -> str:
                 "<div style='font-weight:700;color:#0f5f56'>O preço está atrativo?</div>"
                 "<div style='font-size:.86em;margin-top:4px'>Sem histórico de rendimentos suficiente para avaliar "
                 "(são precisos 3 anos de pagamentos, sem lacunas).</div>" + nota_fonte + "</div>")
-    sim = pa["atende"]
-    etiqueta = "Sim" if sim else "Não, no momento"
-    cor_etq = ("background:#0f7f73;color:#ffffff" if sim else "background:#f1f5f9;color:#334155")
+    nivel = pa.get("nivel") or ("sim" if pa.get("atende") else "nao")
+    etiqueta, estilo = _SELO_PRECO[nivel]
     y, m, lim = _pct_br(pa["yield"], 1), _pct_br(pa["yield_medio_24m"], 1), _pct_br(pa["limiar"], 1)
-    if sim:
-        texto = (f"Hoje o fundo rende <b>{y} ao ano</b>, acima de <b>{lim}</b> (a média de 2 anos, {m}, mais 15%), "
-                 "com rendimentos estáveis.")
-    elif pa["yield"] >= pa["limiar"] and not pa.get("estavel"):
-        texto = (f"Hoje o fundo rende <b>{y} ao ano</b>, acima de {lim}, mas os rendimentos caíram mais de 10% — "
-                 "o yield alto pode vir de um preço que já antecipa novos cortes.")
+    pvp, pvp_m, estavel = pa.get("pvp"), pa.get("pvp_medio_24m"), pa.get("estavel")
+
+    def caixa(rotulo, valor, ok):
+        cor = {True: "#0f7f73", False: "#b45309", None: "#475569"}[ok]
+        return ("<div style='border:1px solid #e5e7eb;border-radius:8px;padding:5px 7px;line-height:1.3'>"
+                f"<div style='font-size:.68em;color:#6b7280'>{rotulo}</div>"
+                f"<div style='font-size:.76em;font-weight:700;color:{cor}'>{valor}</div></div>")
+    if pvp is None:
+        txt_pvp, ok_pvp = "—", None
+    elif pa.get("desconto"):
+        txt_pvp = f"{pvp:.2f}".replace(".", ",") + " · desconto" + (
+            f" (média {pvp_m:.2f})".replace(".", ",") if pvp_m else "")
+        ok_pvp = True
     else:
-        texto = (f"Hoje o fundo rende <b>{y} ao ano</b>. Nos últimos 2 anos rendeu, em média, <b>{m}</b>. "
-                 f"Para estar barato em relação a ele mesmo, precisaria render pelo menos <b>{lim}</b>.")
+        txt_pvp, ok_pvp = f"{pvp:.2f}".replace(".", ",") + " · sem desconto", None
+    caixas = ("<div style='display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px'>"
+              + caixa("Yield × própria média", f"{y} · {'acima' if pa['yield_alto'] else 'abaixo'} de {lim}",
+                      bool(pa["yield_alto"]))
+              + caixa("P/VP", txt_pvp, ok_pvp)
+              + caixa("Rendimentos", "—" if estavel is None else ("estáveis" if estavel else "em queda"),
+                      None if estavel is None else bool(estavel)) + "</div>")
+    if nivel == "forte":
+        texto = "O fundo rende mais que o normal dele e a cota está abaixo do patrimônio."
+    elif nivel == "sim":
+        texto = "O fundo rende mais que o normal dele, embora a cota não esteja com desconto."
+    elif nivel == "desconto":
+        texto = ("A cota está abaixo do patrimônio" + (" e do próprio histórico" if pvp_m and pvp <= 0.9 * pvp_m else "")
+                 + f", mas o yield ainda está no nível normal do fundo (precisaria render {lim} para estar alto).")
+    elif estavel is False and (pa["yield_alto"] or pa.get("desconto")):
+        texto = (("O yield está alto" if pa["yield_alto"] else "A cota tem desconto")
+                 + ", mas os rendimentos caíram mais de 10%: todos os critérios exigem renda estável, para não "
+                 "confundir preço baixo com um fundo em deterioração.")
+    else:
+        texto = (f"Nos últimos 2 anos o fundo rendeu, em média, {m}. Para estar barato em relação a ele mesmo, "
+                 f"precisaria render pelo menos <b>{lim}</b>.")
     return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
-            "<div style='display:flex;justify-content:space-between;align-items:center;gap:8px'>"
+            "<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap'>"
             "<span style='font-weight:700;color:#0f5f56'>O preço está atrativo?</span>"
-            f"<span style='font-size:.8em;font-weight:700;padding:3px 10px;border-radius:999px;{cor_etq}'>{etiqueta}</span></div>"
-            f"<div style='font-size:.88em;line-height:1.45;margin-top:6px'>{texto}</div>"
+            f"<span style='font-size:.78em;font-weight:700;padding:3px 10px;border-radius:999px;{estilo}'>{etiqueta}</span></div>"
+            f"{caixas}<div style='font-size:.86em;line-height:1.45;margin-top:8px'>{texto}</div>"
             f"<div style='font-size:.76em;color:#4b5563;margin-top:6px;line-height:1.4'><b>Evidência:</b> "
-            f"{FRASE_EVIDENCIA_PRECO_ATRATIVO}</div>{nota_fonte}</div>")
+            f"{_EVIDENCIA_PRECO[nivel]}</div>{nota_fonte}</div>")
 
 
 def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = True) -> str:
@@ -930,11 +971,16 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
                   f"{html.escape(ind['valor'])} · {html.escape(ind['leitura'])}</span></div></div>")
     detalhes = "".join(f"<li>{html.escape(_renderizar_detalhe(d))}</li>"
                        for d in ctx.get("detalhes_timing", []) + ctx.get("detalhes_renda", []))
+    if tipo == "fii" and ctx.get("leitura") and detalhes:
+        # nos FIIs, a resposta é o "O preço está atrativo?" (com evidência); a leitura do
+        # motor de pontuação, sem vantagem no backtest, fica só dentro da pontuação completa
+        detalhes = (f"<li style='list-style:none;margin-left:-18px;color:#4b5563'><i>Leitura do motor de pontuação "
+                    f"(regras sem vantagem comprovada no backtest): {html.escape(ctx['leitura'])}</i></li>" + detalhes)
     bloco_detalhes = (f"<details style='font-size:.8em'><summary style='cursor:pointer;color:#1e3a8a;font-weight:600'>"
                       f"Ver pontuação completa</summary><ul style='margin:6px 0 0 0;padding-left:18px'>{detalhes}</ul>"
                       "</details>") if detalhes else ""
     leitura = (f"<div style='font-size:.88em'><b>Leitura combinada:</b> {html.escape(ctx['leitura'])}</div>"
-               if ctx.get("leitura") else "")
+               if ctx.get("leitura") and not (tipo == "fii" and ctx.get("preco_atrativo")) else "")
     subtitulo = ("<span style='font-size:.74em;color:#4b5563'>não altera os cenários acima</span>"
                  if aviso_cenarios else "")
     evidencia = ("" if tipo == "fii" else
@@ -1008,7 +1054,13 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
         conf = conferir_fontes({"fundamentus": _proventos_fii_em_cache(ticker), "cvm": cvm,
                                 "yahoo": dividendos_yahoo}, eventos=eventos)
         divs = conf["serie"] if conf["usada"] else None
-    ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual())
+        # valor patrimonial por cota (CVM), na escala dos preços: P/VP de hoje e da média de 24 meses
+        vp = serie_valor_patrimonial(base, ticker) if base is not None and not base.empty else None
+        if vp is not None and len(vp):
+            vp, _ = ajustar_por_desdobramentos(vp, eventos)
+    else:
+        vp = None
+    ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual(), valor_patrimonial=vp)
     if ctx is not None and conf is not None:
         ctx["conferencia_rendimentos"] = {"texto": conf["texto"], "selo": conf["selo"],
                                           "observacoes": conf.get("observacoes", [])}
@@ -1029,6 +1081,37 @@ def _html_caixas_preco(pm: float, preco: float, var: float | None, moeda: str) -
     return ("<div style='display:flex;gap:8px;margin-top:10px'>"
             + caixa("Preço médio", formatar_valor(pm, moeda)) + caixa("Hoje", formatar_valor(preco, moeda))
             + caixa("Variação", texto_var, cor) + "</div>")
+
+
+def _html_caixas_posicao(card: dict) -> str:
+    """Segunda linha de caixas: quantidade, valor da posição hoje e resultado
+    (ganho ou perda ainda não realizado), com a participação na carteira logo
+    abaixo."""
+    moeda = card["moeda"]
+    q = float(card.get("quantidade") or 0)
+    preco, pm = float(card["preco_atual"]), float(card["preco_medio"])
+    unidade = "ações" if card.get("grupo") == "Ações" else "cotas"
+    if q.is_integer():
+        texto_q = f"{int(q):,}".replace(",", ".") + f" {unidade}"
+    else:
+        texto_q = f"{q:,.4f}".rstrip("0").rstrip(".").replace(",", "_").replace(".", ",").replace("_", ".") + f" {unidade}"
+    resultado = q * (preco - pm)
+    cor = "#b91c1c" if resultado < 0 else ("#15803d" if resultado > 0 else "#111827")
+    sinal = "+" if resultado > 0 else ("−" if resultado < 0 else "")
+
+    def caixa(rotulo, valor, cor_valor="#111827"):
+        return ("<div style='flex:1;min-width:0;background:#ffffff;border-radius:10px;padding:6px 10px'>"
+                f"<div style='font-size:.72em;color:#4b5563;font-weight:600'>{rotulo}</div>"
+                f"<div style='font-size:1.02em;font-weight:800;color:{cor_valor};white-space:nowrap'>{valor}</div></div>")
+    linha = ("<div style='display:flex;gap:8px;margin-top:8px'>"
+             + caixa("Quantidade", texto_q) + caixa("Valor hoje", formatar_valor(q * preco, moeda))
+             + caixa("Ganho/perda", sinal + formatar_valor(abs(resultado), moeda), cor) + "</div>")
+    part = card.get("participacao")
+    if part:
+        txt = (f"{part['carteira'] * 100:.1f}% da carteira · " if part.get("carteira") is not None else "")
+        txt += f"{part['grupo'] * 100:.1f}% {part['nome_grupo']}"
+        linha += f"<div style='font-size:.8em;margin-top:6px;opacity:.95'>📊 {txt.replace('.', ',')}</div>"
+    return linha
 
 
 def _html_movimento_brusco(mov: dict | None, moeda: str) -> str:
@@ -1069,12 +1152,8 @@ def _html_card_cenario(card: dict) -> str:
     partes = [
         f"<div style='font-size:1.3em;font-weight:700;margin-top:10px'>{html.escape(card['rotulo_situacao'])}</div>",
         _html_caixas_preco(card["preco_medio"], card["preco_atual"], var, moeda),
+        _html_caixas_posicao(card),
     ]
-    part = card.get("participacao")
-    if part:
-        txt = (f"{part['carteira'] * 100:.1f}% da carteira · " if part.get("carteira") is not None else "")
-        txt += f"{part['grupo'] * 100:.1f}% {part['nome_grupo']}"
-        partes.append(f"<div style='font-size:.8em;margin-top:6px;opacity:.95'>📊 {txt.replace('.', ',')}</div>")
     partes.append(_html_movimento_brusco(card.get("movimento_brusco"), moeda))
     # Evento societário não lançado: o preço médio do card fica errado, então o
     # aviso vem logo abaixo dos preços, em destaque (fundo branco, texto vermelho).
@@ -1220,7 +1299,7 @@ def _renderizar_cenarios(cenarios) -> None:
     (HTML puro, sem Markdown), o que evita o cifrão virar fórmula."""
     st.markdown("#### 🧭 Cenários para cada ativo")
     if cenarios is None:
-        st.caption("Clique em 'Analisar carteira' na aba 'Análise de Carteira' para ver os cenários de cada ativo.")
+        st.caption("Clique em 'Analisar carteira' na aba 'Carteira' para ver os cenários de cada ativo.")
         return
     cards, avisos = cenarios
     st.caption("Compare o que acontece em cada caminho. Os números são calculados pela regra de faixas e não "
@@ -1234,11 +1313,11 @@ def _renderizar_cenarios(cenarios) -> None:
 
 
 tab_carteira, tab_ativo, tab_dashboard, tab_guia = st.tabs([
-    "📊 Análise de Carteira", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
+    "📂 Carteira", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
 ])
 
 # =============================================================================
-# ABA 1 — Análise de Carteira
+# ABA 1 — Carteira (carregar e analisar)
 # =============================================================================
 with tab_carteira:
     if bytes_planilha is None:
@@ -1346,7 +1425,16 @@ with tab_carteira:
             st.session_state["carteira_cenarios"] = cenarios
 
         if "carteira_linhas_analise" in st.session_state:
-            st.caption(f"🕒 Análise executada em {st.session_state['carteira_horario']}")
+            # Aba só de entrada: o resultado fica nos cards e no extrato do Dashboard.
+            # A tabela do motor de pontuação, os detalhes e o gráfico saíram daqui:
+            # repetiam o card (e, nos FIIs, contradiziam o "O preço está atrativo?");
+            # o gráfico continua na aba Ativo Específico.
+            n_ativos = len(st.session_state["carteira_linhas_analise"])
+            n_dados = sum(1 for _, _, r in st.session_state["carteira_linhas_analise"] if r is None)
+            st.success(f"✅ Análise de {n_ativos} ativo(s) concluída em {st.session_state['carteira_horario']}. "
+                       "Os cards de cada ativo e o extrato estão na aba **💼 Dashboard da Carteira**.")
+            if n_dados:
+                st.warning(f"⚠️ {n_dados} ativo(s) sem dados de mercado suficientes — confira os tickers.")
             if st.session_state["carteira_pregao_aberto"]:
                 st.caption(
                     "📊 Pregão provavelmente em andamento — os preços usados são os mais "
@@ -1354,73 +1442,8 @@ with tab_carteira:
                     "do dia. Rodar a análise de novo após o fechamento (~18h, horário de "
                     "Brasília) pode trazer números diferentes."
                 )
-
-            linhas_analise = st.session_state["carteira_linhas_analise"]
-            linhas_analise = sorted(linhas_analise, key=lambda x: _ordem_agrupada(x[0], x[1]))
-
-            st.subheader("📈 Análise de cada ativo")
-            st.caption("Ordenado por mercado (B3, depois EUA) e tipo de ativo (Ações, FIIs, ETF).")
-            linhas_tabela = []
-            for ticker, tipo, resultado in linhas_analise:
-                if resultado is None:
-                    linhas_tabela.append({
-                        "Ticker": ticker, "Tipo": NOMES_TIPO[tipo],
-                        "Sinal de timing": "⚠️ dados insuficientes", "Qualidade da renda": "-",
-                        "Leitura combinada": "-",
-                    })
-                    continue
-                linhas_tabela.append({
-                    "Ticker": ticker, "Tipo": NOMES_TIPO[tipo],
-                    "Sinal de timing": resultado.sinal_timing,
-                    "Qualidade da renda": resultado.qualidade_renda,
-                    "Leitura combinada": resultado.leitura_combinada_texto,
-                })
-
-            _renderizar_tabela_alinhada(pd.DataFrame(linhas_tabela), colunas_moeda=[])
-
-            with st.expander("Ver detalhes da pontuação de cada ativo"):
-                ativos_com_resultado = [(t, tp, r) for t, tp, r in linhas_analise if r is not None]
-                n_colunas = min(4, len(ativos_com_resultado)) or 1
-                for inicio in range(0, len(ativos_com_resultado), n_colunas):
-                    bloco = ativos_com_resultado[inicio:inicio + n_colunas]
-                    colunas_detalhe = st.columns(len(bloco))
-                    for coluna, (ticker, tipo, resultado) in zip(colunas_detalhe, bloco):
-                        with coluna:
-                            st.markdown(f"**{ticker}** ({NOMES_TIPO[tipo]})")
-                            if resultado.detalhes_timing:
-                                st.markdown("*Timing:*")
-                                for d in resultado.detalhes_timing:
-                                    st.markdown(f"{_renderizar_detalhe(d)}")
-                            if resultado.detalhes_renda:
-                                st.markdown("*Qualidade da renda:*")
-                                for d in resultado.detalhes_renda:
-                                    st.markdown(f"{_renderizar_detalhe(d)}")
-
-            ativos_com_resultado = [(t, tp, r) for t, tp, r in linhas_analise if r is not None]
-            if ativos_com_resultado:
-                st.markdown("**Ver gráfico de preço de um ativo**")
-                ticker_grafico = st.selectbox(
-                    "Escolha o ativo", options=[t for t, tp, r in ativos_com_resultado],
-                    key="ticker_grafico_carteira",
-                )
-                resultado_grafico = next(r for t, tp, r in ativos_com_resultado if t == ticker_grafico)
-                dividendos_grafico = st.session_state["carteira_dividendos"].get(
-                    ticker_grafico, pd.Series(dtype=float)
-                )
-                st.caption(
-                    "Linha azul = preço · laranja = MM50 · vermelho = MM200 · linhas tracejadas = "
-                    "mínima/máxima do período (percentil 5%/95%) · triângulos verdes = dividendo "
-                    "pago. Painel de baixo: RSI(14), com faixas de referência em 30 e 70."
-                )
-                grafico = _grafico_preco_completo(resultado_grafico.tec.historico, dividendos_grafico)
-                st.altair_chart(grafico, width='stretch')
-
-            st.caption(
-                "Este painel não é uma recomendação de investimento nem substitui um "
-                "assessor/consultor licenciado (CVM). Os critérios usados são regras de "
-                "bolso genéricas de mercado, não garantem retorno. Ganho e rentabilidade "
-                "financeira ficam na aba 'Dashboard da Carteira'."
-            )
+            st.caption("O gráfico de preço de cada ativo está na aba **🔍 Ativo Específico**. Este painel não é uma "
+                       "recomendação de investimento nem substitui um assessor ou consultor licenciado (CVM).")
 
 # =============================================================================
 # ABA 2 — Ativo Específico
@@ -1522,13 +1545,13 @@ with tab_dashboard:
     )
 
     if bytes_planilha is None:
-        st.info("Envie um arquivo Excel na aba 'Análise de Carteira' para ver o dashboard.")
+        st.info("Envie um arquivo Excel na aba 'Carteira' para ver o dashboard.")
     else:
         tem_saldo_final = "carteira_linhas_ganho" in st.session_state
         if not tem_saldo_final:
             st.caption(
                 "⚠️ Saldo final, ganho e rentabilidade dependem de preço de mercado atual — "
-                "clique em 'Analisar carteira' na aba 'Análise de Carteira' pra completar essas "
+                "clique em 'Analisar carteira' na aba 'Carteira' pra completar essas "
                 "colunas. Posição inicial, compras e vendas já aparecem abaixo, direto da planilha."
             )
 
