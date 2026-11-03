@@ -36,7 +36,9 @@ from carteira_analise.backtest_cenarios import indice_cdi_acumulado
 from carteira_analise.cenarios import (calcular_participacao, carregar_evidencias, frase_evidencia_fiis,
                                        gerar_cenarios)
 from carteira_analise.fontes.bcb import buscar_cdi_diario
+from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos
 from carteira_analise.fontes.fundamentus import buscar_proventos_fii
+from carteira_analise.fontes.rendimentos import conferir_fontes
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
@@ -797,7 +799,8 @@ _ROTULO_FAIXA = {"queda": "queda", "fora": "fora das faixas", "realizacao": "rea
 FRASE_EVIDENCIA_TECNICA = ("no backtest, os sinais técnicos ficaram próximos de “não fazer nada”; os fundamentos "
                            "não têm histórico gratuito para teste. Use como contexto, não como sinal.")
 FRASE_EVIDENCIA_PRECO_ATRATIVO = ("quando um FII ficou barato por essa régua, superou o CDI nos 12 meses seguintes em "
-                                  "64% das vezes, contra 46% comprando em qualquer momento (teste de 2019 a 2025; a "
+                                  "62% das vezes, contra 42% comprando em qualquer momento (teste de 2019 a 2025, com os "
+                                  "rendimentos conferidos entre três fontes; a "
                                   "vantagem apareceu com juros intermediários e altos; com juros baixos, sem casos "
                                   "suficientes).")
 
@@ -877,9 +880,13 @@ def _html_faixa_12m(f: dict | None, moeda: str) -> str:
 def _html_preco_atrativo(ctx: dict) -> str:
     """Bloco "O preço está atrativo?" dos FIIs, em linguagem simples."""
     pa = ctx.get("preco_atrativo")
-    fonte = ctx.get("fonte_rendimentos")
-    nota_fonte = (f"<div style='font-size:.74em;color:#6b7280;margin-top:4px'>Rendimentos: {html.escape(fonte)}.</div>"
-                  if fonte else "")
+    conf = ctx.get("conferencia_rendimentos")
+    nota_fonte = ""
+    if conf:
+        cor = {"confirmado": "#6b7280", "divergente": "#b45309"}.get(conf["selo"], "#6b7280")
+        nota_fonte = (f"<div style='font-size:.74em;color:{cor};margin-top:4px'>{html.escape(conf['texto'])}.</div>"
+                      + "".join(f"<div style='font-size:.72em;color:#6b7280'>🔍 {html.escape(o)}.</div>"
+                                for o in conf.get("observacoes", [])))
     if not pa:
         return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
                 "<div style='font-weight:700;color:#0f5f56'>O preço está atrativo?</div>"
@@ -968,25 +975,43 @@ def _proventos_fii_em_cache(ticker: str):
     return buscar_proventos_fii(ticker)
 
 
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _base_cvm_recente():
+    """Informes mensais de FIIs da CVM dos últimos 3 anos, baixados uma vez
+    por dia: servem para conferir os rendimentos do Fundamentus."""
+    try:
+        return base_recente(anos=3)
+    except Exception:
+        return pd.DataFrame()
+
+
 def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     """Contexto do card de um ativo. Para FIIs, o preço atrativo usa 5 anos de
-    preços e os rendimentos do Fundamentus (sem lacunas); se o site estiver
-    fora do ar, usa os do Yahoo Finance e avisa no card."""
+    preços e os rendimentos conferidos entre Fundamentus, CVM e Yahoo
+    (``conferir_fontes``): a primeira fonte que responde é usada, as outras
+    conferem, e desdobramentos não ajustados são corrigidos pelos eventos
+    registrados no Yahoo, a mesma fonte dos preços."""
     if resultado is None:
         return None
-    precos = divs = fonte = None
+    precos = divs = conf = None
     if getattr(resultado, "tipo", None) == "fii":
         try:
             precos = fonte_dados.baixar_precos(ticker, "5y")
         except Exception:
             precos = None
-        divs = _proventos_fii_em_cache(ticker)
-        fonte = "Fundamentus (proventos pagos)"
-        if divs is None or len(divs) == 0:
-            divs, fonte = dividendos_yahoo, "Yahoo Finance (pode ter lacunas; Fundamentus indisponível)"
+        base = _base_cvm_recente()
+        cvm = serie_rendimentos(base, ticker, "dy") if base is not None and not base.empty else None
+        try:
+            eventos = fonte_dados.baixar_eventos(ticker)
+        except Exception:
+            eventos = None
+        conf = conferir_fontes({"fundamentus": _proventos_fii_em_cache(ticker), "cvm": cvm,
+                                "yahoo": dividendos_yahoo}, eventos=eventos)
+        divs = conf["serie"] if conf["usada"] else None
     ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual())
-    if ctx is not None:
-        ctx["fonte_rendimentos"] = fonte
+    if ctx is not None and conf is not None:
+        ctx["conferencia_rendimentos"] = {"texto": conf["texto"], "selo": conf["selo"],
+                                          "observacoes": conf.get("observacoes", [])}
     return ctx
 
 
