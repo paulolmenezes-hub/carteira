@@ -38,7 +38,8 @@ from carteira_analise.cenarios import (calcular_participacao, carregar_evidencia
 from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
 from carteira_analise.fontes.fundamentus import buscar_proventos_fii
-from carteira_analise.fontes.rendimentos import ajustar_por_desdobramentos, conferir_fontes
+from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
+                                                  conferir_fontes)
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
@@ -1111,6 +1112,18 @@ def _html_caixas_posicao(card: dict) -> str:
         txt = (f"{part['carteira'] * 100:.1f}% da carteira · " if part.get("carteira") is not None else "")
         txt += f"{part['grupo'] * 100:.1f}% {part['nome_grupo']}"
         linha += f"<div style='font-size:.8em;margin-top:6px;opacity:.95'>📊 {txt.replace('.', ',')}</div>"
+    if card.get("renda_recebida") is not None:
+        nome = {"FIIs": "Rendimentos recebidos", "Ações": "Dividendos e JCP recebidos"}.get(card.get("grupo"),
+                                                                                          "Proventos recebidos")
+        desde = f" desde {card['desde']:%d/%m/%Y}" if card.get("desde") else ""
+        total = card.get("resultado_total")
+        txt_total = ""
+        if total is not None:
+            sinal_t = "+" if total > 0 else ("−" if total < 0 else "")
+            txt_total = (f" · <b>Resultado total: {sinal_t}{formatar_valor(abs(total), moeda)}</b> "
+                         "(preço, vendas e proventos)")
+        linha += (f"<div style='font-size:.8em;margin-top:3px;opacity:.95'>💰 {nome}{desde}: "
+                  f"<b>{formatar_valor(card['renda_recebida'], moeda)}</b>{txt_total}</div>")
     return linha
 
 
@@ -1364,7 +1377,16 @@ with tab_carteira:
             texto_horario, pregao_provavelmente_aberto = _info_horario_analise()
 
             with st.spinner("Buscando dados de mercado e calculando... isso pode levar um tempo."):
-                linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_dados, periodo_carteira)
+                # FIIs: rendimentos conferidos entre Fundamentus, CVM e Yahoo (o Yahoo sozinho
+                # tem lacunas de anos) na renda recebida do extrato e na renda dos cards
+                base_cvm = _base_cvm_recente()
+                fonte_rendimentos = FonteComRendimentosConferidos(
+                    fonte_dados, tipos_confirmados,
+                    lambda t: {"fundamentus": _proventos_fii_em_cache(t),
+                               "cvm": (serie_rendimentos(base_cvm, t, "dy")
+                                       if base_cvm is not None and not base_cvm.empty else None)})
+                linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_rendimentos,
+                                                            periodo_carteira)
                 linhas_analise = []
                 dividendos_por_ticker = {}
                 for ticker in tickers_encontrados:
@@ -1384,7 +1406,7 @@ with tab_carteira:
                     }
                     cdi, aviso_cdi = _cdi_do_banco_central()
                     cards, avisos = gerar_cenarios(
-                        df_resumo, df_operacoes, fonte_dados, tipos_confirmados, fundamentos_por_ticker,
+                        df_resumo, df_operacoes, fonte_rendimentos, tipos_confirmados, fundamentos_por_ticker,
                         indice_cdi_por_data=lambda idx: indice_cdi_acumulado(idx, cdi, cdi_aa=CDI_RESERVA_AA),
                         evidencias=carregar_evidencias())
                     if aviso_cdi and any(c.get("retrospecto") for c in cards):
@@ -1409,6 +1431,15 @@ with tab_carteira:
                     except Exception:
                         usd_brl = None
                     calcular_participacao(cards, usd_brl)
+                    # proventos recebidos e resultado total da posição atual (ciclo aberto, como no extrato)
+                    ciclo_aberto = {l.ticker: l for l in linhas_ganho if l.situacao == "Aberta"}
+                    for c in cards:
+                        l = ciclo_aberto.get(c["ticker"])
+                        if l is not None:
+                            c["renda_recebida"] = l.renda_recebida
+                            c["desde"] = l.ciclo_inicio
+                            c["resultado_total"] = ((l.ganho_realizado or 0.0) + (l.ganho_nao_realizado or 0.0)
+                                                    + (l.renda_recebida or 0.0))
                     cenarios = (cards, avisos)
                 except Exception as e:
                     cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
@@ -1430,11 +1461,13 @@ with tab_carteira:
             # repetiam o card (e, nos FIIs, contradiziam o "O preço está atrativo?");
             # o gráfico continua na aba Ativo Específico.
             n_ativos = len(st.session_state["carteira_linhas_analise"])
-            n_dados = sum(1 for _, _, r in st.session_state["carteira_linhas_analise"] if r is None)
+            sem_dados = [t for t, _, r in st.session_state["carteira_linhas_analise"] if r is None]
+            n_dados = len(sem_dados)
             st.success(f"✅ Análise de {n_ativos} ativo(s) concluída em {st.session_state['carteira_horario']}. "
                        "Os cards de cada ativo e o extrato estão na aba **💼 Dashboard da Carteira**.")
             if n_dados:
-                st.warning(f"⚠️ {n_dados} ativo(s) sem dados de mercado suficientes — confira os tickers.")
+                st.warning(f"⚠️ Sem dados de mercado suficientes: {', '.join(sem_dados)} — confira o ticker e o tipo "
+                           "(ativo deslistado ou com outro código não tem cotação).")
             if st.session_state["carteira_pregao_aberto"]:
                 st.caption(
                     "📊 Pregão provavelmente em andamento — os preços usados são os mais "
