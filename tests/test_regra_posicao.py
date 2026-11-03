@@ -341,3 +341,15 @@ def test_formatar_valor():
     assert formatar_valor(1234.5) == 'R$ 1.234,50'
     assert formatar_valor(1234.5, 'US$') == 'US$ 1,234.50'
     assert formatar_valor(-10) == 'R$ -10,00'
+
+
+
+def test_so_compra_dentro_da_faixa_gasta_o_limite_de_aumentos():
+    """Caso TRXF11: compras a −7% do preço médio não contam como aumento na queda."""
+    import pandas as pd
+    from carteira_analise.regra_posicao import estado_a_partir_de_operacoes
+    ops = [{"data": pd.Timestamp("2026-01-05"), "tipo": "compra", "quantidade": 100, "preco": 100.0},
+           {"data": pd.Timestamp("2026-02-05"), "tipo": "compra", "quantidade": 10, "preco": 93.0},
+           {"data": pd.Timestamp("2026-03-05"), "tipo": "compra", "quantidade": 10, "preco": 92.0},
+           {"data": pd.Timestamp("2026-04-05"), "tipo": "compra", "quantidade": 10, "preco": 80.0}]
+    assert estado_a_partir_de_operacoes(ops)["n_reforcos"] == 1

@@ -305,7 +305,8 @@ def test_bonificacao_a_preco_zero_entra_na_quantidade_sem_custo():
     assert dash[0].saldo_final_qtde == 688 == dash[0].qtde_inicial + dash[0].compras_quantidade + dash[0].eventos_quantidade
 
     estado = estado_a_partir_de_operacoes(operacoes_por_ticker(resumo, ops)["ITSA4.SA"])
-    assert estado["quantidade"] == 688 and estado["n_reforcos"] == 1  # bonificação não conta como aumento
+    # bonificação não conta como aumento; a compra a −5% do preço médio também não (antes da faixa de −15%)
+    assert estado["quantidade"] == 688 and estado["n_reforcos"] == 0
 
 
 def test_venda_a_preco_zero_continua_invalida():
