@@ -1113,17 +1113,26 @@ def _html_caixas_posicao(card: dict) -> str:
         txt += f"{part['grupo'] * 100:.1f}% {part['nome_grupo']}"
         linha += f"<div style='font-size:.8em;margin-top:6px;opacity:.95'>📊 {txt.replace('.', ',')}</div>"
     if card.get("renda_recebida") is not None:
-        nome = {"FIIs": "Rendimentos recebidos", "Ações": "Dividendos e JCP recebidos"}.get(card.get("grupo"),
-                                                                                          "Proventos recebidos")
-        desde = f" desde {card['desde']:%d/%m/%Y}" if card.get("desde") else ""
-        total = card.get("resultado_total")
-        txt_total = ""
-        if total is not None:
-            sinal_t = "+" if total > 0 else ("−" if total < 0 else "")
-            txt_total = (f" · <b>Resultado total: {sinal_t}{formatar_valor(abs(total), moeda)}</b> "
-                         "(preço, vendas e proventos)")
-        linha += (f"<div style='font-size:.8em;margin-top:3px;opacity:.95'>💰 {nome}{desde}: "
-                  f"<b>{formatar_valor(card['renda_recebida'], moeda)}</b>{txt_total}</div>")
+        # terceira linha: o que a posição rendeu desde o início (proventos, resultado e rentabilidade)
+        nome = {"FIIs": "Rendimentos", "Ações": "Dividendos e JCP"}.get(card.get("grupo"), "Proventos")
+        total, rent = card.get("resultado_total"), card.get("rentabilidade_total")
+
+        def cor_de(v):
+            return "#b91c1c" if (v or 0) < 0 else ("#15803d" if (v or 0) > 0 else "#111827")
+
+        def com_sinal(v, texto):
+            return ("+" if v > 0 else ("−" if v < 0 else "")) + texto
+        desde = f"desde {card['desde']:%d/%m/%Y}" if card.get("desde") else "desde o início da posição"
+        linha += (f"<div style='font-size:.74em;margin-top:8px;opacity:.95'>Desde o início da posição ({desde.replace('desde ', '')}): "
+                  "preço, vendas e proventos</div>"
+                  "<div style='display:flex;gap:8px;margin-top:4px'>"
+                  + caixa(nome, formatar_valor(card["renda_recebida"], moeda), "#15803d"
+                          if card["renda_recebida"] > 0 else "#111827")
+                  + caixa("Resultado total", "—" if total is None else com_sinal(total, formatar_valor(abs(total), moeda)),
+                          cor_de(total))
+                  + caixa("Rentabilidade total", "—" if rent is None else
+                          com_sinal(rent, f"{abs(rent) * 100:.1f}%".replace(".", ",")), cor_de(rent))
+                  + "</div>")
     return linha
 
 
@@ -1440,6 +1449,8 @@ with tab_carteira:
                             c["desde"] = l.ciclo_inicio
                             c["resultado_total"] = ((l.ganho_realizado or 0.0) + (l.ganho_nao_realizado or 0.0)
                                                     + (l.renda_recebida or 0.0))
+                            custo = getattr(l, "custo_total_comprado", None)
+                            c["rentabilidade_total"] = c["resultado_total"] / custo if custo else None
                     cenarios = (cards, avisos)
                 except Exception as e:
                     cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
