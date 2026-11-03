@@ -359,3 +359,46 @@ def buscar_proventos_fii(ticker: str) -> pd.Series | None:
         return None
     _cache_proventos[papel] = serie
     return serie
+
+
+# =============================================================================
+# FII: participação dos imóveis no patrimônio (página de detalhes)
+# =============================================================================
+
+URL_FII_DETALHES = "https://www.fundamentus.com.br/detalhes.php?papel={papel}"
+_cache_imoveis_pl: dict[str, float | None] = {}
+
+
+def imoveis_pl_de_html(html: str) -> float | None:
+    """'Imóveis/PL do FII' da página de detalhes (ex.: '3,2%' -> 0.032).
+    Distingue um fundo de recebíveis que tem um imóvel recebido em pagamento
+    de dívida (RECR11: 1 imóvel, 3,2% do patrimônio) de um fundo de tijolo —
+    o segmento "Multicategoria" não diz qual é qual."""
+    texto = re.sub(r"<[^>]+>", "\n", html)
+    texto = re.sub(r"&nbsp;|\xa0", " ", texto)
+    partes = [p.strip() for p in texto.split("\n") if p.strip()]
+    for i, parte in enumerate(partes):
+        if re.sub(r"\s+", " ", parte).lower().startswith("imóveis/pl"):
+            for seguinte in partes[i + 1:i + 4]:
+                m = re.fullmatch(r"(-?[\d.]+,?\d*)\s*%", seguinte)
+                if m:
+                    valor = _parse_numero_br(m.group(1))
+                    return valor / 100 if valor is not None else None
+            return None
+    return None
+
+
+def buscar_imoveis_pl_fii(ticker: str) -> float | None:
+    """Imóveis/PL de um FII (Fundamentus), com cache em memória; None se a
+    página não puder ser lida."""
+    papel = ticker.upper().replace(".SA", "")
+    if papel in _cache_imoveis_pl:
+        return _cache_imoveis_pl[papel]
+    try:
+        req = urllib.request.Request(URL_FII_DETALHES.format(papel=papel), headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            valor = imoveis_pl_de_html(resp.read().decode("latin-1"))
+    except Exception:
+        return None
+    _cache_imoveis_pl[papel] = valor
+    return valor
