@@ -200,3 +200,13 @@ def baixar_informes(anos, timeout: int = 120, baixar=None) -> list[dict[str, pd.
         except Exception:
             continue
     return saida
+
+
+def base_recente(anos: int = 3, hoje=None, baixar=None) -> pd.DataFrame:
+    """Base mensal dos informes da CVM só dos últimos ``anos`` anos (o ano
+    corrente incluído) — o suficiente para conferir os rendimentos recentes
+    de um FII no painel, sem baixar o histórico desde 2016. Devolve uma base
+    vazia se nenhum ano puder ser baixado."""
+    ano = pd.Timestamp(hoje if hoje is not None else pd.Timestamp.today()).year
+    tabelas = baixar_informes(range(ano - anos + 1, ano + 1), baixar=baixar)
+    return montar_base_fii(tabelas) if tabelas else pd.DataFrame()
