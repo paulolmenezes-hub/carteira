@@ -304,6 +304,9 @@ class LinhaCarteira:
     n_ciclos: int = 1
     ciclo_inicio: object = None  # date da primeira operação do ciclo
     ciclo_fim: object = None  # date da venda que zerou a posição (None se aberto)
+    # custo de tudo o que foi comprado no ciclo (posição inicial, compras e custo
+    # atribuído das bonificações): base da rentabilidade total, como no extrato
+    custo_total_comprado: float | None = None
 
 
 def interpretar_quantidade_operacao(tipo: str, valor) -> tuple[float | None, str | None]:
@@ -648,6 +651,7 @@ def processar_carteira_combinada(
                 ciclo_fim=None if r.quantidade_aberta > 0 else pd.Timestamp(ciclo[-1]["data"]).date(),
                 quantidade_aberta=r.quantidade_aberta, preco_medio_atual=r.preco_medio_aberto,
                 preco_atual=preco_atual,
+                custo_total_comprado=sum(o["quantidade"] * o["preco"] for o in ops if o["tipo"] == "compra"),
                 ganho_realizado=r.ganho_realizado, ganho_nao_realizado=r.ganho_nao_realizado,
                 renda_recebida=r.renda_recebida, ganho_total=r.ganho_total,
             ))
