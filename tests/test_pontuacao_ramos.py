@@ -114,6 +114,12 @@ class TestFII:
         r = pontuar_fii(_tec(), {"qtd_imoveis": 0, "vacancia_media": 1.0, "cap_rate": 0.0}, None)
         assert not _tem(r, "vacância") and not _tem(r, "cap rate")
 
+    def test_recebiveis_com_imovel_em_pagamento_ignora_vacancia(self):
+        """Caso RECR11: o segmento manda, não a quantidade de imóveis."""
+        r = pontuar_fii(_tec(), {"segmento": "Títulos e Val. Mob.", "qtd_imoveis": 1, "vacancia_media": 1.0,
+                                 "cap_rate": 0.0}, None)
+        assert not _tem(r, "vacância") and not _tem(r, "cap rate")
+
     def test_agio_e_tecnico_negativo(self):
         r = pontuar_fii(_tec(preco_atual=8.0, sma200=9.0, rsi14=75.0), {"pvp": 1.2}, None)
         assert _tem(r, "-1 cota com ágio") and _tem(r, "-1 cota abaixo da MM200") and _tem(r, "-1 RSI > 70")

@@ -232,10 +232,61 @@ def test_dividend_yield_comparado_ao_cdi_liquido():
     assert "CDI" not in us["leitura"]
 
 
-def test_yield_de_fii_comparado_ao_cdi_liquido_com_media_no_detalhe():
+def test_fii_com_preco_atrativo_mostra_so_yield_x_cdi_e_vacancia():
+    """Yield x própria média, P/VP e estabilidade vão para as caixinhas do
+    "O preço está atrativo?"; os chips ficam com o CDI e a vacância."""
     pa = {"yield": 0.125, "yield_medio_24m": 0.11, "limiar": 0.13, "estavel": True, "atende": False}
-    y = indicadores_contexto("fii", _tec(), {}, _div(), pa, cdi_liquido_aa=0.117)[0]
-    assert y["nivel"] == BOM and "média de 2 anos: 11,0%" in y["leitura"] and "acima do CDI líquido" in y["leitura"]
+    itens = indicadores_contexto("fii", _tec(), {"segmento": "Logística", "vacancia_media": 0.02, "pvp": 0.9},
+                                 _div(), pa, cdi_liquido_aa=0.117)
+    assert [i["nome"] for i in itens] == ["Yield 12 meses", "Vacância"]
+    assert itens[0]["nivel"] == BOM and "acima do CDI líquido" in itens[0]["leitura"]
+
+
+# ---------------------------------------------------------------- níveis do preço atrativo (etapa D)
+
+def _fii_nivel(queda_preco, pvp_hoje, pvp_antes=1.0, rend_recente=None):
+    """FII de 4 anos: preço 100 até 200 dias atrás e depois ``100 x (1 - queda)``;
+    VP constante, escolhido para dar ``pvp_hoje`` no fim."""
+    idx = pd.bdate_range(end="2026-09-30", periods=252 * 4)
+    preco_final = 100.0 * (1 - queda_preco)
+    precos = pd.Series(np.where(idx > idx[-1] - pd.Timedelta(days=200), preco_final, 100.0), index=idx)
+    meses = pd.date_range(end="2026-09-15", periods=48, freq="MS") + pd.Timedelta(days=14)
+    divs = pd.Series(10 / 12, index=meses)
+    if rend_recente is not None:
+        divs.iloc[-12:] = rend_recente / 12
+    vp_meses = pd.date_range(end="2026-09-01", periods=48, freq="MS")
+    vp = pd.Series(preco_final / pvp_hoje, index=vp_meses)
+    vp.iloc[:-8] = 100.0 / pvp_antes
+    return precos, divs, vp
+
+
+def test_nivel_forte_com_yield_alto_e_desconto():
+    precos, divs, vp = _fii_nivel(0.25, pvp_hoje=0.80)
+    pa = preco_atrativo_hoje(precos, divs, vp)
+    assert pa["nivel"] == "forte" and pa["pvp"] == pytest.approx(0.80)
+
+
+def test_nivel_sim_com_yield_alto_sem_desconto():
+    precos, divs, vp = _fii_nivel(0.25, pvp_hoje=1.02, pvp_antes=1.02)
+    assert preco_atrativo_hoje(precos, divs, vp)["nivel"] == "sim"
+
+
+def test_nivel_desconto_sem_yield_alto():
+    precos, divs, vp = _fii_nivel(0.05, pvp_hoje=0.90)
+    pa = preco_atrativo_hoje(precos, divs, vp)
+    assert pa["nivel"] == "desconto" and pa["desconto"] and not pa["yield_alto"]
+
+
+def test_desconto_com_rendimentos_em_queda_e_nao():
+    precos, divs, vp = _fii_nivel(0.05, pvp_hoje=0.85, rend_recente=8.0)
+    pa = preco_atrativo_hoje(precos, divs, vp)
+    assert pa["estavel"] is False and pa["nivel"] == "nao"
+
+
+def test_sem_vp_da_cvm_usa_pvp_do_fundamentus():
+    precos, divs, _ = _fii_nivel(0.05, pvp_hoje=0.9)
+    pa = preco_atrativo_hoje(precos, divs, None, pvp_atual=0.88)
+    assert pa["pvp"] == pytest.approx(0.88) and pa["pvp_medio_24m"] is None and pa["nivel"] == "desconto"
 
 
 def test_cdi_liquido_12m():
