@@ -107,3 +107,19 @@ def test_baixar_informes_ignora_anos_com_falha():
         return _zip(int(url.split("_")[-1][:4]))
     tabs = baixar_informes([2019, 2020, 2021], baixar=falso)
     assert len(tabs) == 2 and len(montar_base_fii(tabs)) == 24
+
+
+def test_base_recente_baixa_so_os_ultimos_anos():
+    from carteira_analise.fontes.cvm_fii import base_recente
+    pedidos = []
+
+    def falso(url):
+        pedidos.append(int(url.split("_")[-1][:4]))
+        return _zip(pedidos[-1])
+    base = base_recente(anos=3, hoje="2026-11-03", baixar=falso)
+    assert pedidos == [2024, 2025, 2026]
+    assert base["data"].dt.year.unique().tolist() == [2024, 2025, 2026]
+
+    def fora(url):
+        raise OSError("fora do ar")
+    assert base_recente(anos=3, hoje="2026-11-03", baixar=fora).empty
