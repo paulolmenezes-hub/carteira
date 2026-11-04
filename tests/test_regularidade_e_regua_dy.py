@@ -212,3 +212,14 @@ def test_proventos_acao_cabecalho_com_setas_de_ordenacao():
             "<tr><td>26/04/2024</td><td>2,7540</td><td>DIVIDENDO</td><td>26/12/2024</td><td>1</td></tr></table>")
     s = proventos_acao_de_html(html)
     assert list(s.index.year) == [2024, 2025, 2026] and s.loc["2026-04-29"] == pytest.approx(3.7315)
+
+
+def test_proventos_acao_acha_a_tabela_certa_entre_varias():
+    from carteira_analise.fontes.fundamentus import proventos_acao_de_html
+    html = ("<table><tr><td>Papel</td><td>CPFE3</td></tr></table>"
+            "<table><tr><th>Data ▼▲</th><th>Valor ▼▲</th><th>Tipo ▼▲</th><th>Data de Pagamento ▼▲</th>"
+            "<th>Por quantas ações ▼▲</th></tr>"
+            "<tr><td>26/04/2024</td><td>2,7540</td><td>DIVIDENDO</td><td>26/12/2024</td><td>1</td></tr></table>")
+    assert proventos_acao_de_html(html).loc["2024-04-26"] == pytest.approx(2.754)
+    with pytest.raises(ValueError):
+        proventos_acao_de_html("<table><tr><td>a</td><td>b</td></tr></table>")
