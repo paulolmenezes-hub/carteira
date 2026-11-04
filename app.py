@@ -1023,6 +1023,12 @@ def _html_regularidade(reg: dict | None) -> str:
         nota_corrente = f" Em {corrente['ano']}, até agora: {_pct_br(corrente['dy'], 1)} (ano incompleto, fora da conta)."
     else:
         nota_corrente = ""
+    zerados = [str(a["ano"]) for a in reg["anos"] if a["dy"] == 0]
+    if reg.get("conferencia") == "falhou" and zerados:
+        nota_corrente += (" ⚠️ Os anos sem proventos no Yahoo (" + ", ".join(zerados) + ") não puderam ser conferidos "
+                          "no Fundamentus agora: podem ser lacuna da fonte, e não falta de pagamento.")
+    elif reg.get("conferencia") == "ok" and zerados:
+        nota_corrente += " O Fundamentus também não registra pagamento em " + ", ".join(zerados) + "."
     return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
             "<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap'>"
             "<span style='font-weight:700;color:#0f5f56'>Os dividendos são regulares?</span>"
