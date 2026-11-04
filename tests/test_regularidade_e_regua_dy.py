@@ -200,3 +200,15 @@ def test_analisar_ativo_marca_quando_a_conferencia_falha(monkeypatch):
 
     r = analisar_ativo("CPFE3.SA", "acao", "1y", Fonte())
     assert r.regularidade["conferencia"] == "falhou" and r.regularidade["selo"] == "irregular"
+
+
+def test_proventos_acao_cabecalho_com_setas_de_ordenacao():
+    # formato real da página (print de 04/11/2026, CPFE3): setas ▼▲ no cabeçalho
+    from carteira_analise.fontes.fundamentus import proventos_acao_de_html
+    html = ("<table><tr><th>Data ▼▲</th><th>Valor ▼▲</th><th>Tipo ▼▲</th><th>Data de Pagamento ▼▲</th>"
+            "<th>Por quantas ações ▼▲</th></tr>"
+            "<tr><td>29/04/2026</td><td>3,7315</td><td>DIVIDENDO</td><td>31/12/2026</td><td>1</td></tr>"
+            "<tr><td>29/04/2025</td><td>2,7942</td><td>DIVIDENDO</td><td>15/12/2025</td><td>1</td></tr>"
+            "<tr><td>26/04/2024</td><td>2,7540</td><td>DIVIDENDO</td><td>26/12/2024</td><td>1</td></tr></table>")
+    s = proventos_acao_de_html(html)
+    assert list(s.index.year) == [2024, 2025, 2026] and s.loc["2026-04-29"] == pytest.approx(3.7315)
