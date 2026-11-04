@@ -180,3 +180,23 @@ def test_analisar_ativo_confere_lacuna_no_fundamentus(monkeypatch):
 
     r = analisar_ativo("CPFE3.SA", "acao", "1y", Fonte())
     assert chamadas == ["CPFE3.SA"] and r.regularidade["lacunas"] == [2025] and r.regularidade["selo"] == "regular"
+
+
+def test_analisar_ativo_marca_quando_a_conferencia_falha(monkeypatch):
+    import carteira_analise.fontes.fundamentus as fm
+    from carteira_analise.carteira import analisar_ativo
+    monkeypatch.setattr(fm, "buscar_fundamentos_acao", lambda t: None)
+    monkeypatch.setattr(fm, "buscar_proventos_acao", lambda t: None)  # página indisponível
+
+    class Fonte:
+        def baixar_precos(self, ticker, periodo):
+            return PRECOS if periodo == "10y" else PRECOS[PRECOS.index >= "2025-11-01"]
+
+        def baixar_info(self, ticker):
+            return {}
+
+        def baixar_dividendos(self, ticker):
+            return _divs([13.0, 9.9, 8.6, 0, 0], extra={pd.Timestamp("2026-05-15"): 8.0})
+
+    r = analisar_ativo("CPFE3.SA", "acao", "1y", Fonte())
+    assert r.regularidade["conferencia"] == "falhou" and r.regularidade["selo"] == "irregular"
