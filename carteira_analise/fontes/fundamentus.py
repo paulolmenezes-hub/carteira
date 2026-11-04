@@ -373,36 +373,47 @@ URL_ACAO_PROVENTOS = "https://www.fundamentus.com.br/proventos.php?papel={papel}
 _cache_proventos_acao: dict[str, pd.Series] = {}
 
 
+def _normalizar_coluna(nome) -> str:
+    import unicodedata
+    texto = "".join(c for c in unicodedata.normalize("NFD", str(nome)) if unicodedata.category(c) != "Mn")
+    return " ".join(texto.lower().split())
+
+
 def proventos_acao_de_html(html: str) -> pd.Series:
     """Proventos por ação (dividendos, JCP, rendimentos) indexados pela data
     ("data com") da página de proventos de uma ação; o valor é dividido pela
-    coluna "por quantas ações" quando ela existe."""
-    df = _ler_tabela_como_texto(html)
+    coluna "por quantas ações" quando ela existe. Procura, entre TODAS as
+    tabelas da página, a que tem as colunas de data e de valor (o cabeçalho
+    traz setas de ordenação, ex.: "Data ▼▲")."""
+    # thousands=None: "2,7540" e "1.234,56" chegam como texto e são convertidos por _parse_numero_br
+    tabelas = pd.read_html(io.StringIO(html), thousands=None)
+    n_tabelas = len(tabelas)
+    for df in tabelas:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [" ".join(str(p) for p in c if "Unnamed" not in str(p)) for c in df.columns]
+        colunas = {_normalizar_coluna(c): c for c in df.columns}
+        c_data = next((c for n, c in colunas.items() if n.startswith("data") and "pagamento" not in n), None)
+        c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
+        if not c_data or not c_valor:
+            continue
+        c_qtd = next((c for n, c in colunas.items() if "quantas" in n), None)
+        datas = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
+        valores = df[c_valor].astype(str).map(_parse_numero_br).astype(float)
+        if c_qtd:
+            qtd = df[c_qtd].astype(str).map(_parse_numero_br).astype(float)
+            valores = valores / qtd.where(qtd > 0, 1).fillna(1)
+        serie = pd.Series(valores.values, index=datas.values, dtype=float)
+        serie = serie[serie.index.notna() & serie.notna() & (serie > 0)]
+        return serie.groupby(level=0).sum().sort_index()
+    raise ValueError(f"nenhuma tabela com colunas de data e valor ({n_tabelas} tabela(s) na página)")
 
-    def normalizar(nome) -> str:
-        import unicodedata
-        texto = "".join(c for c in unicodedata.normalize("NFD", str(nome)) if unicodedata.category(c) != "Mn")
-        return " ".join(texto.lower().split())
 
-    colunas = {normalizar(c): c for c in df.columns}
-    # o cabeçalho traz as setas de ordenação ("Data ▼▲"): procura pelo começo do nome
-    c_data = next((c for n, c in colunas.items() if n.startswith("data") and "pagamento" not in n), None)
-    c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
-    c_qtd = next((c for n, c in colunas.items() if "quantas" in n), None)
-    if not c_data or not c_valor:
-        raise ValueError(f"layout inesperado da página de proventos: {list(df.columns)}")
-    datas = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
-    valores = df[c_valor].map(_parse_numero_br)
-    if c_qtd:
-        qtd = df[c_qtd].map(_parse_numero_br)
-        valores = valores / qtd.where(qtd > 0, 1).fillna(1)
-    serie = pd.Series(valores.values, index=datas.values, dtype=float)
-    serie = serie[serie.index.notna() & serie.notna() & (serie > 0)]
-    return serie.groupby(level=0).sum().sort_index()
+ERRO_PROVENTOS_ACAO: dict[str, str] = {}  # último motivo de falha por papel, mostrado no card
 
 
 def buscar_proventos_acao(ticker: str) -> pd.Series | None:
-    """Proventos de uma ação (Fundamentus), com cache; None se falhar."""
+    """Proventos de uma ação (Fundamentus), com cache; None se falhar (o
+    motivo fica em ``ERRO_PROVENTOS_ACAO``)."""
     papel = ticker.upper().replace(".SA", "")
     if papel in _cache_proventos_acao:
         return _cache_proventos_acao[papel]
@@ -410,8 +421,10 @@ def buscar_proventos_acao(ticker: str) -> pd.Series | None:
         req = urllib.request.Request(URL_ACAO_PROVENTOS.format(papel=papel), headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(req, timeout=20) as resp:
             serie = proventos_acao_de_html(resp.read().decode("latin-1"))
-    except Exception:
+    except Exception as e:
+        ERRO_PROVENTOS_ACAO[papel] = f"{type(e).__name__}: {str(e)[:120]}"
         return None
+    ERRO_PROVENTOS_ACAO.pop(papel, None)
     _cache_proventos_acao[papel] = serie
     return serie
 
