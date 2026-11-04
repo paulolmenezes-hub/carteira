@@ -1026,7 +1026,9 @@ def _html_regularidade(reg: dict | None) -> str:
     zerados = [str(a["ano"]) for a in reg["anos"] if a["dy"] == 0]
     if reg.get("conferencia") == "falhou" and zerados:
         nota_corrente += (" ⚠️ Os anos sem proventos no Yahoo (" + ", ".join(zerados) + ") não puderam ser conferidos "
-                          "no Fundamentus agora: podem ser lacuna da fonte, e não falta de pagamento.")
+                          "no Fundamentus agora: podem ser lacuna da fonte, e não falta de pagamento."
+                          + (f" (motivo técnico: {html.escape(reg['conferencia_motivo'])})"
+                             if reg.get("conferencia_motivo") else ""))
     elif reg.get("conferencia") == "ok" and zerados:
         nota_corrente += " O Fundamentus também não registra pagamento em " + ", ".join(zerados) + "."
     return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
