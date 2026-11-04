@@ -114,13 +114,19 @@ def rotular_retorno_futuro(
     return "manter"
 
 
-def _yield_ultimos_12m(dividendos_ate_data: pd.Series, preco: float) -> float | None:
+def _yield_ultimos_12m(dividendos_ate_data: pd.Series, preco: float, data_ref=None) -> float | None:
+    """Yield dos 12 meses que terminam em ``data_ref`` (a data de corte).
+    Correção de 04/11/2026: a janela era contada a partir do ÚLTIMO
+    pagamento, e não da data de corte — uma empresa que parou de pagar há
+    2 anos ainda aparecia com o yield dos 12 meses anteriores ao último
+    pagamento, o que favorecia a previsão "ingênua" de persistência. Agora,
+    sem pagamento nos 12 meses até a data, o yield é 0. None só sem nenhum
+    histórico de proventos."""
     if dividendos_ate_data is None or dividendos_ate_data.empty or not preco:
         return None
-    hoje = dividendos_ate_data.index.max()
-    ult_12m = dividendos_ate_data[dividendos_ate_data.index > hoje - pd.Timedelta(days=365)]
-    if ult_12m.empty:
-        return None
+    fim = pd.Timestamp(data_ref) if data_ref is not None else dividendos_ate_data.index.max()
+    ult_12m = dividendos_ate_data[(dividendos_ate_data.index > fim - pd.Timedelta(days=365))
+                                  & (dividendos_ate_data.index <= fim)]
     return float(ult_12m.sum()) / preco
 
 
@@ -176,7 +182,7 @@ def executar_backtest_ticker(
         classe_prevista = _classe_a_partir_de_pontos(_pontuar_tecnico(tec), limiar_compra, limiar_venda)
 
         dividendos_ate_corte = dividendos[dividendos.index <= data_corte]
-        dy_trailing = _yield_ultimos_12m(dividendos_ate_corte, tec.preco_atual)
+        dy_trailing = _yield_ultimos_12m(dividendos_ate_corte, tec.preco_atual, data_corte)
 
         data_futuro_12m = data_corte + pd.Timedelta(days=365)
         dividendos_futuros = dividendos[(dividendos.index > data_corte) & (dividendos.index <= data_futuro_12m)]

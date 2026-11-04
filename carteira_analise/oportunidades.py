@@ -303,14 +303,21 @@ def resumir_criterio(casos: pd.DataFrame, coluna: str, n_bootstrap: int = 2000,
     }
     if len(com) and n_bootstrap:
         rng = np.random.default_rng(semente)
-        grupos = {t: g for t, g in base.groupby("ticker")}
-        tickers = list(grupos)
+        # Totais por FII (casos e acertos, no geral e com o critério): somar os
+        # totais dos FIIs sorteados dá exatamente as mesmas taxas que juntar as
+        # linhas, sem copiar a tabela 2.000 vezes (de minutos para menos de 1 s).
+        sup = base["superou_cdi"].astype(float)
+        por_fii = pd.DataFrame({"n": 1.0, "s": sup, "nc": base[coluna].astype(float),
+                                "sc": sup * base[coluna].astype(float), "ticker": base["ticker"]}
+                               ).groupby("ticker", sort=True).sum()
+        n, s, nc, sc = (por_fii[c].to_numpy() for c in ("n", "s", "nc", "sc"))
+        k = len(por_fii)
         difs = []
         for _ in range(n_bootstrap):
-            amostra = pd.concat([grupos[t] for t in rng.choice(tickers, size=len(tickers), replace=True)])
-            c = amostra[amostra[coluna]]
-            if len(c):
-                difs.append(_taxa(c) - _taxa(amostra))
+            idx = rng.choice(k, size=k, replace=True)
+            n_com = nc[idx].sum()
+            if n_com:
+                difs.append(sc[idx].sum() / n_com - s[idx].sum() / n[idx].sum())
         if difs:
             resumo["ic90_diferenca"] = (float(np.percentile(difs, 5)), float(np.percentile(difs, 95)))
     return resumo

@@ -14,6 +14,34 @@ from .tecnicos import IndicadoresTecnicos
 
 TipoAtivo = str  # "acao" | "fii"
 
+# Dividend yield "atrativo" (revisão de 04/11/2026). No mercado brasileiro, a
+# régua acompanha os juros: um yield de 6% é muito com a Selic a 2% e pouco
+# com a Selic a 15%. O limite é uma fração do CDI dos últimos 12 meses,
+# líquido de IR (proventos são isentos); as frações foram calibradas para dar
+# os limites fixos antigos (6% ações, 8% FIIs, 4% ETFs B3) com o CDI de
+# nov/2026, ~12,3% líquido — hoje o motor se comporta como antes, mas se
+# ajusta quando os juros mudarem. O piso evita uma régua irrisória com juros
+# muito baixos. Nos EUA (sem CDI), os limites continuam fixos.
+FATOR_DY_CDI = {"acao": 0.50, "fii": 0.65, "etf_br": 0.33}
+PISO_DY = {"acao": 0.03, "fii": 0.04, "etf_br": 0.02}
+LIMITE_DY_FIXO = {"acao": 0.06, "fii": 0.08, "etf_br": 0.04, "acao_us": 0.02, "etf_us": 0.015}
+
+
+def limite_dy(tipo: TipoAtivo, cdi_liquido_aa: float | None = None) -> float:
+    """Yield mínimo para o "+1 yield atrativo": fração do CDI líquido (B3) ou
+    limite fixo (EUA, ou sem o CDI do Banco Central)."""
+    if cdi_liquido_aa and tipo in FATOR_DY_CDI:
+        return max(FATOR_DY_CDI[tipo] * cdi_liquido_aa, PISO_DY[tipo])
+    return LIMITE_DY_FIXO.get(tipo, 0.06)
+
+
+def _texto_limite(tipo: TipoAtivo, cdi_liquido_aa: float | None) -> str:
+    lim = limite_dy(tipo, cdi_liquido_aa)
+    if cdi_liquido_aa and tipo in FATOR_DY_CDI:
+        return (f"régua {lim * 100:.1f}% = {FATOR_DY_CDI[tipo] * 100:.0f}% do CDI líquido de "
+                f"{cdi_liquido_aa * 100:.1f}%").replace(".", ",")
+    return f"régua {lim * 100:.1f}%".replace(".", ",")
+
 
 @dataclass
 class ResultadoPontuacao:
@@ -70,7 +98,8 @@ def _detalhes_extremos(tec: IndicadoresTecnicos) -> tuple[str | None, str | None
 
 
 def pontuar_acao(
-    tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None
+    tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None,
+    cdi_liquido_aa: float | None = None,
 ) -> ResultadoPontuacao:
     pontos = 0
     detalhes: list[str] = []
@@ -160,9 +189,9 @@ def pontuar_acao(
             detalhes.append(f"-1 liquidez de curto prazo apertada ({liquidez_corrente:.2f})")
 
     dy = div.dy_12m_real if div else None
-    if dy is not None and dy > 0.06:
+    if dy is not None and dy > limite_dy("acao", cdi_liquido_aa):
         pontos += 1
-        detalhes.append(f"+1 yield efetivo (12m) atrativo ({dy * 100:.1f}%)")
+        detalhes.append(f"+1 yield efetivo (12m) atrativo ({dy * 100:.1f}%; {_texto_limite('acao', cdi_liquido_aa)})")
 
     return ResultadoPontuacao(pontos, detalhes)
 
@@ -232,7 +261,8 @@ def pontuar_acao_us(
 
 
 def pontuar_etf(
-    tec: IndicadoresTecnicos, div: HistoricoDividendos | None, tipo: TipoAtivo
+    tec: IndicadoresTecnicos, div: HistoricoDividendos | None, tipo: TipoAtivo,
+    cdi_liquido_aa: float | None = None,
 ) -> ResultadoPontuacao:
     """ETFs não têm P/L, P/VP nem ROE (não são empresas, são cestas de ativos que
     seguem um índice) — critério deliberadamente mais simples: só técnico + yield,
@@ -264,17 +294,17 @@ def pontuar_etf(
         pontos -= 1
         detalhes.append(detalhe_maxima)
 
-    limite_dy = 0.04 if tipo == "etf_br" else 0.015
     dy = div.dy_12m_real if div else None
-    if dy is not None and dy > limite_dy:
+    if dy is not None and dy > limite_dy(tipo, cdi_liquido_aa):
         pontos += 1
-        detalhes.append(f"+1 yield efetivo (12m) atrativo p/ ETF ({dy * 100:.1f}%)")
+        detalhes.append(f"+1 yield efetivo (12m) atrativo p/ ETF ({dy * 100:.1f}%; {_texto_limite(tipo, cdi_liquido_aa)})")
 
     return ResultadoPontuacao(pontos, detalhes)
 
 
 def pontuar_fii(
-    tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None
+    tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None,
+    cdi_liquido_aa: float | None = None,
 ) -> ResultadoPontuacao:
     pontos = 0
     detalhes: list[str] = []
@@ -341,9 +371,9 @@ def pontuar_fii(
             detalhes.append(f"-1 cap rate baixo ({cap_rate * 100:.1f}%)")
 
     dy = div.dy_12m_real if div else None
-    if dy is not None and dy > 0.08:
+    if dy is not None and dy > limite_dy("fii", cdi_liquido_aa):
         pontos += 1
-        detalhes.append(f"+1 yield efetivo (12m) atrativo ({dy * 100:.1f}%)")
+        detalhes.append(f"+1 yield efetivo (12m) atrativo ({dy * 100:.1f}%; {_texto_limite('fii', cdi_liquido_aa)})")
 
     return ResultadoPontuacao(pontos, detalhes)
 
@@ -362,11 +392,15 @@ def classificar(pontos: int) -> str:
 
 
 def avaliar_renda(
-    div: HistoricoDividendos | None, tipo: TipoAtivo
+    div: HistoricoDividendos | None, tipo: TipoAtivo, cdi_liquido_aa: float | None = None,
+    regularidade: dict | None = None,
 ) -> ResultadoPontuacao:
     """Avalia a QUALIDADE da renda passiva de um ativo, com base no
     histórico real de dividendos pagos — independente de o momento ser bom
-    pra comprar ou vender."""
+    pra comprar ou vender. ``cdi_liquido_aa``: régua do yield ligada aos
+    juros (``limite_dy``). ``regularidade`` (ações, ver
+    ``regularidade_dividendos``): com 5 anos fechados de histórico, substitui
+    a contagem de pagamentos dos últimos 12 meses — Regular +1, Irregular -1."""
     if div is None:
         if tipo == "acao_us":
             # Comum em ações de crescimento americanas (reinvestem lucro em
@@ -393,25 +427,17 @@ def avaliar_renda(
 
     pontos = 0
     detalhes: list[str] = []
-    if tipo == "fii":
-        limite_dy = 0.08
-    elif tipo == "acao_us":
-        limite_dy = 0.02  # yield médio do mercado americano é bem mais baixo que o brasileiro
-    elif tipo == "etf_br":
-        limite_dy = 0.04
-    elif tipo == "etf_us":
-        limite_dy = 0.015  # ETFs americanos (ex: SPY, QQQ) tipicamente distribuem pouco
-    else:
-        limite_dy = 0.06
-
+    limite = limite_dy(tipo, cdi_liquido_aa)
     if div.dy_12m_real is not None:
         dy = div.dy_12m_real
-        if dy > limite_dy:
+        if dy > limite:
             pontos += 1
-            detalhes.append(f"+1 yield efetivo dos últimos 12m atrativo ({dy * 100:.1f}%)")
-        elif dy < limite_dy / 2:
+            detalhes.append(f"+1 yield efetivo dos últimos 12m atrativo ({dy * 100:.1f}%; "
+                            f"{_texto_limite(tipo, cdi_liquido_aa)})")
+        elif dy < limite / 2:
             pontos -= 1
-            detalhes.append(f"-1 yield efetivo dos últimos 12m baixo ({dy * 100:.1f}%)")
+            detalhes.append(f"-1 yield efetivo dos últimos 12m baixo ({dy * 100:.1f}%; menos da metade da "
+                            f"{_texto_limite(tipo, cdi_liquido_aa)})")
 
     if div.crescimento_yoy is not None:
         cresc = div.crescimento_yoy
@@ -421,6 +447,22 @@ def avaliar_renda(
         elif cresc < -0.15:
             pontos -= 1
             detalhes.append(f"-1 dividendos caindo vs. ano anterior ({cresc * 100:+.1f}%)")
+
+    if regularidade and tipo == "acao":
+        reg = regularidade
+        med = f"{reg['mediana'] * 100:.1f}%".replace(".", ",")
+        if reg["selo"] == "regular":
+            pontos += 1
+            detalhes.append(f"+1 dividendos regulares: pagou nos {reg['n_anos']} últimos anos, sem ano fraco "
+                            f"(mediana {med})")
+        elif reg["selo"] == "irregular":
+            pontos -= 1
+            detalhes.append(f"-1 dividendos irregulares: {reg['n_anos'] - reg['pagou']} ano(s) sem pagar nos "
+                            f"{reg['n_anos']} últimos")
+        else:
+            detalhes.append(f"dividendos oscilantes: pagou nos {reg['n_anos']} últimos anos, mas "
+                            f"{reg['ano_pior']} rendeu menos da metade da mediana ({med})")
+        return ResultadoPontuacao(pontos, detalhes)
 
     pagamentos_esperados = 10 if tipo == "fii" else 2
     if div.n_pagamentos_12m >= pagamentos_esperados:

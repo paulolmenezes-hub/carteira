@@ -160,3 +160,106 @@ def classificar_fii(fund: dict | None) -> str | None:
 def tem_imoveis(fund: dict | None) -> bool:
     """Vacância e cap rate só se aplicam a FIIs de tijolo ou híbridos."""
     return classificar_fii(fund) in ("tijolo", "hibrido")
+
+
+# ---------------------------------------------------------------------------
+# Regularidade dos dividendos (ações): DY por ano civil nos 5 anos fechados
+# ---------------------------------------------------------------------------
+
+ANOS_REGULARIDADE = 5
+FRACAO_ANO_FRACO = 0.5        # ano "fraco": menos da metade da mediana dos 5 anos
+FATOR_ANO_EXTRAORDINARIO = 2  # ano "fora da curva": mais que o dobro da mediana
+
+
+def _sem_fuso_serie(serie: pd.Series | None) -> pd.Series:
+    if serie is None:
+        return pd.Series(dtype=float)
+    serie = serie.dropna()
+    if getattr(serie.index, "tz", None) is not None:
+        serie = serie.copy()
+        serie.index = serie.index.tz_localize(None)
+    return serie.sort_index()
+
+
+def dy_por_ano(dividendos: pd.Series | None, precos: pd.Series | None, anos) -> dict[int, float | None]:
+    """Dividend yield de cada ano civil: proventos com data no ano ÷ preço
+    médio de fechamento do ano (menos sensível que o preço de 31/12 a um
+    pregão atípico). None se o ano não tiver preços suficientes."""
+    d, p = _sem_fuso_serie(dividendos), _sem_fuso_serie(precos)
+    saida: dict[int, float | None] = {}
+    for ano in anos:
+        precos_ano = p[p.index.year == ano]
+        if len(precos_ano) < 150 or precos_ano.mean() <= 0:  # ~150 de ~248 pregões: ano coberto
+            saida[ano] = None
+            continue
+        saida[ano] = float(d[d.index.year == ano].sum()) / float(precos_ano.mean())
+    return saida
+
+
+def regularidade_dividendos(dividendos: pd.Series | None, precos: pd.Series | None,
+                            data_ref=None) -> dict | None:
+    """Os dividendos de uma ação são regulares? Olha o DY de cada um dos 5
+    anos civis FECHADOS antes de ``data_ref`` (o ano em curso, incompleto,
+    sempre pareceria fraco: aparece à parte, "até agora").
+
+    - Regular: pagou nos 5 anos e o pior ano rendeu pelo menos metade da
+      mediana dos 5;
+    - Oscilante: pagou nos 5, mas algum ano rendeu menos da metade da mediana;
+    - Irregular: ficou pelo menos 1 ano sem pagar.
+
+    Independente do selo, marca os anos "fora da curva" (mais que o dobro da
+    mediana, em geral provento extraordinário), que inflam a média — por isso
+    a referência é a mediana. None sem preços dos 5 anos ou sem nenhum
+    provento registrado (dado ausente, não "não pagou")."""
+    d, p = _sem_fuso_serie(dividendos), _sem_fuso_serie(precos)
+    if p.empty or d.empty:
+        return None
+    ref = pd.Timestamp(data_ref) if data_ref is not None else p.index[-1]
+    anos = list(range(ref.year - ANOS_REGULARIDADE, ref.year))
+    dys = dy_por_ano(d, p, anos)
+    if any(v is None for v in dys.values()):
+        return None
+    valores = [dys[a] for a in anos]
+    serie = pd.Series(valores, index=anos)
+    mediana = float(serie.median())
+    pagou = int((serie > 0).sum())
+    pior_ano = int(serie.idxmin())
+    pior = float(serie.min())
+    extraordinarios = [a for a in anos if mediana > 0 and dys[a] > FATOR_ANO_EXTRAORDINARIO * mediana]
+    if pagou < ANOS_REGULARIDADE:
+        selo = "irregular"
+    elif pior < FRACAO_ANO_FRACO * mediana:
+        selo = "oscilante"
+    else:
+        selo = "regular"
+    corrente = None
+    p_ano = p[(p.index.year == ref.year) & (p.index <= ref)]
+    if len(p_ano):
+        dy_parcial = float(d[(d.index.year == ref.year) & (d.index <= ref)].sum()) / float(p_ano.mean())
+        corrente = {"ano": ref.year, "dy": dy_parcial, "ate": ref}
+    return {"anos": [{"ano": a, "dy": dys[a]} for a in anos], "pagou": pagou, "n_anos": ANOS_REGULARIDADE,
+            "pior": pior, "ano_pior": pior_ano, "mediana": mediana, "media": float(serie.mean()),
+            "extraordinarios": extraordinarios, "selo": selo, "ano_corrente": corrente}
+
+
+def texto_regularidade(reg: dict) -> str:
+    """Frase simples do bloco "Os dividendos são regulares?"."""
+    def pct(v):
+        return f"{v * 100:.1f}%".replace(".", ",")
+    sem = reg["n_anos"] - reg["pagou"]
+    if reg["selo"] == "irregular":
+        texto = (f"Ficou {sem} {'anos' if sem > 1 else 'ano'} sem pagar dividendos nos últimos {reg['n_anos']}. "
+                 "Não conte com essa renda.")
+    elif reg["selo"] == "oscilante":
+        texto = (f"Pagou todos os anos, mas em {reg['ano_pior']} rendeu só {pct(reg['pior'])}, menos da metade "
+                 f"do normal dela ({pct(reg['mediana'])}).")
+    else:
+        texto = (f"Pagou todos os anos e o pior ano ({pct(reg['pior'])}) ainda ficou perto do normal dela "
+                 f"({pct(reg['mediana'])}).")
+    if reg["extraordinarios"]:
+        anos = reg["extraordinarios"]
+        dy = {a["ano"]: a["dy"] for a in reg["anos"]}
+        lista = ", ".join(f"{a} ({pct(dy[a])})" for a in anos)
+        texto += (f" Atenção: {lista} {'foram' if len(anos) > 1 else 'foi'} fora da curva, provavelmente com "
+                  "provento extraordinário, e infla a média — vale olhar a mediana.")
+    return texto

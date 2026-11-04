@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from .fundamentalistas import (
+    regularidade_dividendos,
     segmento_generico,
     HistoricoDividendos,
     calcular_historico_dividendos,
@@ -72,6 +73,7 @@ class AnaliseAtivo:
     detalhes_timing: list[str]
     pontos_renda: int | str | None
     detalhes_renda: list[str]
+    regularidade: dict | None = None  # ações B3: "Os dividendos são regulares?" (5 anos fechados)
     sinal_timing: str = field(init=False)
     qualidade_renda: str = field(init=False)
     leitura_combinada_texto: str = field(init=False)
@@ -82,9 +84,12 @@ class AnaliseAtivo:
         self.leitura_combinada_texto = leitura_combinada(self.pontos_timing, self.pontos_renda)
 
 
-def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> AnaliseAtivo | None:
+def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
+                   cdi_liquido_aa: float | None = None) -> AnaliseAtivo | None:
     """Executa a análise completa de um único ativo. Retorna ``None`` se
-    não houver dados de preço suficientes."""
+    não houver dados de preço suficientes. ``cdi_liquido_aa`` (CDI de 12
+    meses, líquido de IR) liga a régua do dividend yield aos juros; sem ele,
+    valem os limites fixos (ver ``limite_dy``)."""
     fechamento_bruto = fonte.baixar_precos(ticker, periodo)
     tec = calcular_indicadores_tecnicos(fechamento_bruto)
     if tec is None:
@@ -122,13 +127,13 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> A
                     fund["imoveis_pl"] = buscar_imoveis_pl_fii(ticker)
                 except Exception:
                     fund["imoveis_pl"] = None
-        resultado_timing = pontuar_fii(tec, fund, div)
+        resultado_timing = pontuar_fii(tec, fund, div, cdi_liquido_aa)
     elif tipo == "acao_us":
         fund = extrair_fundamentalistas_acao(info)  # mesmos campos do Yahoo servem p/ EUA
         resultado_timing = pontuar_acao_us(tec, fund, div)
     elif tipo in ("etf_br", "etf_us"):
         fund = extrair_fundamentalistas_acao(info)  # geralmente vazio p/ ETF, não quebra nada
-        resultado_timing = pontuar_etf(tec, div, tipo)
+        resultado_timing = pontuar_etf(tec, div, tipo, cdi_liquido_aa)
     else:
         fund = extrair_fundamentalistas_acao(info)
         fund_fundamentus = None
@@ -152,9 +157,17 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> A
             fund["margem_liquida"] = fund_fundamentus.margem_liquida
             fund["divida_bruta_patrimonio"] = fund_fundamentus.divida_bruta_patrimonio
             fund["liquidez_corrente"] = fund_fundamentus.liquidez_corrente
-        resultado_timing = pontuar_acao(tec, fund, div)
+        resultado_timing = pontuar_acao(tec, fund, div, cdi_liquido_aa)
 
-    resultado_renda = avaliar_renda(div, tipo)
+    regularidade = None
+    if tipo == "acao" and dividendos is not None and len(dividendos):
+        # 5 anos civis fechados pedem ~6 anos de preços: busca 10 anos só para isso
+        try:
+            regularidade = regularidade_dividendos(dividendos, fonte.baixar_precos(ticker, "10y"),
+                                                   data_ref=tec.historico.index[-1])
+        except Exception:
+            regularidade = None
+    resultado_renda = avaliar_renda(div, tipo, cdi_liquido_aa, regularidade)
 
     return AnaliseAtivo(
         ticker=ticker,
@@ -166,11 +179,12 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados) -> A
         detalhes_timing=resultado_timing.detalhes,
         pontos_renda=resultado_renda.pontos,
         detalhes_renda=resultado_renda.detalhes,
+        regularidade=regularidade,
     )
 
 
 def analisar_carteira(
-    tickers: list[str], tipo: str, periodo: str, fonte: FonteDados
+    tickers: list[str], tipo: str, periodo: str, fonte: FonteDados, cdi_liquido_aa: float | None = None
 ) -> list[AnaliseAtivo]:
     """Executa a análise de uma lista de tickers do mesmo tipo (todos ação
     ou todos FII), pulando silenciosamente os que não tiverem dados
@@ -178,7 +192,7 @@ def analisar_carteira(
     `len(tickers)` para saber se algum foi pulado)."""
     resultados = []
     for ticker in tickers:
-        analise = analisar_ativo(ticker, tipo, periodo, fonte)
+        analise = analisar_ativo(ticker, tipo, periodo, fonte, cdi_liquido_aa)
         if analise is not None:
             resultados.append(analise)
     return resultados
