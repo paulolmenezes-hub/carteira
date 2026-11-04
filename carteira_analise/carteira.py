@@ -177,7 +177,10 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
                         regularidade["conferencia"] = "ok"
                 elif regularidade is not None:
                     # o card avisa: sem a conferência, um ano zerado pode ser lacuna do Yahoo
+                    from .fontes.fundamentus import ERRO_PROVENTOS_ACAO
                     regularidade["conferencia"] = "falhou"
+                    regularidade["conferencia_motivo"] = ERRO_PROVENTOS_ACAO.get(
+                        ticker.upper().replace(".SA", ""), "a página não trouxe proventos")
         except Exception:
             regularidade = None
     resultado_renda = avaliar_renda(div, tipo, cdi_liquido_aa, regularidade)
