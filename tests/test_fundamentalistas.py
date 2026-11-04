@@ -94,6 +94,9 @@ import pytest as _pytest
     ({"segmento": "Títulos e Val. Mob.", "qtd_imoveis": 1}, "papel"),   # RECR11: imóvel recebido em pagamento
     ({"segmento": "Logística", "qtd_imoveis": 0}, "tijolo"),
     ({"segmento": "Lajes Corporativas"}, "tijolo"),
+    ({"segmento": "Escritórios", "qtd_imoveis": 12}, "tijolo"),     # "cri" dentro de "escritórios" não é CRI
+    ({"segmento": "CRI", "qtd_imoveis": 0}, "papel"),
+    ({"segmento": "FOF"}, "papel"),
     ({"segmento": "Híbrido", "qtd_imoveis": 5}, "hibrido"),
     ({"segmento": "Outros", "qtd_imoveis": 3}, "tijolo"),              # sem segmento útil: vale a quantidade
     ({"segmento": "", "qtd_imoveis": 0}, "papel"),
