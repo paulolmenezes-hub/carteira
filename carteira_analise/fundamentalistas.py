@@ -100,8 +100,17 @@ def calcular_historico_dividendos(
 # Tipo de FII: papel, tijolo ou híbrido
 # ---------------------------------------------------------------------------
 
-_SEGMENTOS_PAPEL = ("titulos", "val. mob", "val mob", "valores mobiliarios", "papel", "recebiveis", "cri",
-                    "fundo de fundos", "fof")
+_SEGMENTOS_PAPEL = ("titulos", "val. mob", "val mob", "valores mobiliarios", "papel", "recebiveis",
+                    "fundo de fundos")
+# siglas curtas só valem como PALAVRA inteira: "cri" dentro de "escritorios"
+# fazia fundos de escritórios (HGRE11, PVBI11) serem tratados como papel
+_SIGLAS_PAPEL = ("cri", "cra", "fof")
+
+
+def segmento_de_papel(seg: str) -> bool:
+    import re
+    return (any(chave in seg for chave in _SEGMENTOS_PAPEL)
+            or any(re.search(rf"\b{sigla}\b", seg) for sigla in _SIGLAS_PAPEL))
 
 
 def _segmento_normalizado(fund: dict | None) -> str:
@@ -132,7 +141,7 @@ def classificar_fii(fund: dict | None) -> str | None:
     if not generico:
         if "hibrido" in seg:
             return "hibrido"
-        if any(chave in seg for chave in _SEGMENTOS_PAPEL):
+        if segmento_de_papel(seg):
             return "papel"
         return "tijolo"
     # segmento genérico ("Multicategoria", "Outros"): decide a participação dos
