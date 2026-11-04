@@ -361,6 +361,60 @@ def buscar_proventos_fii(ticker: str) -> pd.Series | None:
     return serie
 
 
+# ---------------------------------------------------------------------------
+# Proventos de ações (dividendos e JCP): conferência de lacunas do Yahoo
+# ---------------------------------------------------------------------------
+# Usados só para CONFERIR anos em que o Yahoo não registra proventos (casos
+# CPFE3 2024-2025 e KLBN11 2026): o valor por ação do Fundamentus pode estar
+# em outra escala depois de desdobramentos e bonificações, então não entra no
+# cálculo do dividend yield.
+
+URL_ACAO_PROVENTOS = "https://www.fundamentus.com.br/proventos.php?papel={papel}&tipo=2"
+_cache_proventos_acao: dict[str, pd.Series] = {}
+
+
+def proventos_acao_de_html(html: str) -> pd.Series:
+    """Proventos por ação (dividendos, JCP, rendimentos) indexados pela data
+    ("data com") da página de proventos de uma ação; o valor é dividido pela
+    coluna "por quantas ações" quando ela existe."""
+    df = _ler_tabela_como_texto(html)
+
+    def normalizar(nome) -> str:
+        import unicodedata
+        texto = "".join(c for c in unicodedata.normalize("NFD", str(nome)) if unicodedata.category(c) != "Mn")
+        return " ".join(texto.lower().split())
+
+    colunas = {normalizar(c): c for c in df.columns}
+    c_data = colunas.get("data") or next((c for n, c in colunas.items() if "data com" in n), None)
+    c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
+    c_qtd = next((c for n, c in colunas.items() if "quantas" in n), None)
+    if not c_data or not c_valor:
+        raise ValueError(f"layout inesperado da página de proventos: {list(df.columns)}")
+    datas = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
+    valores = df[c_valor].map(_parse_numero_br)
+    if c_qtd:
+        qtd = df[c_qtd].map(_parse_numero_br)
+        valores = valores / qtd.where(qtd > 0, 1).fillna(1)
+    serie = pd.Series(valores.values, index=datas.values, dtype=float)
+    serie = serie[serie.index.notna() & serie.notna() & (serie > 0)]
+    return serie.groupby(level=0).sum().sort_index()
+
+
+def buscar_proventos_acao(ticker: str) -> pd.Series | None:
+    """Proventos de uma ação (Fundamentus), com cache; None se falhar."""
+    papel = ticker.upper().replace(".SA", "")
+    if papel in _cache_proventos_acao:
+        return _cache_proventos_acao[papel]
+    try:
+        req = urllib.request.Request(URL_ACAO_PROVENTOS.format(papel=papel), headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            serie = proventos_acao_de_html(resp.read().decode("latin-1"))
+    except Exception:
+        return None
+    _cache_proventos_acao[papel] = serie
+    return serie
+
+
 # =============================================================================
 # FII: participação dos imóveis no patrimônio (página de detalhes)
 # =============================================================================
