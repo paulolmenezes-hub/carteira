@@ -173,6 +173,11 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
                 if conferencia is not None and len(conferencia):
                     regularidade = regularidade_dividendos(dividendos, precos_10a, data_ref=tec.historico.index[-1],
                                                            conferencia=conferencia)
+                    if regularidade is not None:
+                        regularidade["conferencia"] = "ok"
+                elif regularidade is not None:
+                    # o card avisa: sem a conferência, um ano zerado pode ser lacuna do Yahoo
+                    regularidade["conferencia"] = "falhou"
         except Exception:
             regularidade = None
     resultado_renda = avaliar_renda(div, tipo, cdi_liquido_aa, regularidade)
