@@ -176,3 +176,65 @@ def test_sem_valor_patrimonial_os_criterios_4_ficam_vazios():
     df = avaliar_fii_mes_a_mes(p, d, None)
     assert df["pvp"].isna().all() and df["criterio_pvp"].isna().all()
     assert df["criterio_yield_pvp"].isna().all()
+
+
+# ---------------------------------------------------------------- Etapa C (renda descontada a inflação)
+
+def _fii_ipca(spread_fn, ipca_fn, preco_fn):
+    """FII de CRI atrelado ao IPCA: rendimento do mês = VP × (juro real / 12 +
+    IPCA do mês de 2 meses antes, a correção monetária do saldo dos CRIs),
+    VP constante em 100."""
+    ipca = pd.Series([ipca_fn(m) for m in MESES], index=MESES)
+    divs = [100 * (spread_fn(m) / 12 + ipca_fn(m - pd.DateOffset(months=2))) for m in MESES]
+    d = pd.Series(divs, index=MESES)
+    p = pd.Series([preco_fn(dt) for dt in DATAS], index=DATAS, dtype=float)
+    return p, d, ipca, pd.Series(100.0, index=MESES)
+
+
+def test_inflacao_desacelerando_nao_e_queda_de_renda_no_fii_de_papel():
+    p, d, ipca, vp = _fii_ipca(lambda m: 0.06, lambda m: 0.008 if m.year < 2023 else 0.0035,
+                               lambda dt: 100.0 if dt.year < 2023 else 85.0)
+    df = avaliar_fii_mes_a_mes(p, d, None, valor_patrimonial=vp, ipca_mensal=ipca, papel=True)
+    fim_2023 = df[(df["data"].dt.year == 2023) & (df["data"].dt.month >= 9)]
+    assert len(fim_2023) == 4
+    # o rendimento nominal caiu mais de 10% (só porque o IPCA desacelerou) ...
+    assert not fim_2023["estavel"].any()
+    assert fim_2023["criterio_pvp"].eq(0).all()
+    # ... mas a renda acima da inflação ficou estável: as variantes "_real" aceitam
+    assert fim_2023["estavel_real"].eq(1).all()
+    assert fim_2023["criterio_pvp_real"].eq(1).all()  # P/VP 0,85 com renda real estável
+    assert fim_2023["renda_real_12m"].iloc[-1] == pytest.approx(0.06, abs=0.02)
+
+
+def test_renda_real_em_queda_continua_bloqueando():
+    # juro real dos CRIs cai de 6% para 3% (deterioração de verdade), IPCA constante
+    p, d, ipca, vp = _fii_ipca(lambda m: 0.06 if m.year < 2023 else 0.03, lambda m: 0.004,
+                               lambda dt: 100.0 if dt.year < 2023 else 85.0)
+    df = avaliar_fii_mes_a_mes(p, d, None, valor_patrimonial=vp, ipca_mensal=ipca, papel=True)
+    fim_2023 = df[(df["data"].dt.year == 2023) & (df["data"].dt.month >= 3)]
+    assert fim_2023["estavel_real"].eq(0).all()
+    assert not fim_2023["criterio_pvp_real"].eq(1).any()
+
+
+def test_variantes_reais_iguais_as_nominais_fora_dos_fiis_de_papel():
+    p, d, ipca, vp = _fii_ipca(lambda m: 0.06, lambda m: 0.008 if m.year < 2023 else 0.0035,
+                               lambda dt: 100.0 if dt.year < 2023 else 85.0)
+    df = avaliar_fii_mes_a_mes(p, d, None, valor_patrimonial=vp, ipca_mensal=ipca, papel=False)
+    assert df["estavel_real"].isna().all()
+    for nominal, real in (("criterio_yield", "criterio_yield_real"), ("criterio_pvp", "criterio_pvp_real"),
+                          ("criterio_yield_pvp", "criterio_yield_pvp_real")):
+        pd.testing.assert_series_equal(df[nominal], df[real], check_names=False)
+    # sem IPCA, o FII de papel também cai na regra nominal
+    df2 = avaliar_fii_mes_a_mes(p, d, None, valor_patrimonial=vp, papel=True)
+    assert df2["estavel_real"].isna().all()
+    pd.testing.assert_series_equal(df2["criterio_pvp"], df2["criterio_pvp_real"], check_names=False)
+
+
+def test_queda_maxima_ajustavel_para_a_checagem_de_robustez():
+    # rendimento cai 8% em 2021: estável com tolerância de 10%, não com 5%
+    p = pd.Series(100.0, index=DATAS)
+    d = pd.Series([1.0 if m.year < 2021 else 0.92 for m in MESES], index=MESES)
+    em_2021 = lambda df: df[df["data"].dt.year == 2021]
+    assert em_2021(avaliar_fii_mes_a_mes(p, d, None))["estavel"].all()
+    assert not em_2021(avaliar_fii_mes_a_mes(p, d, None, queda_maxima=0.05))["estavel"].all()
+    assert em_2021(avaliar_fii_mes_a_mes(p, d, None, queda_maxima=0.15))["estavel"].all()

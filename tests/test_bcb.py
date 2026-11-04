@@ -1,3 +1,4 @@
+import pytest
 import pandas as pd
 
 import carteira_analise.fontes.bcb as bcb
@@ -41,3 +42,17 @@ def test_cdi_falha_temporaria_e_recuperada(monkeypatch):
     monkeypatch.setattr(bcb, "_baixar_json", instavel)
     s = bcb.buscar_cdi_diario("2024-01-01", "2024-03-31", dormir=lambda s: None)
     assert s is not None and s.iloc[0] == 0.043 and chamadas["n"] == 3
+
+
+def test_ipca_mensal_em_fracao(monkeypatch):
+    monkeypatch.setattr(bcb, "_baixar_json", lambda url, timeout=45: [
+        {"data": "01/01/2024", "valor": "0.42"}, {"data": "01/02/2024", "valor": "0.83"}])
+    s = bcb.buscar_ipca_mensal("2024-01-01", "2024-02-29")
+    assert s.loc["2024-02-01"] == pytest.approx(0.0083) and len(s) == 2
+
+
+def test_ipca_falha_devolve_none(monkeypatch):
+    def falha(url, timeout=45):
+        raise OSError("fora do ar")
+    monkeypatch.setattr(bcb, "_baixar_json", falha)
+    assert bcb.buscar_ipca_mensal("2024-01-01", "2024-02-29", dormir=lambda s: None) is None
