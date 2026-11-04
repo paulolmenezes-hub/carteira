@@ -385,7 +385,8 @@ def proventos_acao_de_html(html: str) -> pd.Series:
         return " ".join(texto.lower().split())
 
     colunas = {normalizar(c): c for c in df.columns}
-    c_data = colunas.get("data") or next((c for n, c in colunas.items() if "data com" in n), None)
+    # o cabeçalho traz as setas de ordenação ("Data ▼▲"): procura pelo começo do nome
+    c_data = next((c for n, c in colunas.items() if n.startswith("data") and "pagamento" not in n), None)
     c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
     c_qtd = next((c for n, c in colunas.items() if "quantas" in n), None)
     if not c_data or not c_valor:
