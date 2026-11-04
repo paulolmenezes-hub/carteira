@@ -41,6 +41,7 @@ from carteira_analise.fontes.fundamentus import buscar_proventos_fii
 from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
                                                   conferir_fontes)
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
+from carteira_analise.fundamentalistas import texto_regularidade
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
@@ -956,6 +957,66 @@ def _html_preco_atrativo(ctx: dict) -> str:
             f"{_EVIDENCIA_PRECO[nivel]}</div>{nota_fonte}</div>")
 
 
+_SELO_REGULARIDADE = {
+    "regular": ("Regular", "background:#0f7f73;color:#ffffff"),
+    "oscilante": ("Oscilante", "background:#fde7c7;color:#92400e"),
+    "irregular": ("Irregular", "background:#fee2e2;color:#991b1b"),
+}
+
+
+def _html_regularidade(reg: dict | None) -> str:
+    """Bloco "Os dividendos são regulares?" das ações: DY de cada um dos 5
+    anos fechados em barras (laranja = ano fora da curva; traço vermelho =
+    sem pagamento; linha tracejada = mediana), três caixinhas e a frase."""
+    if not reg:
+        return ""
+    etiqueta, estilo = _SELO_REGULARIDADE[reg["selo"]]
+    mediana, topo = reg["mediana"], max(max(a["dy"] for a in reg["anos"]), 1e-9)
+    barras = ""
+    for a in reg["anos"]:
+        dy = a["dy"]
+        extra = a["ano"] in reg["extraordinarios"]
+        if dy <= 0:
+            barra = "<div style='width:100%;border-top:2px dashed #ef4444'></div>"
+            rotulo = "0"
+        else:
+            cor = "#f0a93b" if extra else "#2bb3a3"
+            barra = f"<div style='width:100%;height:{dy / topo * 62:.0f}px;border-radius:4px 4px 0 0;background:{cor}'></div>"
+            rotulo = _pct_br(dy, 1)
+        barras += ("<div style='flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end'>"
+                   f"<span style='font-size:.68em;font-weight:600;color:#374151'>{rotulo}</span>{barra}"
+                   f"<span style='font-size:.68em;color:#6b7280;margin-top:2px'>{a['ano']}</span></div>")
+    linha_mediana = (f"<div style='position:absolute;left:0;right:0;bottom:{mediana / topo * 62 + 16:.0f}px;"
+                     "border-top:1.5px dashed #64748b'></div>") if mediana > 0 else ""
+    grafico = ("<div style='position:relative;display:flex;gap:8px;align-items:flex-end;height:96px;margin-top:8px'>"
+               f"{linha_mediana}{barras}</div>")
+
+    def caixa(rotulo, valor, ok):
+        cor = "#0f7f73" if ok else "#b45309"
+        return ("<div style='border:1px solid #e5e7eb;border-radius:8px;padding:5px 7px;line-height:1.3'>"
+                f"<div style='font-size:.68em;color:#6b7280'>{rotulo}</div>"
+                f"<div style='font-size:.76em;font-weight:700;color:{cor}'>{valor}</div></div>")
+    completo = reg["pagou"] == reg["n_anos"]
+    caixas = ("<div style='display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:8px'>"
+              + caixa("Anos com pagamento", f"{reg['pagou']} de {reg['n_anos']}", completo)
+              + caixa("Pior ano", f"{_pct_br(reg['pior'], 1)} ({reg['ano_pior']})",
+                      completo and reg["pior"] >= 0.5 * mediana)
+              + caixa("Mediana × média", f"{_pct_br(mediana, 1)} · {_pct_br(reg['media'], 1)}",
+                      not reg["extraordinarios"] and reg["selo"] != "irregular") + "</div>")
+    corrente = reg.get("ano_corrente")
+    nota_corrente = (f" Em {corrente['ano']}, até agora: {_pct_br(corrente['dy'], 1)} (ano incompleto, fora da conta)."
+                     if corrente else "")
+    return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
+            "<div style='display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap'>"
+            "<span style='font-weight:700;color:#0f5f56'>Os dividendos são regulares?</span>"
+            f"<span style='font-size:.78em;font-weight:700;padding:3px 10px;border-radius:999px;{estilo}'>{etiqueta}</span></div>"
+            f"{grafico}{caixas}<div style='font-size:.86em;line-height:1.45;margin-top:8px'>"
+            f"{html.escape(texto_regularidade(reg))}</div>"
+            "<div style='font-size:.74em;color:#4b5563;margin-top:6px;line-height:1.4'>DY de cada ano = proventos "
+            "do ano (dividendos e JCP brutos) ÷ preço médio do ano, nos 5 anos fechados. Regular: pagou todos os anos "
+            f"e o pior rendeu ao menos metade da mediana.{nota_corrente}</div></div>")
+
+
 def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = True) -> str:
     """Bloco branco "Contexto do ativo": leitura combinada, indicadores e,
     para FIIs, o preço atrativo. Não altera os cenários do card."""
@@ -986,7 +1047,7 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
                  if aviso_cenarios else "")
     evidencia = ("" if tipo == "fii" else
                  f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Evidência:</b> {FRASE_EVIDENCIA_TECNICA}</div>")
-    preco_atrativo = _html_preco_atrativo(ctx) if tipo == "fii" else ""
+    preco_atrativo = _html_preco_atrativo(ctx) if tipo == "fii" else _html_regularidade(ctx.get("regularidade"))
     return ("<div style='margin-top:12px;background:#ffffff;color:#1f2937;border-radius:14px;padding:12px 14px;"
             "display:flex;flex-direction:column;gap:9px'>"
             "<div style='display:flex;justify-content:space-between;align-items:baseline;gap:8px'>"
@@ -1062,6 +1123,8 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     else:
         vp = None
     ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual(), valor_patrimonial=vp)
+    if ctx is not None:
+        ctx["regularidade"] = getattr(resultado, "regularidade", None)
     if ctx is not None and conf is not None:
         ctx["conferencia_rendimentos"] = {"texto": conf["texto"], "selo": conf["selo"],
                                           "observacoes": conf.get("observacoes", [])}
@@ -1400,7 +1463,8 @@ with tab_carteira:
                 dividendos_por_ticker = {}
                 for ticker in tickers_encontrados:
                     tipo = tipos_confirmados[ticker]
-                    resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_dados)
+                    resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_dados,
+                                               cdi_liquido_aa=_cdi_liquido_atual())
                     linhas_analise.append((ticker, tipo, resultado))
                     try:
                         dividendos_por_ticker[ticker] = fonte_dados.baixar_dividendos(ticker)
@@ -1524,7 +1588,8 @@ with tab_ativo:
         else:
             texto_horario, _ = _info_horario_analise()
             with st.spinner(f"Buscando dados de {ticker_limpo}..."):
-                resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_dados)
+                resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_dados,
+                                           cdi_liquido_aa=_cdi_liquido_atual())
                 try:
                     dividendos_individual = fonte_dados.baixar_dividendos(ticker_limpo)
                 except Exception:
