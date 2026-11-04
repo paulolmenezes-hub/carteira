@@ -187,3 +187,12 @@ class TestCalcularMaeR2Renda:
         ]
         r = calcular_mae_r2_renda(registros)
         assert r.mae == pytest.approx(0.03)  # média de 0.02 e 0.04
+
+
+def test_yield_trailing_contado_da_data_de_corte_e_nao_do_ultimo_pagamento():
+    from carteira_analise.backtesting import _yield_ultimos_12m
+    divs = pd.Series([1.0, 1.0], index=pd.to_datetime(["2021-03-01", "2021-09-01"]))
+    # empresa parou de pagar em 2021: em 2023 o yield dos 12 meses é 0, não 2%
+    assert _yield_ultimos_12m(divs, 100.0, pd.Timestamp("2023-06-30")) == 0.0
+    assert _yield_ultimos_12m(divs, 100.0, pd.Timestamp("2021-12-31")) == pytest.approx(0.02)
+    assert _yield_ultimos_12m(pd.Series(dtype=float), 100.0, pd.Timestamp("2023-06-30")) is None
