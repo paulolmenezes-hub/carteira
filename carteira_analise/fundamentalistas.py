@@ -208,9 +208,15 @@ def regularidade_dividendos(dividendos: pd.Series | None, precos: pd.Series | No
     - Irregular: ficou pelo menos 1 ano sem pagar.
 
     Independente do selo, marca os anos "fora da curva" (mais que o dobro da
-    mediana, em geral provento extraordinário), que inflam a média — por isso
-    a referência é a mediana. None sem preços dos 5 anos ou sem nenhum
-    provento registrado (dado ausente, não "não pagou")."""
+    mediana, em geral provento extraordinário). None sem preços dos 5 anos ou
+    sem nenhum provento registrado (dado ausente, não "não pagou").
+
+    Teste (Seção 14 do notebook, 04/11/2026; ~40 ações, 143 casos de 2022 a
+    2025): com o selo Regular, a renda se manteve no ano seguinte em 99% dos
+    casos, contra 82% nos Oscilantes e Irregulares (+17 p.p.; IC 90% +6 a
+    +28). A mediana NÃO previu melhor o DY do ano seguinte que a média ou o
+    último ano (erro médio de 3,8, 3,4 e 3,3 p.p.) — por isso o texto não
+    recomenda olhar a mediana; ela segue só como régua do ano "fraco"."""
     d, p = _sem_fuso_serie(dividendos), _sem_fuso_serie(precos)
     if p.empty or d.empty:
         return None
@@ -261,5 +267,5 @@ def texto_regularidade(reg: dict) -> str:
         dy = {a["ano"]: a["dy"] for a in reg["anos"]}
         lista = ", ".join(f"{a} ({pct(dy[a])})" for a in anos)
         texto += (f" Atenção: {lista} {'foram' if len(anos) > 1 else 'foi'} fora da curva, provavelmente com "
-                  "provento extraordinário, e infla a média — vale olhar a mediana.")
+                  "provento extraordinário — não conte que se repita no mesmo nível.")
     return texto
