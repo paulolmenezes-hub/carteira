@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from .fundamentalistas import (
+    precisa_conferir,
     regularidade_dividendos,
     segmento_generico,
     HistoricoDividendos,
@@ -163,8 +164,15 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
     if tipo == "acao" and dividendos is not None and len(dividendos):
         # 5 anos civis fechados pedem ~6 anos de preços: busca 10 anos só para isso
         try:
-            regularidade = regularidade_dividendos(dividendos, fonte.baixar_precos(ticker, "10y"),
-                                                   data_ref=tec.historico.index[-1])
+            precos_10a = fonte.baixar_precos(ticker, "10y")
+            regularidade = regularidade_dividendos(dividendos, precos_10a, data_ref=tec.historico.index[-1])
+            if precisa_conferir(regularidade):
+                # ano sem nenhum provento no Yahoo: confere no Fundamentus se é lacuna da fonte
+                from .fontes.fundamentus import buscar_proventos_acao
+                conferencia = buscar_proventos_acao(ticker)
+                if conferencia is not None and len(conferencia):
+                    regularidade = regularidade_dividendos(dividendos, precos_10a, data_ref=tec.historico.index[-1],
+                                                           conferencia=conferencia)
         except Exception:
             regularidade = None
     resultado_renda = avaliar_renda(div, tipo, cdi_liquido_aa, regularidade)

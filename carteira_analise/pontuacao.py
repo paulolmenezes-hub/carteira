@@ -448,7 +448,7 @@ def avaliar_renda(
             pontos -= 1
             detalhes.append(f"-1 dividendos caindo vs. ano anterior ({cresc * 100:+.1f}%)")
 
-    if regularidade and tipo == "acao":
+    if regularidade and tipo == "acao" and regularidade.get("selo") in ("regular", "oscilante", "irregular"):
         reg = regularidade
         med = f"{reg['mediana'] * 100:.1f}%".replace(".", ",")
         if reg["selo"] == "regular":
