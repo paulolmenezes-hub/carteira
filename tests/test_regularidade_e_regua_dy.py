@@ -117,3 +117,66 @@ def test_analisar_ativo_calcula_regularidade_com_10_anos(monkeypatch):
     r = analisar_ativo("TAEE11.SA", "acao", "1y", fonte, cdi_liquido_aa=0.12)
     assert "10y" in fonte.periodos and r.regularidade["selo"] == "regular"
     assert any("dividendos regulares" in d for d in r.detalhes_renda)
+
+
+# ------------------------------------------------------------------ lacunas do Yahoo conferidas no Fundamentus
+
+def test_ano_zerado_no_yahoo_mas_pago_no_fundamentus_fica_fora_da_conta():
+    yahoo = _divs([13.0, 9.9, 8.6, 9.0, 0])          # 2025 sem registro no Yahoo
+    fundamentus = _divs([1.3, 1.0, 0.9, 1.0, 0.8])     # escala diferente: só confere se houve pagamento
+    sem = regularidade_dividendos(yahoo, PRECOS)
+    assert sem["selo"] == "irregular"
+    com = regularidade_dividendos(yahoo, PRECOS, conferencia=fundamentus)
+    assert com["selo"] == "regular" and com["lacunas"] == [2025] and com["n_anos"] == 4
+    assert com["anos"][-1]["dy"] is None and com["anos"][-1]["sem_registro"]
+    assert "2025: o Yahoo não registra" in texto_regularidade(com)
+    # sem pagamento também no Fundamentus: continua irregular
+    assert regularidade_dividendos(yahoo, PRECOS, conferencia=_divs([1, 1, 1, 1, 0]))["selo"] == "irregular"
+
+
+def test_lacunas_demais_ficam_sem_selo():
+    yahoo = _divs([13.0, 9.9, 8.6, 0, 0])
+    r = regularidade_dividendos(yahoo, PRECOS, conferencia=_divs([1, 1, 1, 1, 1]))
+    assert r["selo"] == "incompleto" and r["lacunas"] == [2024, 2025]
+    assert texto_regularidade(r).startswith("Sem selo")
+    div = HistoricoDividendos(soma_12m=1.0, soma_anterior_12m=1.0, dy_12m_real=0.05, crescimento_yoy=0.0,
+                              n_pagamentos_12m=2)
+    assert not any("regulares:" in d or "irregulares" in d for d in avaliar_renda(div, "acao", regularidade=r).detalhes)
+
+
+def test_ano_corrente_sem_registro():
+    yahoo = _divs([8, 8, 8, 8, 8])
+    r = regularidade_dividendos(yahoo, PRECOS, conferencia=_divs([1, 1, 1, 1, 1, 1]))
+    assert r["ano_corrente"]["sem_registro"] is True
+
+
+def test_proventos_acao_de_html_divide_por_quantas_acoes():
+    from carteira_analise.fontes.fundamentus import proventos_acao_de_html
+    html = ("<table><tr><th>Data</th><th>Valor</th><th>Tipo</th><th>Data de Pagamento</th>"
+            "<th>Por quantas Ações</th></tr>"
+            "<tr><td>29/04/2025</td><td>2,50</td><td>DIVIDENDO</td><td>30/06/2025</td><td>1</td></tr>"
+            "<tr><td>29/04/2025</td><td>0,30</td><td>JRS CAP PROPRIO</td><td>30/06/2025</td><td>1</td></tr>"
+            "<tr><td>10/12/2024</td><td>100,00</td><td>DIVIDENDO</td><td>-</td><td>100</td></tr></table>")
+    s = proventos_acao_de_html(html)
+    assert s.loc["2025-04-29"] == pytest.approx(2.80) and s.loc["2024-12-10"] == pytest.approx(1.0)
+
+
+def test_analisar_ativo_confere_lacuna_no_fundamentus(monkeypatch):
+    import carteira_analise.fontes.fundamentus as fm
+    from carteira_analise.carteira import analisar_ativo
+    monkeypatch.setattr(fm, "buscar_fundamentos_acao", lambda t: None)
+    chamadas = []
+    monkeypatch.setattr(fm, "buscar_proventos_acao", lambda t: chamadas.append(t) or _divs([1, 1, 1, 1, 1]))
+
+    class Fonte:
+        def baixar_precos(self, ticker, periodo):
+            return PRECOS if periodo == "10y" else PRECOS[PRECOS.index >= "2025-11-01"]
+
+        def baixar_info(self, ticker):
+            return {}
+
+        def baixar_dividendos(self, ticker):
+            return _divs([13.0, 9.9, 8.6, 9.0, 0], extra={pd.Timestamp("2026-05-15"): 8.0})
+
+    r = analisar_ativo("CPFE3.SA", "acao", "1y", Fonte())
+    assert chamadas == ["CPFE3.SA"] and r.regularidade["lacunas"] == [2025] and r.regularidade["selo"] == "regular"
