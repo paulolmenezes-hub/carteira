@@ -25,6 +25,13 @@ Critérios (fixados ANTES de ver os resultados, para não ajustar ao passado):
       anteriores, com rendimentos estáveis;
   4c: caminho 2 E P/VP abaixo de 0,95 (o yield alto confirmado pelo desconto).
 
+- Etapa C — renda estável descontada a inflação (incluída em 04/11/2026,
+  critérios fixados antes de rodar), só para FIIs de papel: os caminhos 2,
+  4a e 4c ganham variantes "_real" que aceitam rendimentos estáveis OU
+  estáveis acima da inflação (ver ``renda_acima_da_inflacao``). Motivo:
+  em fundos de CRI atrelados ao IPCA, a queda do rendimento nominal quando
+  a inflação desacelera não é deterioração do fundo (caso KNIP11).
+
 Lacunas na fonte: o histórico de rendimentos de FIIs no Yahoo Finance tem
 meses sem registro. Só janelas de 12 meses com ao menos 10 pagamentos contam
 (no histórico dos critérios e nos 12 meses seguintes), e a média de 24 meses
@@ -79,13 +86,79 @@ def _vp_com_defasagem(valor_patrimonial: pd.Series | None, datas) -> pd.Series:
     return pd.Series(saida, index=datas)
 
 
+def _ipca_por_mes(ipca_mensal: pd.Series | None) -> pd.Series:
+    """IPCA do mês (fração, ex.: 0,0045) indexado por período mensal."""
+    if ipca_mensal is None or len(ipca_mensal) == 0:
+        return pd.Series(dtype=float)
+    s = _sem_fuso(ipca_mensal).dropna()
+    return s.groupby(s.index.to_period("M")).last()
+
+
+def ipca_acumulado(ipca: pd.Series, fim: pd.Period, meses: int) -> float:
+    """IPCA acumulado nos ``meses`` meses que terminam em ``fim`` (inclusive);
+    NaN se faltar algum mês."""
+    janela = [fim - k for k in range(meses)]
+    if not all(p in ipca.index for p in janela):
+        return np.nan
+    return float(np.prod([1 + ipca[p] for p in janela]) - 1)
+
+
+def renda_acima_da_inflacao(df: pd.DataFrame, vp: pd.Series, ipca_mensal: pd.Series | None,
+                            queda_maxima: float = QUEDA_MAXIMA_RENDIMENTOS):
+    """Etapa C (04/11/2026, regra fixada antes de rodar). Num FII de papel
+    atrelado ao IPCA, o rendimento nominal = juro real dos CRIs + correção
+    pela inflação: quando o IPCA desacelera, o rendimento cai sem que o
+    fundo piore. Por isso a estabilidade é medida também na RENDA ACIMA DA
+    INFLAÇÃO: rendimentos de 12 meses ÷ valor patrimonial (CVM) − IPCA de 12
+    meses, com 2 meses de defasagem (a correção dos CRIs usa o IPCA de
+    ~2 meses antes). Estável em termos reais: essa renda não caiu mais de 10%
+    sobre os 12 meses anteriores NEM nos últimos 3 meses (anualizados) —
+    a mesma régua da estabilidade nominal. Devolve (renda_real_12m, estavel_real)
+    como arrays (NaN quando falta IPCA, valor patrimonial ou histórico)."""
+    n = len(df)
+    ipca = _ipca_por_mes(ipca_mensal)
+    if ipca.empty or vp is None:
+        return np.full(n, np.nan), np.full(n, np.nan)
+    per = pd.to_datetime(df["data"]).dt.to_period("M").tolist()
+    vp_por_mes = dict(zip(per, np.asarray(vp, dtype=float)))
+
+    def vp_em(p):
+        v = vp_por_mes.get(p, np.nan)
+        return v if v and v > 0 else np.nan
+
+    renda12, estavel = [], []
+    for i, p in enumerate(per):
+        linha = df.iloc[i]
+        r12 = linha["div12"] / vp_em(p) - ipca_acumulado(ipca, p - 2, 12)
+        r12_ant = linha["div12_anterior"] / vp_em(p - 12) - ipca_acumulado(ipca, p - 14, 12)
+        i3 = ipca_acumulado(ipca, p - 2, 3)
+        r3 = linha["div3m_anualizado"] / vp_em(p) - ((1 + i3) ** 4 - 1)
+        r_ref = linha["div12_ate_3m_atras"] / vp_em(p - 3) - ipca_acumulado(ipca, p - 5, 12)
+        renda12.append(r12)
+        valores = (r12, r12_ant, r3, r_ref)
+        if any(pd.isna(v) for v in valores):
+            estavel.append(np.nan)
+            continue
+        ok = (r12_ant > 0 and r12 >= (1 - queda_maxima) * r12_ant
+              and r_ref > 0 and r3 >= (1 - queda_maxima) * r_ref)
+        estavel.append(1.0 if ok else 0.0)
+    return np.array(renda12, dtype=float), np.array(estavel, dtype=float)
+
+
 def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: pd.Series,
                           juro_real: pd.Series | None = None,
-                          valor_patrimonial: pd.Series | None = None) -> pd.DataFrame:
+                          valor_patrimonial: pd.Series | None = None,
+                          ipca_mensal: pd.Series | None = None, papel: bool = False,
+                          queda_maxima: float = QUEDA_MAXIMA_RENDIMENTOS) -> pd.DataFrame:
     """Uma linha por fim de mês avaliável de um FII: yield, média do próprio
     yield, prêmio sobre o Tesouro IPCA+, P/VP (se ``valor_patrimonial`` vier,
     da CVM, na mesma escala dos preços), critérios (caminhos 2, 3 e 4),
-    retorno dos 12 meses seguintes e CDI líquido do mesmo período."""
+    retorno dos 12 meses seguintes e CDI líquido do mesmo período.
+    Com ``papel=True`` e ``ipca_mensal`` (IPCA do mês, em fração), calcula
+    também a estabilidade da renda descontada a inflação e as variantes
+    "_real" dos caminhos 2, 4a e 4c (ver ``renda_acima_da_inflacao``).
+    ``queda_maxima``: queda tolerada para os rendimentos serem "estáveis"
+    (10% na regra fixada; 5% e 15% só na checagem de robustez)."""
     p = _sem_fuso(precos).dropna()
     d = _sem_fuso(dividendos)
     if len(p) < 60 or len(d) == 0:
@@ -145,8 +218,8 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
     df["yield_medio_24m"] = df["yield"].shift(1).rolling(MESES_MEDIA, min_periods=MESES_MEDIA).mean()
     df["premio_medio_24m"] = df["premio"].shift(1).rolling(MESES_MEDIA, min_periods=MESES_MEDIA).mean()
     df["estavel"] = ((df["div12_anterior"] > 0)
-                     & (df["div12"] >= (1 - QUEDA_MAXIMA_RENDIMENTOS) * df["div12_anterior"])
-                     & (df["div3m_anualizado"] >= (1 - QUEDA_MAXIMA_RENDIMENTOS) * df["div12_ate_3m_atras"]))
+                     & (df["div12"] >= (1 - queda_maxima) * df["div12_anterior"])
+                     & (df["div3m_anualizado"] >= (1 - queda_maxima) * df["div12_ate_3m_atras"]))
     sem_comparacao = df["div12_anterior"].isna() | df["yield"].isna() | df["div12_ate_3m_atras"].isna()
     # critérios como 1/0, e vazio (NaN) enquanto não há 24 meses de histórico para a média
     crit_y = (df["yield"] >= (1 + DESCONTO_MINIMO_YIELD) * df["yield_medio_24m"]) & df["estavel"]
@@ -165,6 +238,17 @@ def avaliar_fii_mes_a_mes(precos: pd.Series, dividendos: pd.Series, indice_cdi: 
     df["criterio_pvp"] = np.where(sem_pvp, np.nan, crit_4a.astype(float))
     df["criterio_pvp_historico"] = np.where(sem_pvp | df["pvp_medio_24m"].isna(), np.nan, crit_4b.astype(float))
     df["criterio_yield_pvp"] = np.where(sem_pvp | df["yield_medio_24m"].isna(), np.nan, crit_4c.astype(float))
+
+    # Etapa C: estabilidade descontada a inflação (só FIIs de papel atrelados a índice)
+    df["renda_real_12m"], df["estavel_real"] = renda_acima_da_inflacao(df, vp, ipca_mensal, queda_maxima) if papel else (np.nan, np.nan)
+    ampliado = df["estavel"] | (df["estavel_real"] == 1.0)
+    crit_y_r = (df["yield"] >= (1 + DESCONTO_MINIMO_YIELD) * df["yield_medio_24m"]) & ampliado
+    crit_4a_r = (df["pvp"] < PVP_DESCONTO) & ampliado
+    crit_4c_r = crit_y_r & (df["pvp"] < PVP_DESCONTO)
+    df["estavel_ampliado"] = ampliado
+    df["criterio_yield_real"] = np.where(df["yield_medio_24m"].isna() | sem_comparacao, np.nan, crit_y_r.astype(float))
+    df["criterio_pvp_real"] = np.where(sem_pvp, np.nan, crit_4a_r.astype(float))
+    df["criterio_yield_pvp_real"] = np.where(sem_pvp | df["yield_medio_24m"].isna(), np.nan, crit_4c_r.astype(float))
 
     # resultado: retorno total em 12 meses x CDI líquido do mesmo período
     ultimo = p.index[-1]
