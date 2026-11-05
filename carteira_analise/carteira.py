@@ -86,6 +86,24 @@ class AnaliseAtivo:
         self.leitura_combinada_texto = leitura_combinada(self.pontos_timing, self.pontos_renda)
 
 
+def _medias_b3(ticker: str, fonte) -> pd.Series | None:
+    """Médias mensais da base B3 (dados/cotacoes_b3_mensais.csv.gz), na escala
+    do Yahoo; None sem a base ou sem o papel."""
+    try:
+        from .fontes.b3_cotahist import carregar_base, medias_mensais
+        base = carregar_base()
+        if base is None:
+            return None
+        try:
+            eventos = fonte.baixar_eventos(ticker)
+        except Exception:
+            eventos = None
+        medias = medias_mensais(base, ticker, eventos)
+        return medias if len(medias) else None
+    except Exception:
+        return None
+
+
 def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
                    cdi_liquido_aa: float | None = None) -> AnaliseAtivo | None:
     """Executa a análise completa de um único ativo. Retorna ``None`` se
@@ -166,14 +184,16 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
         # 5 anos civis fechados pedem ~6 anos de preços: busca 10 anos só para isso
         try:
             precos_10a = fonte.baixar_precos(ticker, "10y")
-            regularidade = regularidade_dividendos(dividendos, precos_10a, data_ref=tec.historico.index[-1])
+            medias_b3 = _medias_b3(ticker, fonte)  # anos que o Yahoo não cobre: médias mensais da B3
+            regularidade = regularidade_dividendos(dividendos, precos_10a, data_ref=tec.historico.index[-1],
+                                                   medias_mensais=medias_b3)
             if precisa_conferir(regularidade):
                 # ano sem nenhum provento no Yahoo: confere no Fundamentus se é lacuna da fonte
                 from .fontes.fundamentus import buscar_proventos_acao
                 conferencia = buscar_proventos_acao(ticker)
                 if conferencia is not None and len(conferencia):
                     regularidade = regularidade_dividendos(dividendos, precos_10a, data_ref=tec.historico.index[-1],
-                                                           conferencia=conferencia)
+                                                           conferencia=conferencia, medias_mensais=medias_b3)
                     if regularidade is not None:
                         regularidade["conferencia"] = "ok"
                 elif regularidade is not None:

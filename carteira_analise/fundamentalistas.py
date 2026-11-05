@@ -199,8 +199,8 @@ FATOR_ANO_EXTRAORDINARIO = 2  # ano "fora da curva": mais que o dobro da mediana
 
 
 def _sem_fuso_serie(serie: pd.Series | None) -> pd.Series:
-    if serie is None:
-        return pd.Series(dtype=float)
+    if serie is None or len(serie) == 0:
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     serie = serie.dropna()
     if getattr(serie.index, "tz", None) is not None:
         serie = serie.copy()
@@ -208,23 +208,34 @@ def _sem_fuso_serie(serie: pd.Series | None) -> pd.Series:
     return serie.sort_index()
 
 
-def dy_por_ano(dividendos: pd.Series | None, precos: pd.Series | None, anos) -> dict[int, float | None]:
+def dy_por_ano(dividendos: pd.Series | None, precos: pd.Series | None, anos,
+               medias_mensais: pd.Series | None = None, anos_b3: list | None = None) -> dict[int, float | None]:
     """Dividend yield de cada ano civil: proventos com data no ano ÷ preço
     médio de fechamento do ano (menos sensível que o preço de 31/12 a um
-    pregão atípico). None se o ano não tiver preços suficientes."""
+    pregão atípico). Sem pregões suficientes do Yahoo no ano, usa a média
+    das médias mensais da B3 (``medias_mensais``, base COTAHIST), se houver
+    ao menos 10 meses — e anota o ano em ``anos_b3``. None se nem assim."""
     d, p = _sem_fuso_serie(dividendos), _sem_fuso_serie(precos)
+    m = _sem_fuso_serie(medias_mensais)
     saida: dict[int, float | None] = {}
     for ano in anos:
         precos_ano = p[p.index.year == ano]
-        if len(precos_ano) < 150 or precos_ano.mean() <= 0:  # ~150 de ~248 pregões: ano coberto
+        if len(precos_ano) >= 150 and precos_ano.mean() > 0:  # ~150 de ~248 pregões: ano coberto
+            preco_medio = float(precos_ano.mean())
+        elif len(m[m.index.year == ano]) >= 10 and m[m.index.year == ano].mean() > 0:
+            preco_medio = float(m[m.index.year == ano].mean())
+            if anos_b3 is not None:
+                anos_b3.append(ano)
+        else:
             saida[ano] = None
             continue
-        saida[ano] = float(d[d.index.year == ano].sum()) / float(precos_ano.mean())
+        saida[ano] = float(d[d.index.year == ano].sum()) / preco_medio
     return saida
 
 
 def regularidade_dividendos(dividendos: pd.Series | None, precos: pd.Series | None,
-                            data_ref=None, conferencia: pd.Series | None = None) -> dict | None:
+                            data_ref=None, conferencia: pd.Series | None = None,
+                            medias_mensais: pd.Series | None = None) -> dict | None:
     """Os dividendos de uma ação são regulares? Olha o DY de cada um dos 5
     anos civis FECHADOS antes de ``data_ref`` (o ano em curso, incompleto,
     sempre pareceria fraco: aparece à parte, "até agora").
@@ -257,7 +268,8 @@ def regularidade_dividendos(dividendos: pd.Series | None, precos: pd.Series | No
     conf = _sem_fuso_serie(conferencia)
     ref = pd.Timestamp(data_ref) if data_ref is not None else p.index[-1]
     anos = list(range(ref.year - ANOS_REGULARIDADE, ref.year))
-    dys = dy_por_ano(d, p, anos)
+    anos_b3: list = []
+    dys = dy_por_ano(d, p, anos, medias_mensais=medias_mensais, anos_b3=anos_b3)
     if any(v is None for v in dys.values()):
         return None
     lacunas = [a for a in anos if dys[a] == 0 and not conf.empty and float(conf[conf.index.year == a].sum()) > 0]
@@ -288,7 +300,7 @@ def regularidade_dividendos(dividendos: pd.Series | None, precos: pd.Series | No
                         and float(conf[(conf.index.year == ref.year) & (conf.index <= ref)].sum()) > 0)
         corrente = {"ano": ref.year, "dy": dy_parcial, "ate": ref, "sem_registro": sem_registro}
     return {"anos": [{"ano": a, "dy": None if a in lacunas else dys[a], "sem_registro": a in lacunas} for a in anos],
-            "pagou": pagou, "n_anos": len(com_dado), "lacunas": lacunas,
+            "pagou": pagou, "n_anos": len(com_dado), "lacunas": lacunas, "anos_b3": anos_b3,
             "pior": pior, "ano_pior": pior_ano, "mediana": mediana, "media": float(serie.mean()),
             "extraordinarios": extraordinarios, "selo": selo, "ano_corrente": corrente}
 
