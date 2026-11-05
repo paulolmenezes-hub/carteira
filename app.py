@@ -1653,7 +1653,9 @@ with tab_ativo:
         chute_individual = _heuristica_tipo(ticker_individual.strip().upper()) if ticker_individual.strip() else "acao"
         tipo_individual = st.selectbox(
             "Tipo", options=OPCOES_TIPO, index=OPCOES_TIPO.index(chute_individual),
-            format_func=lambda t: NOMES_TIPO[t], key="tipo_individual",
+            # a chave muda com o palpite: ao trocar de ticker (ex.: de uma ação para MXRF11), o seletor
+            # volta ao tipo sugerido, em vez de manter o tipo escolhido para o ticker anterior
+            format_func=lambda t: NOMES_TIPO[t], key=f"tipo_individual_{chute_individual}",
         )
 
     periodo_individual = st.selectbox(
