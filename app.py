@@ -41,7 +41,7 @@ from carteira_analise.fontes.fundamentus import buscar_proventos_fii
 from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
                                                   conferir_fontes)
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
-from carteira_analise.fundamentalistas import texto_regularidade
+from carteira_analise.fundamentalistas import classificar_fii, texto_regularidade
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
@@ -427,6 +427,7 @@ def _renderizar_detalhe(d: str) -> str:
     """Colore o indicador (verde/vermelho) de acordo com o sinal do
     detalhe, mesma convenção da tabela de análise (🟢/🔴) — os detalhes
     sempre começam com '+1' ou '-1' (ver pontuacao.py)."""
+    d = re.sub(r"(?<=\d)\.(?=\d)", ",", d)  # 47.4 -> 47,4 (os textos do motor usam ponto)
     if d.startswith("+1"):
         return f"🟢 {d[3:].strip()}"
     if d.startswith("-1"):
@@ -893,6 +894,21 @@ _EVIDENCIA_PRECO = {
 }
 
 
+# FIIs de papel (CRI): no teste restrito a eles (Seção 13 do notebook, 04/11/2026; 10 FIIs com casos), só o
+# desconto no P/VP (caminho 4a) teve vantagem com margem estatística; o yield alto sozinho, não.
+_SELO_PAPEL_YIELD = ("Yield alto · sem vantagem comprovada", "background:#dbeafe;color:#1e40af")
+_EVIDENCIA_PAPEL = {
+    "forte": ("nos FIIs de papel, yield alto e desconto juntos superaram o CDI em 75% das vezes, contra 46%, mas em só "
+              "32 casos: sem margem estatística."),
+    "sim": ("nos FIIs de papel, o yield alto sozinho não mostrou vantagem confiável (superou o CDI em 56% das vezes, "
+            "contra 46%; pode ser acaso)."),
+    "desconto": ("nos FIIs de papel, é o critério com vantagem comprovada: P/VP abaixo de 0,95 com renda estável superou "
+                 "o CDI em 57% das vezes, contra 43%."),
+    "nao": ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP (57% contra 43%), que hoje não "
+            "está presente."),
+}
+
+
 def _html_preco_atrativo(ctx: dict) -> str:
     """Bloco "O preço está atrativo?" dos FIIs: selo em quatro níveis (yield
     alto e com desconto, yield alto, com desconto, não), três caixinhas com o
@@ -911,7 +927,8 @@ def _html_preco_atrativo(ctx: dict) -> str:
                 "<div style='font-size:.86em;margin-top:4px'>Sem histórico de rendimentos suficiente para avaliar "
                 "(são precisos 3 anos de pagamentos, sem lacunas).</div>" + nota_fonte + "</div>")
     nivel = pa.get("nivel") or ("sim" if pa.get("atende") else "nao")
-    etiqueta, estilo = _SELO_PRECO[nivel]
+    papel = ctx.get("classe_fii") == "papel"
+    etiqueta, estilo = _SELO_PAPEL_YIELD if (papel and nivel == "sim") else _SELO_PRECO[nivel]
     y, m, lim = _pct_br(pa["yield"], 1), _pct_br(pa["yield_medio_24m"], 1), _pct_br(pa["limiar"], 1)
     pvp, pvp_m, estavel = pa.get("pvp"), pa.get("pvp_medio_24m"), pa.get("estavel")
 
@@ -936,8 +953,14 @@ def _html_preco_atrativo(ctx: dict) -> str:
                       None if estavel is None else bool(estavel)) + "</div>")
     if nivel == "forte":
         texto = "O fundo rende mais que o normal dele e a cota está abaixo do patrimônio."
+    elif nivel == "sim" and papel:
+        texto = ("O fundo rende mais que o normal dele, mas, nos FIIs de papel, o yield alto sozinho não mostrou "
+                 "vantagem no teste; o sinal que funcionou neles é o desconto no P/VP.")
     elif nivel == "sim":
         texto = "O fundo rende mais que o normal dele, embora a cota não esteja com desconto."
+    elif nivel == "desconto" and papel:
+        texto = ("A cota está abaixo do patrimônio" + (" e do próprio histórico" if pvp_m and pvp <= 0.9 * pvp_m else "")
+                 + ", com renda estável. Nos FIIs de papel, esse foi o sinal que mostrou vantagem no teste.")
     elif nivel == "desconto":
         texto = ("A cota está abaixo do patrimônio" + (" e do próprio histórico" if pvp_m and pvp <= 0.9 * pvp_m else "")
                  + f", mas o yield ainda está no nível normal do fundo (precisaria render {lim} para estar alto).")
@@ -954,7 +977,7 @@ def _html_preco_atrativo(ctx: dict) -> str:
             f"<span style='font-size:.78em;font-weight:700;padding:3px 10px;border-radius:999px;{estilo}'>{etiqueta}</span></div>"
             f"{caixas}<div style='font-size:.86em;line-height:1.45;margin-top:8px'>{texto}</div>"
             f"<div style='font-size:.76em;color:#4b5563;margin-top:6px;line-height:1.4'><b>Evidência:</b> "
-            f"{_EVIDENCIA_PRECO[nivel]}</div>{nota_fonte}</div>")
+            f"{(_EVIDENCIA_PAPEL if papel else _EVIDENCIA_PRECO)[nivel]}</div>{nota_fonte}</div>")
 
 
 _SELO_REGULARIDADE = {
@@ -1164,6 +1187,8 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual(), valor_patrimonial=vp)
     if ctx is not None:
         ctx["regularidade"] = getattr(resultado, "regularidade", None)
+        if getattr(resultado, "tipo", None) == "fii":
+            ctx["classe_fii"] = classificar_fii(getattr(resultado, "fund", None) or {})
     if ctx is not None and conf is not None:
         ctx["conferencia_rendimentos"] = {"texto": conf["texto"], "selo": conf["selo"],
                                           "observacoes": conf.get("observacoes", [])}
