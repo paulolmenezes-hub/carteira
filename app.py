@@ -909,6 +909,18 @@ _EVIDENCIA_PAPEL = {
 }
 
 
+def _evidencia_preco(nivel: str, papel: bool, pa: dict) -> str:
+    """Evidência do teste para o nível do card. No FII de papel em "Não, no
+    momento", diz o que falta: o desconto (se não há) ou a renda estável (se
+    há desconto, mas os rendimentos caíram — casos KNIP11, KNSC11, RECR11)."""
+    if not papel:
+        return _EVIDENCIA_PRECO[nivel]
+    if nivel == "nao" and pa.get("desconto") and pa.get("estavel") is False:
+        return ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP com renda estável (superou o "
+                "CDI em 57% das vezes, contra 43%); aqui o desconto existe, mas os rendimentos caíram.")
+    return _EVIDENCIA_PAPEL[nivel]
+
+
 def _html_preco_atrativo(ctx: dict) -> str:
     """Bloco "O preço está atrativo?" dos FIIs: selo em quatro níveis (yield
     alto e com desconto, yield alto, com desconto, não), três caixinhas com o
@@ -977,7 +989,7 @@ def _html_preco_atrativo(ctx: dict) -> str:
             f"<span style='font-size:.78em;font-weight:700;padding:3px 10px;border-radius:999px;{estilo}'>{etiqueta}</span></div>"
             f"{caixas}<div style='font-size:.86em;line-height:1.45;margin-top:8px'>{texto}</div>"
             f"<div style='font-size:.76em;color:#4b5563;margin-top:6px;line-height:1.4'><b>Evidência:</b> "
-            f"{(_EVIDENCIA_PAPEL if papel else _EVIDENCIA_PRECO)[nivel]}</div>{nota_fonte}</div>")
+            f"{_evidencia_preco(nivel, papel, pa)}</div>{nota_fonte}</div>")
 
 
 _SELO_REGULARIDADE = {
