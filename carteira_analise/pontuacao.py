@@ -17,12 +17,12 @@ TipoAtivo = str  # "acao" | "fii"
 # Dividend yield "atrativo" (revisão de 04/11/2026). No mercado brasileiro, a
 # régua acompanha os juros: um yield de 6% é muito com a Selic a 2% e pouco
 # com a Selic a 15%. O limite é uma fração do CDI dos últimos 12 meses,
-# líquido de IR (proventos são isentos); as frações foram calibradas para dar
-# os limites fixos antigos (6% ações, 8% FIIs, 4% ETFs B3) com o CDI de
-# nov/2026, ~12,3% líquido — hoje o motor se comporta como antes, mas se
-# ajusta quando os juros mudarem. O piso evita uma régua irrisória com juros
+# líquido de IR (proventos são isentos): 80% dele para ações, FIIs e ETFs da
+# B3 (decisão de 05/11/2026 — as frações que reproduziam os limites fixos
+# antigos, 50%, 65% e 33%, foram consideradas baixas: um yield "atrativo"
+# deve chegar perto do que o mesmo dinheiro renderia no CDI). O piso evita uma régua irrisória com juros
 # muito baixos. Nos EUA (sem CDI), os limites continuam fixos.
-FATOR_DY_CDI = {"acao": 0.50, "fii": 0.65, "etf_br": 0.33}
+FATOR_DY_CDI = {"acao": 0.80, "fii": 0.80, "etf_br": 0.80}
 PISO_DY = {"acao": 0.03, "fii": 0.04, "etf_br": 0.02}
 LIMITE_DY_FIXO = {"acao": 0.06, "fii": 0.08, "etf_br": 0.04, "acao_us": 0.02, "etf_us": 0.015}
 
@@ -36,11 +36,12 @@ def limite_dy(tipo: TipoAtivo, cdi_liquido_aa: float | None = None) -> float:
 
 
 def _texto_limite(tipo: TipoAtivo, cdi_liquido_aa: float | None) -> str:
-    lim = limite_dy(tipo, cdi_liquido_aa)
+    """Explica o mínimo usado no "+1 yield atrativo", em linguagem simples."""
+    lim = f"{limite_dy(tipo, cdi_liquido_aa) * 100:.1f}%".replace(".", ",")
     if cdi_liquido_aa and tipo in FATOR_DY_CDI:
-        return (f"régua {lim * 100:.1f}% = {FATOR_DY_CDI[tipo] * 100:.0f}% do CDI líquido de "
-                f"{cdi_liquido_aa * 100:.1f}%").replace(".", ",")
-    return f"régua {lim * 100:.1f}%".replace(".", ",")
+        cdi = f"{cdi_liquido_aa * 100:.1f}%".replace(".", ",")
+        return f"mínimo de {lim}, que acompanha os juros: {FATOR_DY_CDI[tipo] * 100:.0f}% do CDI líquido de {cdi}"
+    return f"mínimo de {lim}"
 
 
 @dataclass
@@ -436,7 +437,7 @@ def avaliar_renda(
                             f"{_texto_limite(tipo, cdi_liquido_aa)})")
         elif dy < limite / 2:
             pontos -= 1
-            detalhes.append(f"-1 yield efetivo dos últimos 12m baixo ({dy * 100:.1f}%; menos da metade da "
+            detalhes.append(f"-1 yield efetivo dos últimos 12m baixo ({dy * 100:.1f}%; menos da metade do "
                             f"{_texto_limite(tipo, cdi_liquido_aa)})")
 
     if div.crescimento_yoy is not None:
