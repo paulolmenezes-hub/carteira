@@ -1019,6 +1019,13 @@ def _html_regularidade(reg: dict | None) -> str:
     if corrente and corrente.get("sem_registro"):
         nota_corrente = (f" Em {corrente['ano']}, o Yahoo ainda não registra proventos, mas o Fundamentus registra "
                          "pagamento.")
+    elif corrente and corrente["dy"] == 0:
+        # nenhuma data-com no ano (caso KLBN11 em 2026: o dividendo pago em novembro tem data-com em
+        # dezembro do ano anterior e conta naquele ano)
+        nota_corrente = (f" Em {corrente['ano']}, nenhuma data-com até agora"
+                         + (" (o Fundamentus também não registra)" if reg.get("conferencia") == "ok" else "")
+                         + ". O DY de cada ano conta pela data-com: proventos declarados no fim de um ano e pagos "
+                         "no ano seguinte entram no ano da declaração.")
     elif corrente:
         nota_corrente = f" Em {corrente['ano']}, até agora: {_pct_br(corrente['dy'], 1)} (ano incompleto, fora da conta)."
     else:
@@ -1056,8 +1063,14 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
                   f"<div style='display:flex;flex-direction:column;line-height:1.25'><span style='font-size:.74em;"
                   f"color:#4b5563'>{html.escape(ind['nome'])}</span><span style='font-size:.86em;font-weight:600'>"
                   f"{html.escape(ind['valor'])} · {html.escape(ind['leitura'])}</span></div></div>")
-    detalhes = "".join(f"<li>{html.escape(_renderizar_detalhe(d))}</li>"
-                       for d in ctx.get("detalhes_timing", []) + ctx.get("detalhes_renda", []))
+    def _lista(titulo, itens):
+        if not itens:
+            return ""
+        return (f"<li style='list-style:none;margin:6px 0 2px -18px;font-weight:700;color:#374151'>{titulo}</li>"
+                + "".join(f"<li>{html.escape(_renderizar_detalhe(d))}</li>" for d in itens))
+    # duas partes: os mesmos dados (ex.: o yield) podem pontuar nas duas, cada uma com o seu propósito
+    detalhes = (_lista("Sinal do momento (preço, tendência e fundamentos)", ctx.get("detalhes_timing", []))
+                + _lista("Qualidade da renda (proventos pagos)", ctx.get("detalhes_renda", [])))
     if tipo == "fii" and ctx.get("leitura") and detalhes:
         # nos FIIs, a resposta é o "O preço está atrativo?" (com evidência); a leitura do
         # motor de pontuação, sem vantagem no backtest, fica só dentro da pontuação completa
