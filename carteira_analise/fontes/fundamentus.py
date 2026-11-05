@@ -386,7 +386,10 @@ def proventos_acao_de_html(html: str) -> pd.Series:
     tabelas da página, a que tem as colunas de data e de valor (o cabeçalho
     traz setas de ordenação, ex.: "Data ▼▲")."""
     # thousands=None: "2,7540" e "1.234,56" chegam como texto e são convertidos por _parse_numero_br
-    tabelas = pd.read_html(io.StringIO(html), thousands=None)
+    try:
+        tabelas = pd.read_html(io.StringIO(html), thousands=None, flavor="lxml")
+    except ValueError:  # "No tables found": papel sem página de proventos de ação (ex.: um FII)
+        raise ValueError("a página não tem tabela de proventos (o ativo é mesmo uma ação?)")
     n_tabelas = len(tabelas)
     for df in tabelas:
         if isinstance(df.columns, pd.MultiIndex):
