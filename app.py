@@ -941,8 +941,9 @@ def _html_preco_atrativo(ctx: dict) -> str:
     if not pa:
         return ("<div style='border-top:1px solid #e5e7eb;padding-top:10px'>"
                 "<div style='font-weight:700;color:#0f5f56'>O preço está atrativo?</div>"
-                "<div style='font-size:.86em;margin-top:4px'>Sem histórico de rendimentos suficiente para avaliar "
-                "(são precisos 3 anos de pagamentos, sem lacunas).</div>" + nota_fonte + "</div>")
+                "<div style='font-size:.86em;margin-top:4px'>Sem histórico suficiente para avaliar. "
+                + html.escape(ctx.get("preco_atrativo_motivo") or "São precisos 3 anos de pagamentos, sem lacunas.")
+                + "</div>" + nota_fonte + "</div>")
     if ctx.get("motivo_classe"):
         nota_fonte += f"<div style='font-size:.72em;color:#6b7280'>ℹ️ {html.escape(ctx['motivo_classe'])}</div>"
     nivel = pa.get("nivel") or ("sim" if pa.get("atende") else "nao")
@@ -1176,7 +1177,7 @@ def _base_cvm_recente():
 
 
 def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
-    """Contexto do card de um ativo. Para FIIs, o preço atrativo usa 5 anos de
+    """Contexto do card de um ativo. Para FIIs, o preço atrativo usa 10 anos de
     preços e os rendimentos conferidos entre Fundamentus, CVM e Yahoo
     (``conferir_fontes``): a primeira fonte que responde é usada, as outras
     conferem, e desdobramentos não ajustados são corrigidos pelos eventos
@@ -1186,7 +1187,7 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     precos = divs = conf = None
     if getattr(resultado, "tipo", None) == "fii":
         try:
-            precos = fonte_dados.baixar_precos(ticker, "5y")
+            precos = fonte_dados.baixar_precos(ticker, "10y")  # 10 anos, como o notebook (caso AFHI11)
         except Exception:
             precos = None
         base = _base_cvm_recente()
