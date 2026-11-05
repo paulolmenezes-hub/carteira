@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import math
 
 import pandas as pd
@@ -113,7 +115,7 @@ def test_classificar_fii_pelo_segmento(fund, esperado):
     ({"segmento": "Multicategoria", "qtd_imoveis": 8, "imoveis_pl": 0.35}, "hibrido"),
     ({"segmento": "Outros", "qtd_imoveis": 12, "imoveis_pl": 0.92}, "tijolo"),
     ({"segmento": "Multicategoria", "qtd_imoveis": 3}, "tijolo"),                       # sem Imóveis/PL
-    ({"segmento": "Logística", "imoveis_pl": 0.05}, "tijolo"),                          # segmento claro manda
+    ({"segmento": "Logística", "imoveis_pl": 0.05}, "papel"),   # desde 05/11/2026: Imóveis/PL confere o segmento
 ])
 def test_segmento_generico_usa_imoveis_sobre_pl(fund, esperado):
     from carteira_analise.fundamentalistas import classificar_fii
@@ -127,3 +129,19 @@ def test_imoveis_pl_da_pagina_de_detalhes():
             '<tr><td><span class="txt">Preço do m2</span></td><td><span class="txt">5.109</span></td></tr>')
     assert imoveis_pl_de_html(html) == _pytest.approx(0.032)
     assert imoveis_pl_de_html("<p>sem o campo</p>") is None
+
+
+
+@pytest.mark.parametrize("fund, esperado", [
+    ({"segmento": "Logística", "qtd_imoveis": 3, "imoveis_pl": 0.05}, "papel"),   # MXRF11: cadastro x carteira
+    ({"segmento": "Logística", "qtd_imoveis": 3, "imoveis_pl": 0.35}, "hibrido"),
+    ({"segmento": "Logística", "qtd_imoveis": 12, "imoveis_pl": 0.92}, "tijolo"),
+    ({"segmento": "Logística", "qtd_imoveis": 12}, "tijolo"),                    # sem Imóveis/PL: vale o segmento
+])
+def test_segmento_de_tijolo_conferido_pelo_imoveis_pl(fund, esperado):
+    from carteira_analise.fundamentalistas import classificar_fii, motivo_classificacao
+    assert classificar_fii(fund) == esperado
+    motivo = motivo_classificacao(fund)
+    assert (motivo is None) == (esperado == "tijolo")
+    if motivo:
+        assert "Logística" in motivo and "Imóveis/PL" in motivo
