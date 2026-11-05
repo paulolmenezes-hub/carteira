@@ -41,7 +41,7 @@ from carteira_analise.fontes.fundamentus import buscar_proventos_fii
 from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
                                                   conferir_fontes)
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
-from carteira_analise.fundamentalistas import classificar_fii, texto_regularidade
+from carteira_analise.fundamentalistas import classificar_fii, motivo_classificacao, texto_regularidade
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
@@ -894,17 +894,18 @@ _EVIDENCIA_PRECO = {
 }
 
 
-# FIIs de papel (CRI): no teste restrito a eles (Seção 13 do notebook, 04/11/2026; 10 FIIs com casos), só o
-# desconto no P/VP (caminho 4a) teve vantagem com margem estatística; o yield alto sozinho, não.
+# FIIs de papel (CRI): no teste restrito a eles (Seção 13 do notebook, rodada de 05/11/2026; 11 FIIs com casos),
+# os critérios de P/VP tiveram vantagem com margem estatística (4a: +21 p.p.; 4c: +35 p.p.); o yield alto
+# sozinho (caminho 2), não (+15 p.p., IC de −1 a +31).
 _SELO_PAPEL_YIELD = ("Yield alto · sem vantagem comprovada", "background:#dbeafe;color:#1e40af")
 _EVIDENCIA_PAPEL = {
-    "forte": ("nos FIIs de papel, yield alto e desconto juntos superaram o CDI em 75% das vezes, contra 46%, mas em só "
-              "32 casos: sem margem estatística."),
-    "sim": ("nos FIIs de papel, o yield alto sozinho não mostrou vantagem confiável (superou o CDI em 56% das vezes, "
-            "contra 46%; pode ser acaso)."),
+    "forte": ("nos FIIs de papel, yield alto e desconto juntos superaram o CDI em 83% das vezes, contra 47%, com "
+              "margem estatística (46 casos)."),
+    "sim": ("nos FIIs de papel, o yield alto sozinho não mostrou vantagem confiável (superou o CDI em 62% das vezes, "
+            "contra 47%; pode ser acaso)."),
     "desconto": ("nos FIIs de papel, é o critério com vantagem comprovada: P/VP abaixo de 0,95 com renda estável superou "
-                 "o CDI em 57% das vezes, contra 43%."),
-    "nao": ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP (57% contra 43%), que hoje não "
+                 "o CDI em 67% das vezes, contra 46%."),
+    "nao": ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP (67% contra 46%), que hoje não "
             "está presente."),
 }
 
@@ -917,7 +918,7 @@ def _evidencia_preco(nivel: str, papel: bool, pa: dict) -> str:
         return _EVIDENCIA_PRECO[nivel]
     if nivel == "nao" and pa.get("desconto") and pa.get("estavel") is False:
         return ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP com renda estável (superou o "
-                "CDI em 57% das vezes, contra 43%); aqui o desconto existe, mas os rendimentos caíram.")
+                "CDI em 67% das vezes, contra 46%); aqui o desconto existe, mas os rendimentos caíram.")
     return _EVIDENCIA_PAPEL[nivel]
 
 
@@ -938,6 +939,8 @@ def _html_preco_atrativo(ctx: dict) -> str:
                 "<div style='font-weight:700;color:#0f5f56'>O preço está atrativo?</div>"
                 "<div style='font-size:.86em;margin-top:4px'>Sem histórico de rendimentos suficiente para avaliar "
                 "(são precisos 3 anos de pagamentos, sem lacunas).</div>" + nota_fonte + "</div>")
+    if ctx.get("motivo_classe"):
+        nota_fonte += f"<div style='font-size:.72em;color:#6b7280'>ℹ️ {html.escape(ctx['motivo_classe'])}</div>"
     nivel = pa.get("nivel") or ("sim" if pa.get("atende") else "nao")
     papel = ctx.get("classe_fii") == "papel"
     etiqueta, estilo = _SELO_PAPEL_YIELD if (papel and nivel == "sim") else _SELO_PRECO[nivel]
@@ -1201,6 +1204,7 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
         ctx["regularidade"] = getattr(resultado, "regularidade", None)
         if getattr(resultado, "tipo", None) == "fii":
             ctx["classe_fii"] = classificar_fii(getattr(resultado, "fund", None) or {})
+            ctx["motivo_classe"] = motivo_classificacao(getattr(resultado, "fund", None) or {})
     if ctx is not None and conf is not None:
         ctx["conferencia_rendimentos"] = {"texto": conf["texto"], "selo": conf["selo"],
                                           "observacoes": conf.get("observacoes", [])}
