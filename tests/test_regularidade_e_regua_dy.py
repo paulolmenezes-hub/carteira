@@ -63,9 +63,10 @@ def test_fuso_horario_nos_proventos_do_yahoo():
 
 def test_limite_dy_acompanha_o_cdi_com_piso():
     assert limite_dy("acao") == 0.06 and limite_dy("fii") == 0.08  # sem CDI: limites fixos de antes
-    assert limite_dy("acao", 0.123) == pytest.approx(0.0615)        # calibrado: ~6% com o CDI de nov/2026
-    assert limite_dy("fii", 0.123) == pytest.approx(0.080, abs=0.001)
+    assert limite_dy("acao", 0.123) == pytest.approx(0.0984)        # 80% do CDI líquido (05/11/2026)
+    assert limite_dy("fii", 0.123) == pytest.approx(0.0984)                # FIIs: 80% do CDI líquido (05/11/2026)
     assert limite_dy("acao", 0.02) == 0.03                          # piso com juros muito baixos
+    assert limite_dy("etf_br", 0.123) == pytest.approx(0.0984)
     assert limite_dy("acao_us", 0.12) == 0.02                       # EUA: fixo
 
 
@@ -73,10 +74,10 @@ def test_pontuar_acao_texto_da_regua():
     from carteira_analise.tecnicos import calcular_indicadores_tecnicos
     tec = calcular_indicadores_tecnicos(pd.Series(range(100, 400), index=pd.bdate_range("2024-01-01", periods=300),
                                                   dtype=float))
-    div = HistoricoDividendos(soma_12m=1.0, soma_anterior_12m=1.0, dy_12m_real=0.07, crescimento_yoy=None, n_pagamentos_12m=2)
+    div = HistoricoDividendos(soma_12m=1.0, soma_anterior_12m=1.0, dy_12m_real=0.10, crescimento_yoy=None, n_pagamentos_12m=2)
     det = pontuar_acao(tec, {}, div, cdi_liquido_aa=0.12).detalhes
-    assert any("yield efetivo" in d and "50% do CDI líquido" in d for d in det)
-    det_alto = pontuar_acao(tec, {}, div, cdi_liquido_aa=0.16).detalhes  # régua 8%: 7% não pontua
+    assert any("yield efetivo" in d and "mínimo de 9,6%" in d and "80% do CDI líquido" in d for d in det)
+    det_alto = pontuar_acao(tec, {}, div, cdi_liquido_aa=0.14).detalhes  # mínimo 11,2%: 10% não pontua
     assert not any("yield efetivo" in d for d in det_alto)
 
 
