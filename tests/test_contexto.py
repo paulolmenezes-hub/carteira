@@ -307,3 +307,17 @@ def test_fii_de_recebiveis_com_imovel_nao_mostra_vacancia():
     hib = indicadores_contexto("fii", _tec(), {"segmento": "Híbrido", "qtd_imoveis": 4, "vacancia_media": 0.02},
                                _div())
     assert hib[-1]["nome"] == "Vacância (híbrido)"
+
+
+def test_motivo_sem_historico_aponta_a_causa():
+    import pandas as pd
+    from carteira_analise.contexto import motivo_sem_historico
+    p = pd.Series(100.0, index=pd.bdate_range("2023-06-01", "2026-11-03"))
+    d = pd.Series(1.0, index=pd.date_range("2024-06-01", "2026-10-01", freq="MS") + pd.Timedelta(days=14))
+    assert "começa em 06/2024" in motivo_sem_historico(p, d)        # rendimentos há menos de 3 anos
+    longo = pd.Series(100.0, index=pd.bdate_range("2020-01-01", "2026-11-03"))
+    d2 = pd.Series(1.0, index=pd.date_range("2020-01-15", "2026-10-15", freq="MS") + pd.Timedelta(days=14))
+    d2 = d2[~d2.index.to_period("M").isin([pd.Period("2024-03"), pd.Period("2024-05")])]
+    m = motivo_sem_historico(longo, d2)
+    assert "Faltam rendimentos em 2 dos últimos 36 meses (03/2024, 05/2024)" in m
+    assert motivo_sem_historico(longo, pd.Series(dtype=float)).startswith("Sem rendimentos")
