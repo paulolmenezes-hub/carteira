@@ -134,7 +134,12 @@ def classificar_fii(fund: dict | None) -> str | None:
     a participação dos imóveis no patrimônio (``imoveis_pl``: abaixo de 20%,
     papel; de 20% a 50%, híbrido; acima, tijolo) — o RECR11 aparece no
     Fundamentus como "Multicategoria", com 1 imóvel que é 3,2% do patrimônio.
-    Sem esse dado, vale a quantidade de imóveis."""
+    Sem esse dado, vale a quantidade de imóveis.
+
+    Segmento de tijolo (ex.: "Logística") também é conferido pelo Imóveis/PL
+    (05/11/2026, caso MXRF11: cadastrado como "Logística", mas a carteira é
+    quase toda de CRIs): abaixo de 20%, papel; de 20% a 50%, híbrido. O card
+    explica quando a classe contraria o segmento (``motivo_classificacao``)."""
     fund = fund or {}
     seg = _segmento_normalizado(fund)
     generico = segmento_generico(fund)
@@ -143,6 +148,9 @@ def classificar_fii(fund: dict | None) -> str | None:
             return "hibrido"
         if segmento_de_papel(seg):
             return "papel"
+        imoveis_pl = fund.get("imoveis_pl")
+        if imoveis_pl is not None and imoveis_pl < 0.50:
+            return "papel" if imoveis_pl < 0.20 else "hibrido"
         return "tijolo"
     # segmento genérico ("Multicategoria", "Outros"): decide a participação dos
     # imóveis no patrimônio (Imóveis/PL, página de detalhes do Fundamentus)
@@ -155,6 +163,25 @@ def classificar_fii(fund: dict | None) -> str | None:
     if qtd in (None, ""):
         return None
     return "tijolo" if qtd not in (0, 0.0) else "papel"
+
+
+def motivo_classificacao(fund: dict | None) -> str | None:
+    """Frase para o card quando a classe NÃO segue o segmento declarado: um
+    segmento de tijolo com poucos imóveis no patrimônio (caso MXRF11), para
+    que um erro de reclassificação fique visível. None nos demais casos."""
+    fund = fund or {}
+    if segmento_generico(fund):
+        return None
+    seg = _segmento_normalizado(fund)
+    if "hibrido" in seg or segmento_de_papel(seg):
+        return None
+    classe = classificar_fii(fund)
+    if classe == "tijolo":
+        return None
+    nome = {"papel": "papel", "hibrido": "híbrido"}[classe]
+    pct = f"{fund['imoveis_pl'] * 100:.1f}%".replace(".", ",")
+    return (f"Tratado como FII {nome}: os imóveis são só {pct} do patrimônio (Imóveis/PL, Fundamentus), embora o "
+            f"segmento declarado seja \"{fund.get('segmento')}\".")
 
 
 def tem_imoveis(fund: dict | None) -> bool:

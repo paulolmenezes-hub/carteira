@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from .fundamentalistas import (
+    classificar_fii,
     precisa_conferir,
     regularidade_dividendos,
     segmento_generico,
@@ -120,9 +121,9 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
             fund["vacancia_media"] = fund_fundamentus.vacancia_media
             fund["cap_rate"] = fund_fundamentus.cap_rate
             fund["qtd_imoveis"] = fund_fundamentus.qtd_imoveis
-            if segmento_generico(fund) and fund_fundamentus.qtd_imoveis:
-                # segmento genérico com imóveis: a participação dos imóveis no
-                # patrimônio separa papel de tijolo (caso RECR11)
+            if fund_fundamentus.qtd_imoveis or classificar_fii(fund) == "tijolo":
+                # a participação dos imóveis no patrimônio separa papel de tijolo quando o
+                # segmento é genérico (caso RECR11) e confere o segmento de tijolo (caso MXRF11)
                 try:
                     from .fontes.fundamentus import buscar_imoveis_pl_fii
                     fund["imoveis_pl"] = buscar_imoveis_pl_fii(ticker)
