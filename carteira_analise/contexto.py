@@ -128,6 +128,36 @@ def faixa_12m(precos: pd.Series) -> dict | None:
     }
 
 
+def motivo_sem_historico(precos: pd.Series | None, dividendos: pd.Series | None, hoje=None) -> str:
+    """Por que o "O preço está atrativo?" não pôde ser calculado (caso
+    AFHI11): o teste precisa de 3 anos (12 meses para o yield + 24 para a
+    média), com ao menos 10 pagamentos em cada janela de 12 meses."""
+    p, d = _sem_fuso(precos), _sem_fuso(dividendos)
+    p = p.dropna() if p is not None else pd.Series(dtype=float)
+    d = d.dropna() if d is not None else pd.Series(dtype=float)
+    if p.empty:
+        return "Sem cotações para calcular o yield."
+    if d.empty:
+        return "Sem rendimentos registrados nas fontes."
+    hoje = pd.Timestamp(hoje) if hoje is not None else p.index[-1]
+    inicio = max(p.index[0], d.index[0])
+    meses = (hoje.year - inicio.year) * 12 + hoje.month - inicio.month
+    if meses < 36:
+        return (f"O histórico disponível começa em {inicio:%m/%Y} (cotações desde {p.index[0]:%m/%Y}, rendimentos "
+                f"desde {d.index[0]:%m/%Y}): são precisos 3 anos — 12 meses para o yield e 24 para a média do "
+                "próprio fundo.")
+    fim = hoje.to_period("M") - 1
+    janela = pd.period_range(fim - 35, fim, freq="M")
+    pagos = set(d.index.to_period("M"))
+    faltando = [m for m in janela if m not in pagos]
+    if faltando:
+        lista = ", ".join(f"{m.month:02d}/{m.year}" for m in faltando[:6]) + ("…" if len(faltando) > 6 else "")
+        return (f"Faltam rendimentos em {len(faltando)} dos últimos 36 meses ({lista}) — pode ser lacuna da fonte. "
+                "O teste exige ao menos 10 pagamentos em cada janela de 12 meses, para não confundir lacuna com "
+                "corte de renda.")
+    return "O histórico de rendimentos não permitiu calcular a média dos últimos 24 meses."
+
+
 def preco_atrativo_hoje(precos: pd.Series, dividendos: pd.Series,
                         valor_patrimonial: pd.Series | None = None, pvp_atual: float | None = None) -> dict | None:
     """Critérios de preço atrativo de FIIs do teste da Seção 13 no mês de hoje.
@@ -375,4 +405,7 @@ def contexto_do_ativo(resultado, precos: pd.Series | None = None,
         "detalhes_timing": list(getattr(resultado, "detalhes_timing", []) or []),
         "detalhes_renda": list(getattr(resultado, "detalhes_renda", []) or []),
         "preco_atrativo": pa,
+        "preco_atrativo_motivo": (motivo_sem_historico(precos if precos is not None else getattr(tec, "historico", None),
+                                                       dividendos_fii)
+                                  if tipo == "fii" and pa is None else None),
     }
