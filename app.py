@@ -894,18 +894,22 @@ _EVIDENCIA_PRECO = {
 }
 
 
-# FIIs de papel (CRI): no teste restrito a eles (Seção 13 do notebook, rodada de 05/11/2026; 11 FIIs com casos),
-# os critérios de P/VP tiveram vantagem com margem estatística (4a: +21 p.p.; 4c: +35 p.p.); o yield alto
-# sozinho (caminho 2), não (+15 p.p., IC de −1 a +31).
+# FIIs de papel (CRI): no teste restrito a eles (Seção 13 do notebook, rodada de 05/11/2026 com o MXRF11 já
+# como papel; 12 FIIs com casos), os três critérios tiveram vantagem com margem estatística: 4c +35 p.p.,
+# 4a +21 p.p. e, no limite, o caminho 2 (yield alto sozinho), +17 p.p. (IC de +3 a +32) — inconclusivo na
+# rodada anterior, com 11 FIIs. Por isso o selo do yield alto é o mesmo dos demais FIIs, e a evidência
+# avisa que essa vantagem é a mais frágil. (_SELO_PAPEL_YIELD fica para o caso de o resultado voltar a
+# ficar sem margem numa rodada futura.)
 _SELO_PAPEL_YIELD = ("Yield alto · sem vantagem comprovada", "background:#dbeafe;color:#1e40af")
+_PAPEL_YIELD_SEM_VANTAGEM = False
 _EVIDENCIA_PAPEL = {
-    "forte": ("nos FIIs de papel, yield alto e desconto juntos superaram o CDI em 83% das vezes, contra 47%, com "
-              "margem estatística (46 casos)."),
-    "sim": ("nos FIIs de papel, o yield alto sozinho não mostrou vantagem confiável (superou o CDI em 62% das vezes, "
-            "contra 47%; pode ser acaso)."),
-    "desconto": ("nos FIIs de papel, é o critério com vantagem comprovada: P/VP abaixo de 0,95 com renda estável superou "
-                 "o CDI em 67% das vezes, contra 46%."),
-    "nao": ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP (67% contra 46%), que hoje não "
+    "forte": ("nos FIIs de papel, yield alto e desconto juntos superaram o CDI em 84% das vezes, contra 48%, com "
+              "margem estatística."),
+    "sim": ("nos FIIs de papel, superou o CDI em 66% das vezes, contra 48% — vantagem no limite da margem "
+            "estatística, menor e mais incerta que a do desconto no P/VP."),
+    "desconto": ("nos FIIs de papel, P/VP abaixo de 0,95 com renda estável superou o CDI em 68% das vezes, contra "
+                 "47%, com margem estatística."),
+    "nao": ("nos FIIs de papel, o sinal mais forte no teste é o desconto no P/VP (68% contra 47%), que hoje não "
             "está presente."),
 }
 
@@ -917,8 +921,8 @@ def _evidencia_preco(nivel: str, papel: bool, pa: dict) -> str:
     if not papel:
         return _EVIDENCIA_PRECO[nivel]
     if nivel == "nao" and pa.get("desconto") and pa.get("estavel") is False:
-        return ("nos FIIs de papel, o sinal com vantagem comprovada é o desconto no P/VP com renda estável (superou o "
-                "CDI em 67% das vezes, contra 46%); aqui o desconto existe, mas os rendimentos caíram.")
+        return ("nos FIIs de papel, o sinal mais forte no teste é o desconto no P/VP com renda estável (superou o CDI "
+                "em 68% das vezes, contra 47%); aqui o desconto existe, mas os rendimentos caíram.")
     return _EVIDENCIA_PAPEL[nivel]
 
 
@@ -943,7 +947,8 @@ def _html_preco_atrativo(ctx: dict) -> str:
         nota_fonte += f"<div style='font-size:.72em;color:#6b7280'>ℹ️ {html.escape(ctx['motivo_classe'])}</div>"
     nivel = pa.get("nivel") or ("sim" if pa.get("atende") else "nao")
     papel = ctx.get("classe_fii") == "papel"
-    etiqueta, estilo = _SELO_PAPEL_YIELD if (papel and nivel == "sim") else _SELO_PRECO[nivel]
+    etiqueta, estilo = (_SELO_PAPEL_YIELD if (papel and nivel == "sim" and _PAPEL_YIELD_SEM_VANTAGEM)
+                        else _SELO_PRECO[nivel])
     y, m, lim = _pct_br(pa["yield"], 1), _pct_br(pa["yield_medio_24m"], 1), _pct_br(pa["limiar"], 1)
     pvp, pvp_m, estavel = pa.get("pvp"), pa.get("pvp_medio_24m"), pa.get("estavel")
 
@@ -969,13 +974,13 @@ def _html_preco_atrativo(ctx: dict) -> str:
     if nivel == "forte":
         texto = "O fundo rende mais que o normal dele e a cota está abaixo do patrimônio."
     elif nivel == "sim" and papel:
-        texto = ("O fundo rende mais que o normal dele, mas, nos FIIs de papel, o yield alto sozinho não mostrou "
-                 "vantagem no teste; o sinal que funcionou neles é o desconto no P/VP.")
+        texto = ("O fundo rende mais que o normal dele, embora a cota não esteja com desconto. Nos FIIs de papel, "
+                 "esse sinal teve vantagem menor que a do desconto no P/VP.")
     elif nivel == "sim":
         texto = "O fundo rende mais que o normal dele, embora a cota não esteja com desconto."
     elif nivel == "desconto" and papel:
         texto = ("A cota está abaixo do patrimônio" + (" e do próprio histórico" if pvp_m and pvp <= 0.9 * pvp_m else "")
-                 + ", com renda estável. Nos FIIs de papel, esse foi o sinal que mostrou vantagem no teste.")
+                 + ", com renda estável. Nos FIIs de papel, esse foi o sinal mais consistente no teste.")
     elif nivel == "desconto":
         texto = ("A cota está abaixo do patrimônio" + (" e do próprio histórico" if pvp_m and pvp <= 0.9 * pvp_m else "")
                  + f", mas o yield ainda está no nível normal do fundo (precisaria render {lim} para estar alto).")
