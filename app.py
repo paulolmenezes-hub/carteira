@@ -36,6 +36,7 @@ from carteira_analise.backtest_cenarios import indice_cdi_acumulado
 from carteira_analise.cenarios import (calcular_participacao, carregar_evidencias, frase_evidencia_fiis,
                                        gerar_cenarios)
 from carteira_analise.fontes.bcb import buscar_cdi_diario
+from carteira_analise.fontes.b3_cotahist import carregar_base as carregar_base_b3, completar_precos
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
 from carteira_analise.fontes.fundamentus import buscar_proventos_fii
 from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
@@ -946,6 +947,10 @@ def _html_preco_atrativo(ctx: dict) -> str:
                 + "</div>" + nota_fonte + "</div>")
     if ctx.get("motivo_classe"):
         nota_fonte += f"<div style='font-size:.72em;color:#6b7280'>ℹ️ {html.escape(ctx['motivo_classe'])}</div>"
+    if ctx.get("precos_b3_ate") is not None:
+        nota_fonte += (f"<div style='font-size:.72em;color:#6b7280'>ℹ️ Cotações antes de "
+                       f"{ctx['precos_b3_ate']:%m/%Y}: fechamento mensal oficial da B3 (o Yahoo só tem a partir "
+                       "dessa data).</div>")
     nivel = pa.get("nivel") or ("sim" if pa.get("atende") else "nao")
     papel = ctx.get("classe_fii") == "papel"
     etiqueta, estilo = (_SELO_PAPEL_YIELD if (papel and nivel == "sim" and _PAPEL_YIELD_SEM_VANTAGEM)
@@ -1059,6 +1064,10 @@ def _html_regularidade(reg: dict | None) -> str:
         evidencia = ("<div style='font-size:.76em;color:#4b5563;margin-top:6px;line-height:1.4'><b>Evidência:</b> com "
                      "o selo Regular, a renda se manteve no ano seguinte em 99% dos casos, contra 82% nas ações "
                      "Oscilantes ou Irregulares (cerca de 40 ações, 2022–2025).</div>")
+    nota_b3 = ""
+    if reg.get("anos_b3"):
+        anos = ", ".join(str(a) for a in reg["anos_b3"])
+        nota_b3 = f" Preço médio de {anos}: B3 (o Yahoo não tem cotações suficientes nesse período)."
     corrente = reg.get("ano_corrente")
     if corrente and corrente.get("sem_registro"):
         nota_corrente = (f" Em {corrente['ano']}, o Yahoo ainda não registra proventos, mas o Fundamentus registra "
@@ -1090,7 +1099,7 @@ def _html_regularidade(reg: dict | None) -> str:
             f"{html.escape(texto_regularidade(reg))}</div>{evidencia}"
             "<div style='font-size:.74em;color:#4b5563;margin-top:4px;line-height:1.4'>DY de cada ano = proventos "
             "do ano (dividendos e JCP brutos, Yahoo) ÷ preço médio do ano, nos 5 anos fechados. Regular: pagou todos "
-            f"os anos e o pior rendeu ao menos metade da mediana.{nota_corrente}</div></div>")
+            f"os anos e o pior rendeu ao menos metade da mediana.{nota_b3}{nota_corrente}</div></div>")
 
 
 def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = True) -> str:
@@ -1196,6 +1205,13 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
             eventos = fonte_dados.baixar_eventos(ticker)
         except Exception:
             eventos = None
+        # Yahoo com poucos anos de cotação (caso AFHI11: só desde 01/2024): completa com o fechamento
+        # mensal oficial da B3 (base gerada pelo notebook), na escala do Yahoo
+        precos_b3_ate = None
+        try:
+            precos, precos_b3_ate = completar_precos(precos, carregar_base_b3(), ticker, eventos)
+        except Exception:
+            precos_b3_ate = None
         conf = conferir_fontes({"fundamentus": _proventos_fii_em_cache(ticker), "cvm": cvm,
                                 "yahoo": dividendos_yahoo}, eventos=eventos)
         divs = conf["serie"] if conf["usada"] else None
@@ -1214,6 +1230,8 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     if ctx is not None and conf is not None:
         ctx["conferencia_rendimentos"] = {"texto": conf["texto"], "selo": conf["selo"],
                                           "observacoes": conf.get("observacoes", [])}
+        if precos_b3_ate is not None:
+            ctx["precos_b3_ate"] = precos_b3_ate
     return ctx
 
 
