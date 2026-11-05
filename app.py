@@ -1539,7 +1539,8 @@ with tab_carteira:
                 dividendos_por_ticker = {}
                 for ticker in tickers_encontrados:
                     tipo = tipos_confirmados[ticker]
-                    resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_dados,
+                    # FIIs: o motor usa os mesmos rendimentos conferidos do "O preço está atrativo?"
+                    resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_rendimentos,
                                                cdi_liquido_aa=_cdi_liquido_atual())
                     linhas_analise.append((ticker, tipo, resultado))
                     try:
@@ -1664,7 +1665,13 @@ with tab_ativo:
         else:
             texto_horario, _ = _info_horario_analise()
             with st.spinner(f"Buscando dados de {ticker_limpo}..."):
-                resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_dados,
+                base_cvm_ind = _base_cvm_recente() if tipo_individual == "fii" else None
+                fonte_individual = FonteComRendimentosConferidos(
+                    fonte_dados, {ticker_limpo: tipo_individual},
+                    lambda t: {"fundamentus": _proventos_fii_em_cache(t),
+                               "cvm": (serie_rendimentos(base_cvm_ind, t, "dy")
+                                       if base_cvm_ind is not None and not base_cvm_ind.empty else None)})
+                resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_individual,
                                            cdi_liquido_aa=_cdi_liquido_atual())
                 try:
                     dividendos_individual = fonte_dados.baixar_dividendos(ticker_limpo)
