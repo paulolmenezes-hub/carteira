@@ -6,8 +6,8 @@ desde 2021), e sem o preço dos meses antigos o yield desses meses não pode ser
 calculado. O Fundamentus mostra só a cotação AJUSTADA por proventos, que não
 serve para o yield. A B3 publica o fechamento real de todos os papéis, um
 arquivo por ano (dezenas de MB) — pesado demais para o painel baixar a cada
-análise. Por isso o notebook (Seção 15) baixa os anos encerrados uma vez e
-gera um resumo mensal pequeno, ``dados/cotacoes_b3_mensais.csv.gz``, que
+análise. Por isso o notebook (Seção 15) baixa os anos (do ano corrente, só os
+meses encerrados) de tempos em tempos e gera um resumo mensal pequeno, ``dados/cotacoes_b3_mensais.csv.gz``, que
 fica no repositório: fechamento do último pregão e média dos fechamentos de
 cada mês, por papel (ações, FIIs, ETFs e units do mercado à vista).
 
