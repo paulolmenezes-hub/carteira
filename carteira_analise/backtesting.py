@@ -66,22 +66,12 @@ def _classe_a_partir_de_pontos(
 def _pontuar_tecnico(tec: IndicadoresTecnicos) -> int:
     """Componente técnico do motor de pontuação, isolado do fundamentalista
     — é o único componente que dá pra reconstruir retroativamente, já que o
-    Yahoo Finance não fornece fundamentos históricos. Replica exatamente as
-    mesmas regras já usadas em pontuar_acao/pontuar_fii/pontuar_etf para a
-    parte técnica (MM200, RSI, distância do período)."""
-    pontos = 0
-    if tec.sma200 is not None:
-        pontos += 1 if tec.preco_atual > tec.sma200 else -1
-    if tec.rsi14 is not None:
-        if tec.rsi14 < 40:
-            pontos += 1
-        elif tec.rsi14 > 70:
-            pontos -= 1
-    if tec.dist_minima_pct < 15:
-        pontos += 1
-    if tec.dist_maxima_pct > -5:
-        pontos -= 1
-    return pontos
+    Yahoo Finance não fornece fundamentos históricos. Usa a MESMA função do
+    motor (``pontuacao._pontos_tecnicos``: MM200, RSI e piso/topo usuais,
+    que não pontuam quando a faixa do período é estreita — revisão de
+    06/11/2026), para o backtest medir exatamente a regra do painel."""
+    from .pontuacao import _pontos_tecnicos
+    return _pontos_tecnicos(tec, [])
 
 
 def rotular_retorno_futuro(
