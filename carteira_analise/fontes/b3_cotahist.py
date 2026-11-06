@@ -94,6 +94,8 @@ def carregar_base(caminho: str | None = None) -> pd.DataFrame | None:
     """Base mensal gerada pelo notebook; None se o arquivo não existir (o
     painel segue só com o Yahoo)."""
     caminho = caminho or CAMINHO_BASE
+    if not os.path.exists(caminho) and caminho.endswith(".gz") and os.path.exists(caminho[:-3]):
+        caminho = caminho[:-3]  # alguns navegadores descompactam o .csv.gz ao baixar
     if caminho not in _CACHE_BASE:
         if not os.path.exists(caminho):
             return None
