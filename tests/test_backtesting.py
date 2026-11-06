@@ -196,3 +196,16 @@ def test_yield_trailing_contado_da_data_de_corte_e_nao_do_ultimo_pagamento():
     assert _yield_ultimos_12m(divs, 100.0, pd.Timestamp("2023-06-30")) == 0.0
     assert _yield_ultimos_12m(divs, 100.0, pd.Timestamp("2021-12-31")) == pytest.approx(0.02)
     assert _yield_ultimos_12m(pd.Series(dtype=float), 100.0, pd.Timestamp("2023-06-30")) is None
+
+
+def test_pontuar_tecnico_usa_regra_da_faixa_estreita():
+    """O backtest mede a mesma regra do motor: com piso e topo usuais a menos
+    de 10% um do outro, nenhum dos dois pontua (revisão de 06/11/2026)."""
+    from carteira_analise.backtesting import _pontuar_tecnico
+    from carteira_analise.tecnicos import IndicadoresTecnicos
+    base = dict(preco_atual=10.0, sma50=None, sma200=None, rsi14=None, n_outliers_corrigidos=0,
+                n_dias_truncados=0, dias_usados=300, historico=pd.Series([10.0]))
+    estreita = IndicadoresTecnicos(dist_minima_pct=2.0, dist_maxima_pct=-2.0, **base)
+    larga = IndicadoresTecnicos(dist_minima_pct=2.0, dist_maxima_pct=-40.0, **base)
+    assert _pontuar_tecnico(estreita) == 0
+    assert _pontuar_tecnico(larga) == 1
