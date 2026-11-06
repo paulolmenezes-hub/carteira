@@ -132,8 +132,9 @@ def _pontos_tecnicos(tec: IndicadoresTecnicos, detalhes: list[str], termo: str =
 
     minima, maxima = _valores_extremos_periodo(tec)
     if minima > 0 and maxima / minima - 1 < AMPLITUDE_MINIMA_FAIXA:
-        detalhes.append(f"faixa de preço estreita no período (piso e topo usuais a {(maxima / minima - 1) * 100:.0f}% "
-                        "um do outro): piso e topo não pontuam")
+        amplitude = f"{(maxima / minima - 1) * 100:.1f}".replace(".", ",")
+        detalhes.append(f"faixa de preço estreita no período (piso e topo usuais a {amplitude}% um do outro, "
+                        f"menos de {AMPLITUDE_MINIMA_FAIXA * 100:.0f}%): piso e topo não pontuam")
         return pontos
     detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
     if detalhe_minima:
