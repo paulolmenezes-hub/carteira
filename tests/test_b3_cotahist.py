@@ -90,3 +90,11 @@ def test_filtra_bdrs_e_direitos():
     df = pd.DataFrame({"data": pd.Timestamp("2023-01-02"), "fechamento": 1.0,
                        "ticker": ["PETR4", "TAEE11", "AAPL34", "MGLU1", "AFHI11", "VALE3", "BBDC12"]})
     assert set(b3.filtrar_papeis(df)["ticker"]) == {"PETR4", "TAEE11", "AFHI11", "VALE3"}
+
+
+def test_carregar_base_aceita_csv_descompactado(tmp_path):
+    from carteira_analise.fontes import b3_cotahist
+    csv = tmp_path / "cotacoes_b3_mensais.csv"
+    csv.write_text("ticker,mes,data,fechamento,media,pregoes\nAFHI11,2021-04,2021-04-30,99.89,100.1,15\n")
+    base = b3_cotahist.carregar_base(str(tmp_path / "cotacoes_b3_mensais.csv.gz"))
+    assert base is not None and list(base["ticker"]) == ["AFHI11"]
