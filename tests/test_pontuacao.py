@@ -210,3 +210,44 @@ class TestLeituraCombinada:
     def test_renda_boa_sem_sinal_forte_sugere_manter(self):
         resultado = leitura_combinada(pontos_timing=0, pontos_renda=2)
         assert "Renda saudável" in resultado
+
+
+class TestFaixaEstreita:
+    """Revisão de 06/11/2026 (caso AFHI11): piso e topo a menos de 10% um do
+    outro não pontuam, e a pontuação completa explica por quê."""
+
+    def test_fii_faixa_estreita_nao_pontua_piso_nem_topo(self):
+        tec = _tec(dist_minima_pct=2.0, dist_maxima_pct=-2.0, sma200=None, rsi14=None)
+        res = pontuar_fii(tec, {}, None)
+        assert res.pontos_tecnicos == 0
+        assert any("faixa de preço estreita" in d for d in res.detalhes)
+        assert not any("mínima" in d or "máxima" in d for d in res.detalhes if d.startswith(("+1", "-1")))
+
+    def test_faixa_larga_continua_pontuando(self):
+        tec = _tec(dist_minima_pct=2.0, dist_maxima_pct=-40.0, sma200=None, rsi14=None)
+        res = pontuar_acao(tec, {}, None)
+        assert not any("faixa de preço estreita" in d for d in res.detalhes)
+        assert res.pontos_tecnicos == 1  # perto do piso, longe do topo
+
+    def test_pontos_tecnicos_separados_dos_fundamentos(self):
+        tec = _tec(preco_atual=10.0, sma200=9.0, rsi14=30.0)  # +1 MM200, +1 RSI
+        res = pontuar_acao(tec, {}, None)
+        assert res.pontos_tecnicos == 2
+        assert res.pontos - res.pontos_tecnicos == 0  # sem fundamentos
+
+
+class TestLeituraFundamentos:
+    def test_renda_negativa_prevalece(self):
+        assert pontuacao.leitura_fundamentos(4, -1).startswith("🔴 Renda em deterioração")
+
+    def test_fundamentos_e_renda(self):
+        assert pontuacao.leitura_fundamentos(2, 2) == "🟢 Fundamentos e renda favoráveis"
+        assert pontuacao.leitura_fundamentos(3, None) == "🟢 Fundamentos favoráveis"
+        assert pontuacao.leitura_fundamentos(-2, 0).startswith("🔴 Fundamentos desfavoráveis")
+        assert pontuacao.leitura_fundamentos(0, 2) == "🟡 Renda saudável, fundamentos sem destaque"
+        assert pontuacao.leitura_fundamentos(1, "NA").startswith("🟡 Sem sinal claro")
+
+    def test_nao_menciona_indicadores_tecnicos(self):
+        for f in range(-4, 5):
+            for r in (None, -1, 0, 1, 2, 3):
+                assert "técnic" not in pontuacao.leitura_fundamentos(f, r)
