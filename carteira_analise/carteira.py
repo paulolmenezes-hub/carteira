@@ -33,6 +33,7 @@ from .pontuacao import (
     pontuar_etf,
     pontuar_fii,
     leitura_combinada,
+    leitura_fundamentos,
 )
 from .tecnicos import IndicadoresTecnicos, calcular_indicadores_tecnicos
 
@@ -76,6 +77,7 @@ class AnaliseAtivo:
     pontos_renda: int | str | None
     detalhes_renda: list[str]
     regularidade: dict | None = None  # ações B3: "Os dividendos são regulares?" (5 anos fechados)
+    pontos_tecnicos: int = 0  # parte de pontos_timing vinda de MM200, RSI e piso/topo (fora da leitura)
     sinal_timing: str = field(init=False)
     qualidade_renda: str = field(init=False)
     leitura_combinada_texto: str = field(init=False)
@@ -83,7 +85,9 @@ class AnaliseAtivo:
     def __post_init__(self) -> None:
         self.sinal_timing = classificar(self.pontos_timing)
         self.qualidade_renda = classificar_renda(self.pontos_renda)
-        self.leitura_combinada_texto = leitura_combinada(self.pontos_timing, self.pontos_renda)
+        # leitura combinada: fundamentos e renda, sem os sinais técnicos (revisão de 06/11/2026)
+        self.leitura_combinada_texto = leitura_fundamentos(self.pontos_timing - self.pontos_tecnicos,
+                                                           self.pontos_renda)
 
 
 def _medias_b3(ticker: str, fonte) -> pd.Series | None:
@@ -217,6 +221,7 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
         pontos_renda=resultado_renda.pontos,
         detalhes_renda=resultado_renda.detalhes,
         regularidade=regularidade,
+        pontos_tecnicos=getattr(resultado_timing, "pontos_tecnicos", 0),
     )
 
 

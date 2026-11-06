@@ -48,6 +48,7 @@ def _texto_limite(tipo: TipoAtivo, cdi_liquido_aa: float | None) -> str:
 class ResultadoPontuacao:
     pontos: int | None
     detalhes: list[str] = field(default_factory=list)
+    pontos_tecnicos: int = 0  # parte de ``pontos`` que vem de MM200, RSI e piso/topo usuais
 
 
 def _valores_extremos_periodo(tec: IndicadoresTecnicos) -> tuple[float, float]:
@@ -98,20 +99,28 @@ def _detalhes_extremos(tec: IndicadoresTecnicos) -> tuple[str | None, str | None
     return detalhe_minima, detalhe_maxima
 
 
-def pontuar_acao(
-    tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None,
-    cdi_liquido_aa: float | None = None,
-) -> ResultadoPontuacao:
-    pontos = 0
-    detalhes: list[str] = []
+# Faixa de preço estreita (revisão de 06/11/2026, caso AFHI11): com o piso e o
+# topo usuais (percentis 5% e 95%) a menos de 10% um do outro, o preço fica
+# "perto" dos dois ao mesmo tempo — +1 e -1 que se anulam e confundem. Nesse
+# caso nenhum dos dois pontua, e a pontuação completa diz que a faixa é estreita.
+AMPLITUDE_MINIMA_FAIXA = 0.10
 
+
+def _pontos_tecnicos(tec: IndicadoresTecnicos, detalhes: list[str], termo: str = "preço") -> int:
+    """Pontos técnicos (MM200, RSI, piso/topo usuais do período), iguais para
+    ações, ações dos EUA, ETFs e FIIs; acrescenta os textos em ``detalhes``.
+    Sem vantagem comprovada no backtest (Seção 10): entram na pontuação do
+    momento, mas não na leitura combinada (``leitura_fundamentos``)."""
+    pontos = 0
+    sufixo_alta = " (tendência de alta)" if termo == "preço" else ""
+    sufixo_baixa = " (tendência de baixa)" if termo == "preço" else ""
     if tec.sma200 is not None:
         if tec.preco_atual > tec.sma200:
             pontos += 1
-            detalhes.append("+1 preço acima da MM200 (tendência de alta)")
+            detalhes.append(f"+1 {termo} acima da MM200{sufixo_alta}")
         else:
             pontos -= 1
-            detalhes.append("-1 preço abaixo da MM200 (tendência de baixa)")
+            detalhes.append(f"-1 {termo} abaixo da MM200{sufixo_baixa}")
 
     if tec.rsi14 is not None:
         if tec.rsi14 < 40:
@@ -121,6 +130,11 @@ def pontuar_acao(
             pontos -= 1
             detalhes.append("-1 RSI > 70 (sobrecomprado)")
 
+    minima, maxima = _valores_extremos_periodo(tec)
+    if minima > 0 and maxima / minima - 1 < AMPLITUDE_MINIMA_FAIXA:
+        detalhes.append(f"faixa de preço estreita no período (piso e topo usuais a {(maxima / minima - 1) * 100:.0f}% "
+                        "um do outro): piso e topo não pontuam")
+        return pontos
     detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
     if detalhe_minima:
         pontos += 1
@@ -128,6 +142,18 @@ def pontuar_acao(
     if detalhe_maxima:
         pontos -= 1
         detalhes.append(detalhe_maxima)
+    return pontos
+
+
+def pontuar_acao(
+    tec: IndicadoresTecnicos, fund: dict, div: HistoricoDividendos | None,
+    cdi_liquido_aa: float | None = None,
+) -> ResultadoPontuacao:
+    pontos = 0
+    detalhes: list[str] = []
+
+    pontos_tec = _pontos_tecnicos(tec, detalhes, "preço")
+    pontos += pontos_tec
 
     pl = fund.get("pl")
     if pl is not None and pl > 0:
@@ -194,7 +220,7 @@ def pontuar_acao(
         pontos += 1
         detalhes.append(f"+1 yield efetivo (12m) atrativo ({dy * 100:.1f}%; {_texto_limite('acao', cdi_liquido_aa)})")
 
-    return ResultadoPontuacao(pontos, detalhes)
+    return ResultadoPontuacao(pontos, detalhes, pontos_tecnicos=pontos_tec)
 
 
 def pontuar_acao_us(
@@ -206,29 +232,8 @@ def pontuar_acao_us(
     pontos = 0
     detalhes: list[str] = []
 
-    if tec.sma200 is not None:
-        if tec.preco_atual > tec.sma200:
-            pontos += 1
-            detalhes.append("+1 preço acima da MM200 (tendência de alta)")
-        else:
-            pontos -= 1
-            detalhes.append("-1 preço abaixo da MM200 (tendência de baixa)")
-
-    if tec.rsi14 is not None:
-        if tec.rsi14 < 40:
-            pontos += 1
-            detalhes.append("+1 RSI < 40 (não sobrecomprado)")
-        elif tec.rsi14 > 70:
-            pontos -= 1
-            detalhes.append("-1 RSI > 70 (sobrecomprado)")
-
-    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
-    if detalhe_minima:
-        pontos += 1
-        detalhes.append(detalhe_minima)
-    if detalhe_maxima:
-        pontos -= 1
-        detalhes.append(detalhe_maxima)
+    pontos_tec = _pontos_tecnicos(tec, detalhes, "preço")
+    pontos += pontos_tec
 
     pl = fund.get("pl")
     if pl is not None and pl > 0:
@@ -258,7 +263,7 @@ def pontuar_acao_us(
         pontos += 1
         detalhes.append(f"+1 yield efetivo (12m) atrativo p/ padrão americano ({dy * 100:.1f}%)")
 
-    return ResultadoPontuacao(pontos, detalhes)
+    return ResultadoPontuacao(pontos, detalhes, pontos_tecnicos=pontos_tec)
 
 
 def pontuar_etf(
@@ -271,36 +276,15 @@ def pontuar_etf(
     pontos = 0
     detalhes: list[str] = []
 
-    if tec.sma200 is not None:
-        if tec.preco_atual > tec.sma200:
-            pontos += 1
-            detalhes.append("+1 preço acima da MM200 (tendência de alta)")
-        else:
-            pontos -= 1
-            detalhes.append("-1 preço abaixo da MM200 (tendência de baixa)")
-
-    if tec.rsi14 is not None:
-        if tec.rsi14 < 40:
-            pontos += 1
-            detalhes.append("+1 RSI < 40 (não sobrecomprado)")
-        elif tec.rsi14 > 70:
-            pontos -= 1
-            detalhes.append("-1 RSI > 70 (sobrecomprado)")
-
-    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
-    if detalhe_minima:
-        pontos += 1
-        detalhes.append(detalhe_minima)
-    if detalhe_maxima:
-        pontos -= 1
-        detalhes.append(detalhe_maxima)
+    pontos_tec = _pontos_tecnicos(tec, detalhes, "preço")
+    pontos += pontos_tec
 
     dy = div.dy_12m_real if div else None
     if dy is not None and dy > limite_dy(tipo, cdi_liquido_aa):
         pontos += 1
         detalhes.append(f"+1 yield efetivo (12m) atrativo p/ ETF ({dy * 100:.1f}%; {_texto_limite(tipo, cdi_liquido_aa)})")
 
-    return ResultadoPontuacao(pontos, detalhes)
+    return ResultadoPontuacao(pontos, detalhes, pontos_tecnicos=pontos_tec)
 
 
 def pontuar_fii(
@@ -310,29 +294,8 @@ def pontuar_fii(
     pontos = 0
     detalhes: list[str] = []
 
-    if tec.sma200 is not None:
-        if tec.preco_atual > tec.sma200:
-            pontos += 1
-            detalhes.append("+1 cota acima da MM200")
-        else:
-            pontos -= 1
-            detalhes.append("-1 cota abaixo da MM200")
-
-    if tec.rsi14 is not None:
-        if tec.rsi14 < 40:
-            pontos += 1
-            detalhes.append("+1 RSI < 40 (não sobrecomprado)")
-        elif tec.rsi14 > 70:
-            pontos -= 1
-            detalhes.append("-1 RSI > 70 (sobrecomprado)")
-
-    detalhe_minima, detalhe_maxima = _detalhes_extremos(tec)
-    if detalhe_minima:
-        pontos += 1
-        detalhes.append(detalhe_minima)
-    if detalhe_maxima:
-        pontos -= 1
-        detalhes.append(detalhe_maxima)
+    pontos_tec = _pontos_tecnicos(tec, detalhes, "cota")
+    pontos += pontos_tec
 
     pvp = fund.get("pvp")
     if pvp is not None:
@@ -376,7 +339,7 @@ def pontuar_fii(
         pontos += 1
         detalhes.append(f"+1 yield efetivo (12m) atrativo ({dy * 100:.1f}%; {_texto_limite('fii', cdi_liquido_aa)})")
 
-    return ResultadoPontuacao(pontos, detalhes)
+    return ResultadoPontuacao(pontos, detalhes, pontos_tecnicos=pontos_tec)
 
 
 def classificar(pontos: int) -> str:
@@ -486,6 +449,29 @@ def classificar_renda(pontos: int | str | None) -> str:
     elif pontos >= 0:
         return "🟡 renda estável"
     return "🔴 atenção: renda em deterioração"
+
+
+def leitura_fundamentos(pontos_fundamentos: int, pontos_renda: int | str | None) -> str:
+    """Leitura combinada do card (revisão de 06/11/2026): só fundamentos (P/L,
+    P/VP, ROE, dívida, liquidez, yield, desconto, vacância...) e qualidade da
+    renda. Os sinais técnicos ficaram próximos de "não fazer nada" no backtest
+    (Seção 10) e, somados aos fundamentos, faziam quase toda ação em queda
+    parecer "favorável" (RSI baixo e preço perto do piso contam a favor).
+    Eles continuam na pontuação completa, como informação. Descreve os dados;
+    não é recomendação."""
+    if pontos_renda == "NA":
+        pontos_renda = None
+    if pontos_renda is not None and pontos_renda < 0:
+        return "🔴 Renda em deterioração — indicador mais relevante que o preço neste caso"
+    if pontos_fundamentos >= 2 and pontos_renda is not None and pontos_renda >= 2:
+        return "🟢 Fundamentos e renda favoráveis"
+    if pontos_fundamentos >= 2:
+        return "🟢 Fundamentos favoráveis"
+    if pontos_fundamentos <= -2:
+        return "🔴 Fundamentos desfavoráveis — confira P/L, dívida e rentabilidade"
+    if pontos_renda is not None and pontos_renda >= 2:
+        return "🟡 Renda saudável, fundamentos sem destaque"
+    return "🟡 Sem sinal claro nos fundamentos e na renda — monitorar"
 
 
 def leitura_combinada(pontos_timing: int, pontos_renda: int | str | None) -> str:
