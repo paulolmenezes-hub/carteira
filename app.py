@@ -800,8 +800,10 @@ def _html_tabela(colunas: list, linhas: list, moeda: str) -> str:
 _COR_TRECHO = {"queda": "#f0a93b", "fora": "#2bb3a3", "realizacao": "#7b8fff"}
 _COR_NIVEL = {BOM: "#2bb3a3", ATENCAO: "#f0a93b"}
 _ROTULO_FAIXA = {"queda": "queda", "fora": "fora das faixas", "realizacao": "realização de lucro"}
-FRASE_EVIDENCIA_TECNICA = ("no backtest, os sinais técnicos ficaram próximos de “não fazer nada”; os fundamentos "
-                           "não têm histórico gratuito para teste. Use como contexto, não como sinal.")
+FRASE_EVIDENCIA_TECNICA = ("a leitura considera só fundamentos e renda. Os sinais técnicos (MM200, RSI, piso e "
+                           "topo) ficaram próximos de “não fazer nada” no backtest e aparecem apenas na pontuação "
+                           "completa; os fundamentos não têm histórico gratuito para teste. Use como contexto, "
+                           "não como sinal.")
 
 
 
@@ -1137,8 +1139,8 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
     subtitulo = ("<span style='font-size:.74em;color:#4b5563'>não altera os cenários acima</span>"
                  if aviso_cenarios else "")
     evidencia = ("" if tipo == "fii" else
-                 f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Sobre a leitura combinada e os "
-                 f"indicadores acima:</b> {FRASE_EVIDENCIA_TECNICA}</div>")
+                 f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Sobre a leitura "
+                 f"combinada:</b> {FRASE_EVIDENCIA_TECNICA}</div>")
     preco_atrativo = _html_preco_atrativo(ctx) if tipo == "fii" else _html_regularidade(ctx.get("regularidade"))
     return ("<div style='margin-top:12px;background:#ffffff;color:#1f2937;border-radius:14px;padding:12px 14px;"
             "display:flex;flex-direction:column;gap:9px'>"
