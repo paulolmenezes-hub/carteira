@@ -1284,7 +1284,12 @@ def _html_caixas_posicao(card: dict) -> str:
     if card.get("renda_recebida") is not None:
         # terceira linha: o que a posição rendeu desde o início (proventos, resultado e rentabilidade)
         nome = {"FIIs": "Rendimentos", "Ações": "Dividendos e JCP"}.get(card.get("grupo"), "Proventos")
-        total, rent = card.get("resultado_total"), card.get("rentabilidade_total")
+        # Resultado total = ganho/perda da caixa acima (mesma cotação) + vendas já feitas
+        # no ciclo atual (ganho realizado) + proventos recebidos.
+        realizado = float(card.get("ganho_realizado_ciclo") or 0.0)
+        total = resultado + realizado + float(card["renda_recebida"] or 0.0)
+        custo = card.get("custo_total_comprado")
+        rent = total / custo if custo else None
 
         def cor_de(v):
             return "#b91c1c" if (v or 0) < 0 else ("#15803d" if (v or 0) > 0 else "#111827")
@@ -1297,11 +1302,18 @@ def _html_caixas_posicao(card: dict) -> str:
                   "<div style='display:flex;gap:8px;margin-top:4px'>"
                   + caixa(nome, formatar_valor(card["renda_recebida"], moeda), "#15803d"
                           if card["renda_recebida"] > 0 else "#111827")
+                  + (caixa("Ganho nas vendas" if realizado > 0 else "Perda nas vendas",
+                           com_sinal(realizado, formatar_valor(abs(realizado), moeda)), cor_de(realizado))
+                     if abs(realizado) >= 0.005 else "")
                   + caixa("Resultado total", "—" if total is None else com_sinal(total, formatar_valor(abs(total), moeda)),
                           cor_de(total))
                   + caixa("Rentabilidade total", "—" if rent is None else
                           com_sinal(rent, f"{abs(rent) * 100:.1f}%".replace(".", ",")), cor_de(rent))
                   + "</div>")
+        if abs(realizado) >= 0.005:
+            linha += ("<div style='font-size:.74em;margin-top:4px;opacity:.95'>Resultado total = ganho/perda + "
+                      f"{'ganho' if realizado > 0 else 'perda'} nas vendas feitas desde o início da posição + "
+                      f"{nome.lower() if nome != 'Dividendos e JCP' else 'dividendos e JCP'}.</div>")
     return linha
 
 
@@ -1618,10 +1630,12 @@ with tab_carteira:
                         if l is not None:
                             c["renda_recebida"] = l.renda_recebida
                             c["desde"] = l.ciclo_inicio
-                            c["resultado_total"] = ((l.ganho_realizado or 0.0) + (l.ganho_nao_realizado or 0.0)
-                                                    + (l.renda_recebida or 0.0))
-                            custo = getattr(l, "custo_total_comprado", None)
-                            c["rentabilidade_total"] = c["resultado_total"] / custo if custo else None
+                            # O resultado total é montado no card (``_html_caixas_posicao``) a
+                            # partir do ganho/perda mostrado nele: somar aqui o ganho não
+                            # realizado da planilha usava outra cotação (baixada em outro
+                            # momento do pregão) e não batia com a caixa ao lado.
+                            c["ganho_realizado_ciclo"] = l.ganho_realizado or 0.0
+                            c["custo_total_comprado"] = getattr(l, "custo_total_comprado", None)
                     cenarios = (cards, avisos)
                 except Exception as e:
                     cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
