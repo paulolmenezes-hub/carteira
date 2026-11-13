@@ -629,3 +629,27 @@ def test_avisa_desdobramento_contado_duas_vezes():
     certo = [dict(data=pd.Timestamp("2023-01-13"), tipo="compra", quantidade=30, preco=85.8),
              dict(data=pd.Timestamp("2023-11-08"), tipo="desdobramento", quantidade=270, preco=0.0)]
     assert verificar_evento_contado_duas_vezes(certo, precos) == []
+
+
+def test_resumo_com_duas_linhas_do_mesmo_ativo():
+    """Caso BBAS3 (13/11/2026): Resumo com a primeira compra de cada posição —
+    300 em 15/07/2025 (vendida inteira em 15/06/2026 com as compras seguintes)
+    e 400 em 26/10/2026. Antes, só a última linha era lida e a venda passava da posição."""
+    from carteira_analise.planilha import processar_carteira_combinada
+    resumo = pd.DataFrame([["BBAS3.SA", 300, 21.0228, None, "2025-07-15"],
+                           ["BBAS3.SA", 400, 17.89, None, "2026-10-26"]],
+                          columns=["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"])
+    ops = _ops([["BBAS3.SA", "compra", 310, 20.898, "2025-07-16"], ["BBAS3.SA", "compra", 20, 20.255, "2025-07-30"],
+                ["BBAS3.SA", "compra", 35, 19.864, "2025-08-04"], ["BBAS3.SA", "venda", 665, 19.5, "2026-06-15"]])
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return pd.Series([15.0, 15.1], index=pd.to_datetime(["2026-11-12", "2026-11-13"]))
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+
+    linhas = processar_carteira_combinada(resumo, ops, Fonte())
+    assert [l.situacao for l in linhas] == ["Encerrada", "Aberta"]
+    assert linhas[0].avisos == [] and linhas[1].avisos == []
+    assert linhas[1].quantidade_aberta == 400 and linhas[1].preco_medio_atual == pytest.approx(17.89)
