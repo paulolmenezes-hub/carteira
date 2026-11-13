@@ -174,3 +174,15 @@ def test_queda_brusca_recente_nao_e_corrigida_e_e_sinalizada():
     limpa2, corrigidos2, _ = limpar_outliers_precos(pd.Series(valores2, index=idx))
     assert corrigidos2 == 1 and limpa2.iloc[150] < 10
     assert movimento_brusco_recente(pd.Series(valores2, index=idx)) is None
+
+
+def test_movimento_brusco_distingue_mercado_de_evento():
+    """Queda espalhada por vários pregões (B3SA3 após a eleição de 10/2026) é
+    mercado; salto de um dia com fator redondo (1 para 2) sugere evento."""
+    import numpy as np
+    from carteira_analise.tecnicos import movimento_brusco_recente
+    idx = pd.bdate_range("2026-08-01", periods=60)
+    mercado = np.r_[np.full(50, 22.4), np.linspace(21, 14.8, 10)]
+    assert movimento_brusco_recente(pd.Series(mercado, index=idx))["tipo"] == "mercado"
+    evento = np.r_[np.full(55, 30.0), np.full(5, 15.0)]
+    assert movimento_brusco_recente(pd.Series(evento, index=idx))["tipo"] == "evento"
