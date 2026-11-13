@@ -48,3 +48,18 @@ def test_preco_teto_hoje():
     assert t["teto_12m"] == pytest.approx(t["div12"] / 0.08)
     assert t["teto_5a"] == pytest.approx(1.0 / 0.08, rel=0.05)
     assert preco_teto_hoje(precos, pd.Series(dtype=float), 0.10) is None
+
+
+def test_preco_teto_bazin_como_o_mercado_calcula():
+    """PSSA3 (13/11/2026): R$ 3,00 por ação em 12 meses ÷ 6% = R$ 50,00."""
+    from carteira_analise.oportunidades import preco_teto_bazin
+    divs = pd.Series([0.35] * 10 + [1.0, 1.0, 1.0],
+                     index=pd.to_datetime(["2021-12-15", "2022-06-15", "2022-12-15", "2023-06-15", "2023-12-15",
+                                           "2024-06-15", "2024-12-15", "2025-03-15", "2025-06-15", "2025-09-15",
+                                           "2026-01-15", "2026-04-15", "2026-09-15"]))
+    t = preco_teto_bazin(divs, 46.61, hoje="2026-11-13", cdi_liquido_aa=0.117)
+    assert t["div12"] == pytest.approx(3.0) and t["teto"] == pytest.approx(50.0)
+    assert t["teto_regua"] == pytest.approx(3.0 / (0.8 * 0.117))
+    assert t["div_medio_5a"] == pytest.approx((0.35 * 10 + 3.0) / 5)
+    assert t["dividendos_fora_da_media"] == "acima"  # 3,00 contra média de 1,30: teto inflado
+    assert preco_teto_bazin(divs, 46.61, hoje="2030-01-01") is None  # sem proventos em 12 meses
