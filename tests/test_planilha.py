@@ -578,3 +578,54 @@ def test_posicao_com_um_ciclo_mantem_rotulo_simples():
                        columns=["ticker", "tipo", "quantidade", "preco", "data"])
     [d] = construir_dashboard_por_ativo(None, ops)
     assert d.rotulo == "X" and d.n_ciclos == 1 and d.situacao == "Ativa"
+
+
+def test_residuo_de_fracao_na_venda_fecha_a_posicao():
+    """Casos QQQ e IEF (11/11/2026): venda que passa da posição (ou deixa
+    sobra) por até 0,01 cota fecha a posição, com aviso; acima disso, avisa
+    qual venda conferir."""
+    from carteira_analise.planilha import ajustar_residuos_de_venda
+    ops = [dict(data=pd.Timestamp("2023-07-05"), tipo="compra", quantidade=1.08012, preco=370.33),
+           dict(data=pd.Timestamp("2026-02-20"), tipo="venda", quantidade=1.0812, preco=602.69)]
+    novas, avisos = ajustar_residuos_de_venda(ops)
+    assert novas[1]["quantidade"] == pytest.approx(1.08012) and ops[1]["quantidade"] == 1.0812
+    assert len(avisos) == 1 and "posição inteira" in avisos[0] and "1,08012" in avisos[0]
+    # sobra pequena (IEF: compras de 2,90833, venda de 2,9083): também fecha
+    ops2 = [dict(data=pd.Timestamp("2024-11-08"), tipo="compra", quantidade=2.90833, preco=94.0),
+            dict(data=pd.Timestamp("2025-12-15"), tipo="venda", quantidade=2.9083, preco=96.22)]
+    assert ajustar_residuos_de_venda(ops2)[0][1]["quantidade"] == pytest.approx(2.90833)
+    # excesso grande: não ajusta, avisa
+    ops3 = [dict(data=pd.Timestamp("2024-01-02"), tipo="compra", quantidade=100, preco=10.0),
+            dict(data=pd.Timestamp("2024-06-03"), tipo="venda", quantidade=300, preco=12.0)]
+    novas3, avisos3 = ajustar_residuos_de_venda(ops3)
+    assert novas3[1]["quantidade"] == 300 and "maior que a posição de 100" in avisos3[0]
+
+
+def test_venda_com_residuo_gera_ciclo_encerrado_com_ganho():
+    from carteira_analise.planilha import processar_carteira_combinada
+    ops = _ops([["QQQ", "compra", 1.08012, 370.33, "2023-07-05"], ["QQQ", "venda", 1.0812, 602.69, "2026-02-20"]])
+
+    class Fonte:
+        def baixar_precos(self, t, p):
+            return pd.Series([600.0, 610.0], index=pd.to_datetime(["2026-11-10", "2026-11-11"]))
+
+        def baixar_dividendos(self, t):
+            return pd.Series(dtype=float)
+
+    l = processar_carteira_combinada(None, ops, Fonte())[0]
+    assert l.situacao == "Encerrada"
+    assert l.ganho_realizado == pytest.approx((602.69 - 370.33) * 1.08012)
+
+
+def test_avisa_desdobramento_contado_duas_vezes():
+    """Caso KNSC11 (13/11/2026): compras já na escala nova + linha de desdobramento."""
+    from carteira_analise.planilha import verificar_evento_contado_duas_vezes
+    datas = pd.bdate_range("2023-01-02", "2025-06-30")
+    precos = pd.Series(8.6, index=datas)  # Yahoo: cotação ajustada, escala de hoje
+    duplicado = [dict(data=pd.Timestamp("2023-01-13"), tipo="compra", quantidade=300, preco=8.58),
+                 dict(data=pd.Timestamp("2023-11-08"), tipo="desdobramento", quantidade=2700, preco=0.0)]
+    avisos = verificar_evento_contado_duas_vezes(duplicado, precos)
+    assert len(avisos) == 1 and "contado duas vezes" in avisos[0]
+    certo = [dict(data=pd.Timestamp("2023-01-13"), tipo="compra", quantidade=30, preco=85.8),
+             dict(data=pd.Timestamp("2023-11-08"), tipo="desdobramento", quantidade=270, preco=0.0)]
+    assert verificar_evento_contado_duas_vezes(certo, precos) == []
