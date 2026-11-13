@@ -520,7 +520,11 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
             "ticker": ticker, "tipo": tipo, "moeda": moeda,
             "mercado": "B3" if ticker.endswith(".SA") else "EUA",
             "grupo": _TIPO_PARA_GRUPO.get(tipo, "Outros"),
-            "situacao": situacao, "rotulo_situacao": ROTULO_SITUACAO[situacao],
+            "situacao": situacao,
+            # na faixa de realização, mas a venda dela já está na planilha: o card segue azul
+            # (o preço continua na faixa) e o título avisa que não há venda nova a fazer
+            "rotulo_situacao": ROTULO_SITUACAO[situacao] + (
+                " · venda feita" if situacao == "realizacao" and decisao["acao"] == "manter" else ""),
             "quantidade": estado["quantidade"], "preco_medio": pm, "preco_atual": preco,
             "variacao": variacao, "abaixo_da_maxima_12m": distancia_da_maxima_12m(precos),
             "faixas": precos_das_faixas(pm), "regua": regua_faixas(pm, preco), "faixa_12m": faixa_12m(precos),
