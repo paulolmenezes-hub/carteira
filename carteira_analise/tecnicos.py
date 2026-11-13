@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import math
+
 import pandas as pd
 
 
@@ -148,7 +150,20 @@ def movimento_brusco_recente(precos: pd.Series, dias: int = 10, limite: float = 
     variacao = preco / referencia - 1
     if abs(variacao) < limite:
         return None
-    return {"variacao": variacao, "referencia": referencia, "preco": preco}
+    # Evento societário não ajustado aparece como UM pregão com salto de fator
+    # "redondo" (1 para 2, 3, 4, 5, 10, ou o inverso); movimento de mercado se
+    # espalha por vários dias ou não tem fator redondo (caso B3SA3/BBAS3 após a
+    # eleição de 10/2026: −34% e −37%, de mercado). Devolve também "tipo".
+    trecho = p.iloc[-(dias + 1):]
+    razoes = (trecho / trecho.shift(1)).dropna()
+    tipo = "mercado"
+    if len(razoes):
+        maior = float(razoes.iloc[(razoes - 1).abs().argmax()])
+        fator = maior if maior >= 1 else 1 / maior
+        redondo = any(abs(fator / f - 1) <= 0.05 for f in (2, 3, 4, 5, 8, 10, 20, 100))
+        if redondo and abs(math.log(maior)) >= 0.8 * abs(math.log(1 + variacao)):
+            tipo = "evento"
+    return {"variacao": variacao, "referencia": referencia, "preco": preco, "tipo": tipo}
 
 
 @dataclass
