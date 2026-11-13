@@ -1363,7 +1363,8 @@ def _html_card_cenario(card: dict) -> str:
     for aviso in card.get("alertas_evento", []):
         partes.append("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#b91c1c;"
                       "border-left:5px solid #b91c1c;border-radius:8px;font-size:.84em;font-weight:700;"
-                      f"line-height:1.4'>⚠️ Possível evento não lançado: {html.escape(aviso)}</div>")
+                      f"line-height:1.4'>⚠️ {'Possível evento não lançado: ' if 'não está registrado' in aviso else 'Confira o evento: '}"
+                      f"{html.escape(aviso)}</div>")
     # Linha da aba Operações que não entrou no cálculo: o preço médio e a
     # quantidade do card ficam errados (caso POMO4), então o aviso fica no card.
     linhas_fora = card.get("alertas_planilha", [])
@@ -1809,6 +1810,13 @@ with tab_dashboard:
         # eventos = saldo final), para que nenhuma divergência passe em silêncio.
         avisos_planilha = [f"{l.ticker}: {a}" for l in (st.session_state.get("carteira_linhas_ganho") or [])
                            for a in list(getattr(l, "avisos_eventos", [])) + l.avisos]
+        # posição (ou ciclo encerrado) cujo resultado não pôde ser calculado: o extrato
+        # mostraria só "-" nas colunas; o motivo vem aqui, se ainda não foi avisado
+        _ja_avisados = {l.ticker for l in st.session_state.get("carteira_linhas_ganho") or []
+                        if any("maior que a posição" in a for a in l.avisos)}
+        for l in st.session_state.get("carteira_linhas_ganho") or []:
+            if l.situacao == "erro" and l.erro and l.ticker not in _ja_avisados:
+                avisos_planilha.append(f"{l.ticker}: resultado não calculado — {l.erro}")
         for l in linhas_dashboard:
             if l.saldo_final_qtde is None:
                 continue
