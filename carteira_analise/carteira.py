@@ -200,6 +200,8 @@ def analisar_ativo(ticker: str, tipo: str, periodo: str, fonte: FonteDados,
                                                            conferencia=conferencia, medias_mensais=medias_b3)
                     if regularidade is not None:
                         regularidade["conferencia"] = "ok"
+                        # proventos completos (Fundamentus): o preço-teto do card usa esta série
+                        regularidade["proventos_conferidos"] = conferencia
                 elif regularidade is not None:
                     # o card avisa: sem a conferência, um ano zerado pode ser lacuna do Yahoo
                     from .fontes.fundamentus import ERRO_PROVENTOS_ACAO

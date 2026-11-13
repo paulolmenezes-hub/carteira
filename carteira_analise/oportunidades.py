@@ -442,3 +442,42 @@ def preco_teto_hoje(precos: pd.Series, dividendos: pd.Series | None, cdi_liquido
     return {"preco": float(p.iloc[-1]), "limite_dy": limite, "div12": div12, "div_medio_5a": div5,
             "teto_12m": div12 / limite if div12 > 0 else None,
             "teto_5a": div5 / limite if div5 else None}
+
+
+# Preço-teto do card (13/11/2026): o Bazin como o mercado calcula — dividendos
+# dos últimos 12 meses ÷ 6% (Décio Bazin; Investidor10, calculadoras) —, com a
+# média de 5 anos como conferência (um ano extraordinário infla o teto) e o
+# teto pela régua do painel como comparação.
+BAZIN_YIELD = 0.06
+FATOR_DIVIDENDO_FORA_DA_MEDIA = 1.5  # 12 meses 50% acima (ou um terço abaixo) da média de 5 anos
+
+
+def preco_teto_bazin(dividendos: pd.Series | None, preco: float, hoje=None, cdi_liquido_aa: float | None = None,
+                     tipo: str = "acao") -> dict | None:
+    """Preço-teto de Bazin para o card: {preco, div12, div_medio_5a, teto
+    (12 meses ÷ 6%), teto_5a (média de 5 anos ÷ 6%), yield_12m, limite_regua,
+    teto_regua (12 meses ÷ régua do painel), dividendos_fora_da_media
+    ('acima'/'abaixo'/None)}. None sem proventos nos últimos 12 meses."""
+    from .pontuacao import limite_dy
+
+    d = _sem_fuso(dividendos) if dividendos is not None else pd.Series(dtype=float)
+    if d is None or len(d) == 0 or not preco or preco <= 0:
+        return None
+    hoje = pd.Timestamp(hoje).normalize() if hoje is not None else pd.Timestamp.today().normalize()
+    div12 = float(d[(d.index > hoje - pd.DateOffset(months=12)) & (d.index <= hoje)].sum())
+    if div12 <= 0:
+        return None
+    longo_ok = d.index[0] <= hoje - pd.DateOffset(years=ANOS_TETO_LONGO) + pd.DateOffset(months=6)
+    div5 = (float(d[(d.index > hoje - pd.DateOffset(years=ANOS_TETO_LONGO)) & (d.index <= hoje)].sum())
+            / ANOS_TETO_LONGO) if longo_ok else None
+    fora = None
+    if div5:
+        if div12 >= FATOR_DIVIDENDO_FORA_DA_MEDIA * div5:
+            fora = "acima"
+        elif div12 * FATOR_DIVIDENDO_FORA_DA_MEDIA <= div5:
+            fora = "abaixo"
+    limite = limite_dy(tipo, cdi_liquido_aa)
+    return {"preco": float(preco), "div12": div12, "div_medio_5a": div5,
+            "teto": div12 / BAZIN_YIELD, "teto_5a": div5 / BAZIN_YIELD if div5 else None,
+            "yield_12m": div12 / preco, "limite_regua": limite, "teto_regua": div12 / limite,
+            "dividendos_fora_da_media": fora}
