@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import math
+
 import pandas as pd
 
 from .ganhos import Operacao, avaliar_operacoes
@@ -470,7 +472,59 @@ def operacoes_do_ticker(row_resumo, grupo_operacoes: pd.DataFrame | None) -> tup
                 continue
             ops.append({"data": data_op, "tipo": tipo, "quantidade": quantidade, "preco": preco_op})
             n += 1
-    return ops, avisos, n
+    ops, avisos_venda = ajustar_residuos_de_venda(ops)
+    return ops, avisos + avisos_venda, n
+
+
+# Resíduo de fração (casos QQQ e IEF, 11/11/2026): a corretora mostra 2,91 cotas
+# vendidas, mas as compras somam 2,90833 — ou um zero esquecido (1,0812 em vez
+# de 1,08012). Venda que passa da posição, ou que deixa uma sobra, de até 0,01
+# cota é tratada como venda da posição inteira; acima disso, o painel avisa.
+RESIDUO_MAXIMO_VENDA = 0.01
+
+
+def _fmt_qtd(q: float) -> str:
+    return f"{q:,.5f}".rstrip("0").rstrip(".").replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def ajustar_residuos_de_venda(ops: list[dict]) -> tuple[list[dict], list[str]]:
+    """Percorre as operações na ordem do cálculo (no mesmo dia, compras,
+    depois vendas, depois eventos) e, em cada venda:
+
+    - se ela passa da posição ou deixa uma sobra de até ``RESIDUO_MAXIMO_VENDA``
+      cota, a quantidade vendida vira exatamente a posição (a posição fecha) e
+      um aviso diz o que foi ajustado;
+    - se passa da posição por mais que isso, só avisa — o cálculo do ativo
+      falha, e o aviso diz qual linha conferir, em vez de colunas em branco.
+
+    Não altera a planilha; as operações devolvidas são cópias."""
+    ordem = {"compra": 0, "venda": 1}
+    indices = sorted(range(len(ops)), key=lambda i: (pd.Timestamp(ops[i]["data"]), ordem.get(ops[i]["tipo"], 2)))
+    saida = [dict(o) for o in ops]
+    avisos: list[str] = []
+    q = 0.0
+    for i in indices:
+        op = saida[i]
+        tipo = op["tipo"]
+        if tipo == "venda":
+            restante = q - op["quantidade"]
+            data = pd.Timestamp(op["data"])
+            if q > 0 and abs(restante) <= RESIDUO_MAXIMO_VENDA and abs(restante) > 1e-9:
+                avisos.append(f"venda de {_fmt_qtd(op['quantidade'])} em {data:%d/%m/%Y} considerada como venda da "
+                              f"posição inteira ({_fmt_qtd(q)}): a diferença de {_fmt_qtd(abs(restante))} é resíduo "
+                              f"de fração. Se quiser, corrija a quantidade na planilha.")
+                op["quantidade"] = q
+                restante = 0.0
+            elif restante < -RESIDUO_MAXIMO_VENDA:
+                avisos.append(f"venda de {_fmt_qtd(op['quantidade'])} em {data:%d/%m/%Y} maior que a posição de "
+                              f"{_fmt_qtd(max(q, 0.0))} nessa data — confira a quantidade dessa venda e as compras "
+                              f"anteriores na planilha. Sem a correção, o resultado deste ativo não é calculado.")
+            q = restante
+        elif tipo == "grupamento":
+            q -= op["quantidade"]
+        else:
+            q += op["quantidade"]
+    return saida, avisos
 
 
 
@@ -569,6 +623,59 @@ def verificar_eventos_nao_registrados(ops: list[dict], eventos_fonte=None, preco
     return avisos
 
 
+def verificar_evento_contado_duas_vezes(ops: list[dict], precos: pd.Series | None) -> list[str]:
+    """Desdobramento (ou grupamento) lançado sobre operações que JÁ estão na
+    escala nova (caso KNSC11, 13/11/2026: posição inicial de 300 cotas a
+    R$ 8,58, já depois do desdobramento de 1 para 10, mais a linha
+    "Desdobramento" de 270 — a planilha contava o evento duas vezes).
+
+    As cotações do Yahoo vêm ajustadas pelos desdobramentos, na escala de
+    hoje. Se as compras anteriores ao evento estão na escala ANTIGA, o preço
+    delas fica perto de (cotação ajustada x fator); se estão perto da própria
+    cotação ajustada, já foram lançadas na escala nova e o evento sobra.
+    `ops` são as operações ANTES de aplicar os eventos. Só avisa."""
+    if precos is None or len(precos) == 0 or not ops:
+        return []
+    p = precos.dropna()
+    if getattr(p.index, "tz", None) is not None:
+        p = p.copy()
+        p.index = p.index.tz_localize(None)
+    # cotação SEM ajuste (salto de patamar no histórico, caso RBVA11): a comparação não vale
+    saltos = [d for d, _ in detectar_saltos_de_patamar(p)]
+    ordem = {"compra": 0, "venda": 1}
+    ops = sorted(ops, key=lambda o: (pd.Timestamp(o["data"]), ordem.get(o["tipo"], 2)))
+    avisos = []
+    q = 0.0
+    for k, op in enumerate(ops):
+        tipo = op["tipo"]
+        if tipo in ("desdobramento", "grupamento") and q > 0:
+            novo_q = q + op["quantidade"] if tipo == "desdobramento" else q - op["quantidade"]
+            fator = novo_q / q if novo_q > 0 else 0
+            sem_ajuste = any(abs((pd.Timestamp(op["data"]) - d).days) <= 15 for d in saltos)
+            if (fator >= 1.5 or 0 < fator <= 1 / 1.5) and not sem_ajuste:
+                razoes = []
+                for ant in ops[:k]:
+                    if ant["tipo"] != "compra" or not ant["preco"]:
+                        continue
+                    d = pd.Timestamp(ant["data"])
+                    janela = p[(p.index >= d - pd.Timedelta(days=7)) & (p.index <= d + pd.Timedelta(days=7))]
+                    if len(janela):
+                        razoes.append(ant["preco"] / float(janela.median()))
+                if razoes:
+                    r = float(pd.Series(razoes).median())
+                    # escala nova: preço ~ cotação ajustada; escala antiga: preço ~ cotação x fator
+                    if abs(math.log(r)) < abs(math.log(r / fator)):
+                        data = pd.Timestamp(op["data"])
+                        avisos.append(
+                            f"{tipo} de {data:%d/%m/%Y} parece contado duas vezes: as compras anteriores já estão "
+                            f"na escala de depois do evento (preços perto da cotação ajustada da época). Apague a "
+                            f"linha do {tipo} ou lance essas compras com a quantidade e o preço de antes do evento.")
+            q = novo_q
+            continue
+        q += -op["quantidade"] if tipo in ("venda",) else op["quantidade"]
+    return avisos
+
+
 def processar_carteira_combinada(
     df_resumo: pd.DataFrame | None,
     df_operacoes: pd.DataFrame | None,
@@ -615,7 +722,8 @@ def processar_carteira_combinada(
             eventos_fonte = fonte.baixar_eventos(ticker) if hasattr(fonte, "baixar_eventos") else None
         except Exception:
             eventos_fonte = None
-        avisos_eventos = verificar_eventos_nao_registrados(ops_brutas, eventos_fonte, serie_precos)
+        avisos_eventos = (verificar_eventos_nao_registrados(ops_brutas, eventos_fonte, serie_precos)
+                          + verificar_evento_contado_duas_vezes(ops_brutas, serie_precos))
         try:
             divs = fonte.baixar_dividendos(ticker)
         except Exception:
