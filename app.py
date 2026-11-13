@@ -1636,7 +1636,15 @@ with tab_carteira:
                                                             periodo_carteira)
                 linhas_analise = []
                 dividendos_por_ticker = {}
+                # posição encerrada (vendida, ou fundo extinto e liquidado, como o BCFF11): fica só no
+                # extrato; não é analisada nem gera aviso de "sem dados de mercado" (ativo deslistado)
+                encerrados = sorted(
+                    {l.ticker for l in linhas_ganho if l.situacao == "Encerrada"}
+                    - {l.ticker for l in linhas_ganho if l.situacao != "Encerrada"})
+                st.session_state["carteira_encerrados"] = encerrados
                 for ticker in tickers_encontrados:
+                    if ticker in encerrados:
+                        continue
                     tipo = tipos_confirmados[ticker]
                     # FIIs: o motor usa os mesmos rendimentos conferidos do "O preço está atrativo?"
                     resultado = analisar_ativo(ticker, tipo, periodo_carteira, fonte_rendimentos,
@@ -1672,6 +1680,10 @@ with tab_carteira:
                         try:
                             c["contexto"] = _contexto_para(c["ticker"], resultado_por_ticker.get(c["ticker"]),
                                                            dividendos_por_ticker.get(c["ticker"]))
+                            pt = (c["contexto"] or {}).get("preco_teto")
+                            if pt and c.get("preco_atual"):
+                                # mesma cotação do card (a análise baixa o preço em outro momento do pregão)
+                                pt.update(preco=float(c["preco_atual"]), yield_12m=pt["div12"] / float(c["preco_atual"]))
                         except Exception:
                             c["contexto"] = None  # sem contexto, o card segue com os cenários
                     avisos[:0] = [f"{t}: {a}" for t, lista in eventos.items() for a in lista]
@@ -1718,6 +1730,10 @@ with tab_carteira:
             n_dados = len(sem_dados)
             st.success(f"✅ Análise de {n_ativos} ativo(s) concluída em {st.session_state['carteira_horario']}. "
                        "Os cards de cada ativo e o extrato estão na aba **💼 Dashboard da Carteira**.")
+            encerrados = st.session_state.get("carteira_encerrados") or []
+            if encerrados:
+                st.caption(f"Posições encerradas ({', '.join(encerrados)}): só no extrato do Dashboard, "
+                           "sem análise de mercado.")
             if n_dados:
                 st.warning(f"⚠️ Sem dados de mercado suficientes: {', '.join(sem_dados)} — confira o ticker e o tipo "
                            "(ativo deslistado ou com outro código não tem cotação).")
