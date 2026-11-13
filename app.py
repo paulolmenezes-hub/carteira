@@ -43,6 +43,7 @@ from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, 
                                                   conferir_fontes)
 from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
 from carteira_analise.fundamentalistas import classificar_fii, motivo_classificacao, texto_regularidade
+from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
@@ -1104,6 +1105,48 @@ def _html_regularidade(reg: dict | None) -> str:
             f"os anos e o pior rendeu ao menos metade da mediana.{nota_b3}{nota_corrente}</div></div>")
 
 
+def _html_preco_teto(pt: dict | None) -> str:
+    """Caixa "Preço-teto (Bazin)" das ações da B3: dividendos dos últimos 12 meses
+    ÷ 6%, como o mercado calcula, com o motivo em uma frase e a conferência com a
+    média de 5 anos. Referência de máximo, não altera a pontuação."""
+    if not pt:
+        return ""
+    pct = lambda v: f"{v * 100:.1f}%".replace(".", ",")
+    preco, teto = pt["preco"], pt["teto"]
+    if preco <= teto:
+        cor, fundo, borda = "#15803d", "#f0fdf4", "#86efac"
+        frase = f"preço {(1 - preco / teto) * 100:.0f}% abaixo do teto"
+    else:
+        cor, fundo, borda = "#a16207", "#fefce8", "#fde68a"
+        frase = f"preço {(preco / teto - 1) * 100:.0f}% acima do teto"
+    rende = "acima" if pt["yield_12m"] >= BAZIN_YIELD else "abaixo"
+    motivo = (f"Os proventos dos últimos 12 meses ({formatar_valor(pt['div12'], 'R$')} por ação) rendem "
+              f"{pct(pt['yield_12m'])} ao preço de hoje, {rende} dos 6% do teto.")
+    nota = ""
+    if pt.get("dividendos_fora_da_media") and pt.get("teto_5a"):
+        direcao = "bem acima" if pt["dividendos_fora_da_media"] == "acima" else "bem abaixo"
+        nota = (f"<div style='font-size:.8em;color:#374151;margin-top:4px;line-height:1.4'>⚠️ Esses proventos estão "
+                f"{direcao} da média dos últimos 5 anos ({formatar_valor(pt['div_medio_5a'], 'R$')} por ação ao ano): "
+                f"pela média, o teto seria {formatar_valor(pt['teto_5a'], 'R$')}.</div>")
+    return (f"<div style='border:1px solid {borda};background:{fundo};border-radius:10px;padding:9px 11px'>"
+            "<div style='display:flex;justify-content:space-between;align-items:baseline;gap:8px'>"
+            "<span style='font-weight:700;color:#1e3a8a;font-size:.92em'>Preço-teto (Bazin)</span>"
+            f"<span style='font-weight:700;font-size:1.05em;color:{cor}'>{formatar_valor(teto, 'R$')}</span></div>"
+            f"<div style='font-size:.86em;font-weight:600;color:{cor};margin-top:2px'>Hoje "
+            f"{formatar_valor(preco, 'R$')}: {frase}</div>"
+            f"<div style='font-size:.8em;color:#374151;margin-top:5px;line-height:1.4'>{motivo}</div>{nota}"
+            "<details style='font-size:.76em;color:#4b5563;margin-top:4px'><summary style='cursor:pointer;"
+            "color:#1e3a8a;font-weight:600'>Como é calculado?</summary><div style='margin-top:4px;line-height:1.4'>"
+            "Preço-teto = proventos por ação dos últimos 12 meses (dividendos e JCP) ÷ 6%, o yield mínimo de Décio "
+            "Bazin — a conta usada pelos sites e calculadoras de mercado. É o preço máximo para os proventos renderem "
+            f"6% ao ano. Com o yield mínimo do painel ({pct(pt['limite_regua'])}, 80% do CDI líquido), o teto seria "
+            f"{formatar_valor(pt['teto_regua'], 'R$')}. O método olha só os proventos: não considera o crescimento do "
+            "lucro, e empresa que distribui pouco do que lucra fica acima do teto. No teste do notebook (Seção 16, "
+            "2017–2025), comprar ações bem acima do teto (1,5 vez ou mais, pela régua do painel e média de 5 anos) "
+            "superou o CDI em 12 meses em 42% dos casos, contra 55% a 57% até esse nível. Referência de máximo, não "
+            "recomendação.</div></details></div>")
+
+
 def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = True) -> str:
     """Bloco branco "Contexto do ativo": leitura combinada, indicadores e,
     para FIIs, o preço atrativo. Não altera os cenários do card."""
@@ -1141,7 +1184,8 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
     evidencia = ("" if tipo == "fii" else
                  f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Sobre a leitura "
                  f"combinada:</b> {FRASE_EVIDENCIA_TECNICA}</div>")
-    preco_atrativo = _html_preco_atrativo(ctx) if tipo == "fii" else _html_regularidade(ctx.get("regularidade"))
+    preco_atrativo = (_html_preco_atrativo(ctx) if tipo == "fii"
+                      else _html_regularidade(ctx.get("regularidade")) + _html_preco_teto(ctx.get("preco_teto")))
     return ("<div style='margin-top:12px;background:#ffffff;color:#1f2937;border-radius:14px;padding:12px 14px;"
             "display:flex;flex-direction:column;gap:9px'>"
             "<div style='display:flex;justify-content:space-between;align-items:baseline;gap:8px'>"
@@ -1226,6 +1270,18 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual(), valor_patrimonial=vp)
     if ctx is not None:
         ctx["regularidade"] = getattr(resultado, "regularidade", None)
+        if getattr(resultado, "tipo", None) == "acao" and getattr(resultado, "tec", None) is not None:
+            # preço-teto de Bazin (6% sobre os proventos de 12 meses); com lacuna no Yahoo
+            # conferida no Fundamentus (regularidade), usa a série completa
+            reg = ctx["regularidade"] or {}
+            serie = reg.get("proventos_conferidos")
+            serie = serie if serie is not None and len(serie) else dividendos_yahoo
+            try:
+                ctx["preco_teto"] = preco_teto_bazin(serie, resultado.tec.preco_atual,
+                                                     hoje=resultado.tec.historico.index[-1],
+                                                     cdi_liquido_aa=_cdi_liquido_atual())
+            except Exception:
+                ctx["preco_teto"] = None
         if getattr(resultado, "tipo", None) == "fii":
             ctx["classe_fii"] = classificar_fii(getattr(resultado, "fund", None) or {})
             ctx["motivo_classe"] = motivo_classificacao(getattr(resultado, "fund", None) or {})
