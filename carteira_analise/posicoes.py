@@ -16,6 +16,7 @@ import pandas as pd
 from .planilha import (
     _TIPO_PARA_GRUPO,
     aplicar_eventos_societarios,
+    linhas_resumo_por_ticker,
     normalizar_ticker,
     operacoes_do_ticker,
 )
@@ -43,10 +44,7 @@ def operacoes_por_ticker(df_resumo: pd.DataFrame | None,
     (posição inicial primeiro, operações em cima, eventos societários
     aplicados), no formato de dict usado pela regra. Linhas inválidas são
     ignoradas aqui — o painel já avisa sobre elas no extrato."""
-    resumo: dict[str, object] = {}
-    if df_resumo is not None:
-        for _, row in df_resumo.iterrows():
-            resumo[normalizar_ticker(row["ticker"])[0]] = row
+    resumo = linhas_resumo_por_ticker(df_resumo)  # mais de uma linha por ativo, se houver
     grupos: dict[str, pd.DataFrame] = {}
     if df_operacoes is not None and not df_operacoes.empty:
         chaves = df_operacoes["ticker"].apply(lambda t: normalizar_ticker(t)[0])

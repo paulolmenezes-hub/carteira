@@ -427,15 +427,29 @@ def dividir_em_ciclos(ops: list[dict]) -> list[list[dict]]:
     return ciclos
 
 
+def linhas_resumo_por_ticker(df_resumo: pd.DataFrame | None) -> dict[str, list]:
+    """Linhas da aba Resumo agrupadas por ativo (pode haver mais de uma: a
+    primeira compra de cada posição, quando o ativo foi vendido e recomprado)."""
+    grupos: dict[str, list] = {}
+    if df_resumo is not None:
+        for _, row in df_resumo.iterrows():
+            grupos.setdefault(normalizar_ticker(row["ticker"])[0], []).append(row)
+    return grupos
+
+
 def operacoes_do_ticker(row_resumo, grupo_operacoes: pd.DataFrame | None) -> tuple[list[dict], list[str], int]:
     """Operações válidas de um ativo (posição inicial da aba Resumo + aba
     Operações), já com os eventos societários aplicados. Devolve
     (operações, avisos sobre linhas ignoradas, nº de linhas aproveitadas)."""
     ops: list[dict] = []
     avisos: list[str] = []
-    if row_resumo is not None:
+    # A aba Resumo pode ter mais de uma linha do mesmo ativo: a primeira compra de
+    # cada posição (caso BBAS3, 13/11/2026: 300 em 15/07/2025 e, depois de vender
+    # tudo, 400 em 26/10/2026). Antes, só a última linha era lida.
+    linhas_resumo = row_resumo if isinstance(row_resumo, list) else ([] if row_resumo is None else [row_resumo])
+    for linha_resumo in linhas_resumo:
         try:
-            op = _construir_operacao_da_posicao_inicial(row_resumo)
+            op = _construir_operacao_da_posicao_inicial(linha_resumo)
             ops.append({"data": pd.Timestamp(op.data), "tipo": "compra",
                         "quantidade": float(op.quantidade), "preco": float(op.preco), "inicial": True})
         except (ValueError, TypeError) as e:
@@ -688,11 +702,7 @@ def processar_carteira_combinada(
     e ``baixar_dividendos(ticker)`` (mesmo protocolo de ``fontes.yahoo``,
     usado em ``carteira.analisar_ativo``) — sem I/O de rede direto aqui,
     o que mantém esta função testável com fonte falsa."""
-    tickers_resumo: dict[str, object] = {}
-    if df_resumo is not None:
-        for _, row in df_resumo.iterrows():
-            ticker, _ = normalizar_ticker(row["ticker"])
-            tickers_resumo[ticker] = row
+    tickers_resumo = linhas_resumo_por_ticker(df_resumo)
 
     tickers_operacoes: dict[str, pd.DataFrame] = {}
     if df_operacoes is not None and not df_operacoes.empty:
@@ -861,11 +871,7 @@ def construir_dashboard_por_ativo(
     tipos = tipos or {}
     linhas_ganho_por_chave = {(l.ticker, getattr(l, "ciclo", 1)): l for l in (linhas_ganho or [])}
 
-    tickers_resumo: dict[str, object] = {}
-    if df_resumo is not None:
-        for _, row in df_resumo.iterrows():
-            ticker, _ = normalizar_ticker(row["ticker"])
-            tickers_resumo[ticker] = row
+    tickers_resumo = linhas_resumo_por_ticker(df_resumo)
 
     tickers_operacoes: dict[str, pd.DataFrame] = {}
     if df_operacoes is not None and not df_operacoes.empty:
@@ -893,9 +899,10 @@ def construir_dashboard_por_ativo(
             for op in ciclo:
                 q, preco, tipo = op["quantidade"], op["preco"], op["tipo"]
                 if op.get("inicial"):
-                    linha.qtde_inicial = q
-                    linha.saldo_inicial_valor = q * preco
-                    linha.saldo_inicial_data = pd.Timestamp(op["data"]).date()
+                    linha.qtde_inicial = (linha.qtde_inicial or 0.0) + q
+                    linha.saldo_inicial_valor = (linha.saldo_inicial_valor or 0.0) + q * preco
+                    if linha.saldo_inicial_data is None:
+                        linha.saldo_inicial_data = pd.Timestamp(op["data"]).date()
                 elif tipo == "desdobramento":
                     linha.eventos_quantidade += q
                 elif tipo == "grupamento":
