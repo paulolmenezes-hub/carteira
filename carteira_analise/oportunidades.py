@@ -345,3 +345,100 @@ def frase_resultado(resumo: dict | None, descricao_criterio: str) -> str:
         else:
             frase += " 👉 Sem diferença confiável: o resultado pode ser acaso."
     return frase
+
+
+# ---------------------------------------------------------------------------
+# Preço-teto (método Bazin, com a régua do painel) — teste de 11/2026
+# ---------------------------------------------------------------------------
+# Preço-teto = dividendos por ação no ano ÷ yield mínimo. O yield mínimo é a
+# régua do painel (80% do CDI líquido de 12 meses da época, com piso), em vez
+# dos 6% fixos do Bazin original, para acompanhar os juros. Duas versões:
+#   • 12 meses: dividendos dos últimos 12 meses (equivale a "yield acima da régua");
+#   • 5 anos: média anual dos dividendos dos últimos 5 anos — a do Bazin, que
+#     amortece um ano extraordinário (ou ruim).
+ANOS_TETO_LONGO = 5
+
+
+def avaliar_preco_teto_mes_a_mes(precos: pd.Series, dividendos: pd.Series | None, indice_cdi: pd.Series,
+                                 tipo: str = "acao") -> pd.DataFrame:
+    """Uma linha por fim de mês: preço, yield mínimo da época, preço-teto de
+    12 meses e de 5 anos, critérios (preço até o teto) e o resultado dos 12
+    meses seguintes (retorno total x CDI líquido), no formato de
+    ``resumir_criterio``. ``dividendos`` por data-com, na escala dos preços."""
+    from .pontuacao import limite_dy
+
+    p = _sem_fuso(precos).dropna()
+    d = _sem_fuso(dividendos) if dividendos is not None else pd.Series(dtype=float)
+    if len(p) < 260 or len(d) == 0 or indice_cdi is None:
+        return pd.DataFrame()
+    cdi = _sem_fuso(indice_cdi).reindex(p.index).ffill()
+    m = pd.DateOffset
+
+    def soma_div(ini, fim):
+        return float(d[(d.index > ini) & (d.index <= fim)].sum())
+
+    def cdi_entre(ini, fim):
+        a, b = cdi[cdi.index <= ini], cdi[cdi.index <= fim]
+        if a.empty or b.empty:
+            return np.nan
+        return (float(b.iloc[-1]) / float(a.iloc[-1]) - 1) * (1 - IR_CDI_12M)
+
+    inicio = max(p.index[0], d.index[0])
+    ultimo = p.index[-1]
+    fins_de_mes = p.groupby([p.index.year, p.index.month]).tail(1).index
+    linhas = []
+    for t in fins_de_mes:
+        if t < inicio + m(months=12):
+            continue
+        preco = float(p.loc[t])
+        if preco <= 0:
+            continue
+        cdi_passado = cdi_entre(t - m(months=12), t)
+        limite = limite_dy(tipo, cdi_passado if cdi_passado == cdi_passado else None)
+        div12 = soma_div(t - m(months=12), t)
+        longo_ok = t >= inicio + m(years=ANOS_TETO_LONGO)
+        div_longo = soma_div(t - m(years=ANOS_TETO_LONGO), t) / ANOS_TETO_LONGO if longo_ok else np.nan
+        teto12 = div12 / limite
+        teto_longo = div_longo / limite if longo_ok else np.nan
+        fim = t + m(months=12)
+        if fim <= ultimo:
+            preco_fim = float(p[p.index <= fim].iloc[-1])
+            retorno = (preco_fim + soma_div(t, fim)) / preco - 1
+            cdi_futuro = cdi_entre(t, fim)
+        else:
+            retorno, cdi_futuro = np.nan, np.nan
+        linhas.append({"data": t, "preco": preco, "limite_dy": limite, "cdi_liquido_passado": cdi_passado,
+                       "div12": div12, "div_medio_5a": div_longo, "teto_12m": teto12, "teto_5a": teto_longo,
+                       "retorno_12m": retorno, "cdi_liquido_12m": cdi_futuro})
+    df = pd.DataFrame(linhas)
+    if df.empty:
+        return df
+    c12 = (df["preco"] <= df["teto_12m"]) & (df["div12"] > 0)
+    c5 = (df["preco"] <= df["teto_5a"]) & (df["div_medio_5a"] > 0)
+    df["criterio_teto_12m"] = c12.astype(float)
+    df["criterio_teto_5a"] = np.where(df["teto_5a"].isna(), np.nan, c5.astype(float))
+    df["criterio_teto_ambos"] = np.where(df["teto_5a"].isna(), np.nan, (c12 & c5).astype(float))
+    df["preco_sobre_teto_5a"] = df["preco"] / df["teto_5a"].where(df["teto_5a"] > 0)
+    df["superou_cdi"] = np.where(df["retorno_12m"].isna() | df["cdi_liquido_12m"].isna(), np.nan,
+                                 (df["retorno_12m"] > df["cdi_liquido_12m"]).astype(float))
+    return df
+
+
+def preco_teto_hoje(precos: pd.Series, dividendos: pd.Series | None, cdi_liquido_aa: float | None,
+                    tipo: str = "acao", hoje=None) -> dict | None:
+    """Preço-teto de hoje (12 meses e média de 5 anos), para o card."""
+    from .pontuacao import limite_dy
+
+    p = _sem_fuso(precos).dropna()
+    d = _sem_fuso(dividendos) if dividendos is not None else pd.Series(dtype=float)
+    if p.empty or d.empty:
+        return None
+    hoje = pd.Timestamp(hoje) if hoje is not None else p.index[-1]
+    limite = limite_dy(tipo, cdi_liquido_aa)
+    div12 = float(d[(d.index > hoje - pd.DateOffset(months=12)) & (d.index <= hoje)].sum())
+    longo_ok = d.index[0] <= hoje - pd.DateOffset(years=ANOS_TETO_LONGO) + pd.DateOffset(months=6)
+    div5 = (float(d[(d.index > hoje - pd.DateOffset(years=ANOS_TETO_LONGO)) & (d.index <= hoje)].sum())
+            / ANOS_TETO_LONGO if longo_ok else None)
+    return {"preco": float(p.iloc[-1]), "limite_dy": limite, "div12": div12, "div_medio_5a": div5,
+            "teto_12m": div12 / limite if div12 > 0 else None,
+            "teto_5a": div5 / limite if div5 else None}
