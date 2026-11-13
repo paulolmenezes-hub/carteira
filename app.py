@@ -1377,12 +1377,19 @@ def _html_movimento_brusco(mov: dict | None, moeda: str) -> str:
     if not mov:
         return ""
     direcao = "Queda" if mov["variacao"] < 0 else "Alta"
+    if mov.get("tipo") == "mercado":
+        # sem salto de um dia com fator redondo: movimento de mercado (ex.: após a eleição de 10/2026)
+        return ("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#374151;"
+                "border-left:5px solid #9ca3af;border-radius:8px;font-size:.8em;line-height:1.4'>"
+                f"{'📉' if mov['variacao'] < 0 else '📈'} {direcao} de {abs(mov['variacao']) * 100:.0f}% nas últimas "
+                f"semanas ({formatar_valor(mov['referencia'], moeda)} → {formatar_valor(mov['preco'], moeda)}): "
+                "movimento de mercado, sem sinal de desdobramento ou grupamento.</div>")
     return ("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#92400e;"
             "border-left:5px solid #d97706;border-radius:8px;font-size:.82em;line-height:1.4'>"
             f"<b>{'📉' if mov['variacao'] < 0 else '📈'} {direcao} de {abs(mov['variacao']) * 100:.0f}% em poucos pregões</b> "
             f"({formatar_valor(mov['referencia'], moeda)} → {formatar_valor(mov['preco'], moeda)}). Pode ser movimento "
-            "de mercado ou um evento societário (desdobramento, grupamento) ainda não ajustado pela fonte; "
-            "confira antes de usar os cenários.</div>")
+            "de mercado, mas o salto num único pregão sugere um evento societário (desdobramento, grupamento) "
+            "ainda não ajustado pela fonte; confira antes de usar os cenários.</div>")
 
 
 def _html_alertas_compras(alertas: dict | None, moeda: str = "R$") -> str:
