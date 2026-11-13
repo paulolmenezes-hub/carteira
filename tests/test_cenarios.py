@@ -280,6 +280,8 @@ def test_gerar_cenarios_notas_e_tipo_nao_confirmado():
     por = {c["ticker"]: c for c in cards}
     # X: já vendeu na faixa de +25% -> sem cenário novo, com nota
     assert por["X.SA"]["situacao"] == "realizacao" and por["X.SA"]["tabela"] is None and por["X.SA"]["notas"]
+    # o card segue azul (situação de realização), mas o título avisa que a venda da faixa já foi feita
+    assert por["X.SA"]["rotulo_situacao"] == "Faixa de realização de lucro · venda feita"
     assert any("Y.SA" in a and "não confirmado" in a for a in avisos)
     assert por["Z.SA"]["tabela"] is not None
 
@@ -291,6 +293,8 @@ def test_posicao_pequena_gera_nota():
                           columns=["ticker", "quantidade", "preco_medio", "valor_investido", "data_inicio"])
     cards, _ = gerar_cenarios(resumo, None, FonteFalsa(precos, {}), {"P.SA": "acao"})
     assert cards[0]["tabela"] is None and "pequena demais" in cards[0]["notas"][0]
+    # cenário de venda ainda pendente (só não dá para simular): título sem "venda feita"
+    assert cards[0]["rotulo_situacao"] == "Faixa de realização de lucro"
 
 
 def test_fii_sem_rendimentos_nao_mostra_retrospecto_zerado():
