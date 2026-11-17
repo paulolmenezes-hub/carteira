@@ -423,15 +423,65 @@ def texto_referencias_pl(ref: dict | None) -> str:
     b = ref.get("bolsa")
     if b and b.get("mediana"):
         partes.append(f"bolsa: {_dec(b['mediana'], 1)}")
+    if not g and ref.get("motivo_sem_grupo"):
+        partes.append(f"(sem referência do setor — {ref['motivo_sem_grupo']})")
     return " · ".join(partes)
 
 
+FAIXA_PL_EM_LINHA = 0.15  # até 15% acima ou abaixo da referência: "em linha"
+
+REGUA_PL = ("comparado com a mediana do P/L do segmento (5 ou mais empresas) ou, na falta, do setor "
+            "(3 ou mais); sem elas, com a mediana da bolsa — só empresas com lucro, P/L até 100 e "
+            "liquidez de R$ 1 milhão/dia ou mais (Fundamentus). “Abaixo” = 15% ou mais abaixo da "
+            "referência; “em linha” = até 15% de diferença; “acima” = mais de 15% acima. Sem "
+            "referência, vale a régua fixa: baixo abaixo de 15, alto acima de 25. A pontuação "
+            "(leitura combinada) continua na régua fixa, a testada no backtest.")
+
+
+def comparar_pl(pl: float, ref: dict | None) -> tuple[str, str, str] | None:
+    """(posição, referência, nível) do P/L contra a mediana do segmento/setor
+    ou, na falta, da bolsa. Ex.: ("em linha com", "a bolsa (8,6)", NEUTRO)."""
+    if not ref or pl is None or pl <= 0:
+        return None
+    g, b = ref.get("grupo"), ref.get("bolsa")
+    if g and g.get("mediana"):
+        mediana, nome = g["mediana"], f"o {g['tipo']} {g['nome']}"
+    elif b and b.get("mediana"):
+        mediana, nome = b["mediana"], "a bolsa"
+    else:
+        return None
+    razao = pl / mediana
+    if razao <= 1 - FAIXA_PL_EM_LINHA:
+        pos, nivel = "abaixo d", BOM
+    elif razao > 1 + FAIXA_PL_EM_LINHA:
+        pos, nivel = "acima d", ATENCAO
+    else:
+        pos, nivel = "em linha com", NEUTRO
+    if pos.endswith(" d"):  # contração: "abaixo do segmento", "acima da bolsa"
+        artigo, resto = nome.split(" ", 1)
+        return pos + artigo, f"{resto} ({_dec(mediana, 1)})", nivel
+    return pos, f"{nome} ({_dec(mediana, 1)})", nivel
+
+
 def acrescentar_referencias_pl(ctx: dict | None, ref: dict | None) -> None:
-    """Acrescenta as referências ao indicador P/L do contexto (in place)."""
-    texto = texto_referencias_pl(ref)
-    if not ctx or not texto:
+    """Troca a leitura do indicador P/L pela comparação com a referência
+    (segmento/setor ou bolsa) e guarda a régua no contexto (in place). Sem
+    referência, fica a régua fixa."""
+    if not ctx or not ref:
         return
     for ind in ctx.get("indicadores") or []:
-        if ind.get("nome") == "P/L" and ind.get("valor") not in (None, "—"):
-            ind["leitura"] = f"{ind['leitura']} · {texto}"
-            ind["referencias"] = ref
+        if ind.get("nome") != "P/L" or ind.get("valor") in (None, "—"):
+            continue
+        pl = _num(str(ind["valor"]).replace(".", "").replace(",", "."))
+        comp = comparar_pl(pl, ref)
+        if comp is None:
+            return
+        pos, nome, nivel = comp
+        partes = [f"{pos} {nome}"]
+        g, b = ref.get("grupo"), ref.get("bolsa")
+        if g and g.get("mediana") and b and b.get("mediana"):
+            partes.append(f"bolsa: {_dec(b['mediana'], 1)}")
+        if not g and ref.get("motivo_sem_grupo"):
+            partes.append(f"(sem referência do setor — {ref['motivo_sem_grupo']})")
+        ind["leitura"], ind["nivel"], ind["referencias"] = " · ".join(partes), nivel, ref
+        ctx["regua_pl"] = REGUA_PL
