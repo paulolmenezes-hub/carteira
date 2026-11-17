@@ -49,5 +49,43 @@ def test_texto_no_indicador_do_contexto():
                            {"nome": "RSI 14", "valor": "21", "leitura": "neutro", "nivel": "neutro"}]}
     ref = {"grupo": {"tipo": "segmento", "nome": "Bancos", "mediana": 7.94, "n": 12}, "bolsa": {"mediana": 9.4, "n": 250}}
     acrescentar_referencias_pl(ctx, ref)
-    assert ctx["indicadores"][0]["leitura"] == "baixo · segmento Bancos: 7,9 · bolsa: 9,4"
+    # 6,1 / 7,94 = 0,77: 15% ou mais abaixo do segmento
+    assert ctx["indicadores"][0]["leitura"] == "abaixo do segmento Bancos (7,9) · bolsa: 9,4"
+    assert ctx["indicadores"][0]["nivel"] == "bom"
     assert ctx["indicadores"][1]["leitura"] == "neutro"
+    assert "15%" in ctx["regua_pl"]
+
+
+@pytest.mark.parametrize("pl, grupo, esperado, nivel", [
+    (8.7, None, "em linha com a bolsa (8,6)", "neutro"),                     # CPFE3
+    (14.1, None, "acima da bolsa (8,6)", "atencao"),                         # CXSE3
+    (7.9, ("segmento", "Bancos", 7.5), "em linha com o segmento Bancos (7,5) · bolsa: 8,6", "neutro"),  # ITSA4
+    (5.0, ("setor", "Madeira e Papel", 13.0), "abaixo do setor Madeira e Papel (13,0) · bolsa: 8,6", "bom"),
+])
+def test_rotulo_relativo_a_referencia(pl, grupo, esperado, nivel):
+    from carteira_analise.contexto import acrescentar_referencias_pl, ATENCAO, BOM, NEUTRO
+    ctx = {"indicadores": [{"nome": "P/L", "valor": f"{pl:.1f}".replace(".", ","), "leitura": "baixo", "nivel": BOM}]}
+    g = {"tipo": grupo[0], "nome": grupo[1], "mediana": grupo[2], "n": 9} if grupo else None
+    acrescentar_referencias_pl(ctx, {"grupo": g, "bolsa": {"mediana": 8.6, "n": 300}})
+    ind = ctx["indicadores"][0]
+    assert ind["leitura"] == esperado
+    assert ind["nivel"] == {"bom": BOM, "neutro": NEUTRO, "atencao": ATENCAO}[nivel]
+
+
+def test_sem_referencia_fica_a_regua_fixa():
+    from carteira_analise.contexto import acrescentar_referencias_pl
+    ctx = {"indicadores": [{"nome": "P/L", "valor": "8,7", "leitura": "baixo", "nivel": "bom"}]}
+    acrescentar_referencias_pl(ctx, {"grupo": None, "bolsa": None})
+    assert ctx["indicadores"][0]["leitura"] == "baixo" and "regua_pl" not in ctx
+
+
+def test_motivo_quando_nao_ha_referencia_do_setor():
+    from carteira_analise.contexto import texto_referencias_pl
+    t = tabela_pl_de_html(TABELA)
+    poucas = t[t["papel"].isin(["CPFE3", "EGIE3"])]
+    grupos = [({"tipo": "segmento", "id": "1", "nome": "Energia"}, poucas),
+              ({"tipo": "setor", "id": "2", "nome": "Utilidade", "erro": "HTTPError: 429"}, None)]
+    ref = referencias_pl("CPFE3", grupos, t)
+    assert ref["grupo"] is None
+    assert "segmento Energia: 1 empresa(s)" in ref["motivo_sem_grupo"] and "429" in ref["motivo_sem_grupo"]
+    assert "sem referência do setor" in texto_referencias_pl(ref)
