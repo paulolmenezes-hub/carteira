@@ -38,10 +38,11 @@ from carteira_analise.cenarios import (calcular_participacao, carregar_evidencia
 from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.b3_cotahist import carregar_base as carregar_base_b3, completar_precos
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
-from carteira_analise.fontes.fundamentus import buscar_proventos_fii
+from carteira_analise.fontes.fundamentus import buscar_proventos_acao, buscar_proventos_fii, buscar_referencias_pl
 from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
                                                   conferir_fontes)
-from carteira_analise.contexto import ATENCAO, BOM, cdi_liquido_12m, contexto_do_ativo, faixa_12m
+from carteira_analise.contexto import (ATENCAO, BOM, acrescentar_referencias_pl, cdi_liquido_12m,
+                                      contexto_do_ativo, faixa_12m)
 from carteira_analise.fundamentalistas import classificar_fii, motivo_classificacao, texto_regularidade
 from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
@@ -1101,7 +1102,7 @@ def _html_regularidade(reg: dict | None) -> str:
             f"{grafico}{caixas}<div style='font-size:.86em;line-height:1.45;margin-top:8px'>"
             f"{html.escape(texto_regularidade(reg))}</div>{evidencia}"
             "<div style='font-size:.74em;color:#4b5563;margin-top:4px;line-height:1.4'>DY de cada ano = proventos "
-            "do ano (dividendos e JCP brutos, Yahoo) ÷ preço médio do ano, nos 5 anos fechados. Regular: pagou todos "
+            "do ano (dividendos e JCP brutos, Yahoo, completados com o Fundamentus quando faltam) ÷ preço médio do ano, nos 5 anos fechados. Regular: pagou todos "
             f"os anos e o pior rendeu ao menos metade da mediana.{nota_b3}{nota_corrente}</div></div>")
 
 
@@ -1222,6 +1223,19 @@ def _proventos_fii_em_cache(ticker: str):
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _referencias_pl_em_cache(ticker: str):
+    """Mediana do P/L do segmento (ou setor) e da bolsa, no Fundamentus, uma vez por dia."""
+    return buscar_referencias_pl(ticker)
+
+
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _proventos_acao_em_cache(ticker: str):
+    """Proventos de uma ação no Fundamentus: completam as lacunas do Yahoo em tudo
+    que usa proventos (yield, renda, preço-teto, extrato) — regra de 17/11/2026."""
+    return buscar_proventos_acao(ticker)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
 def _base_cvm_recente():
     """Informes mensais de FIIs da CVM dos últimos 3 anos, baixados uma vez
     por dia: servem para conferir os rendimentos do Fundamentus."""
@@ -1270,6 +1284,11 @@ def _contexto_para(ticker: str, resultado, dividendos_yahoo=None):
     ctx = contexto_do_ativo(resultado, precos, divs, cdi_liquido_aa=_cdi_liquido_atual(), valor_patrimonial=vp)
     if ctx is not None:
         ctx["regularidade"] = getattr(resultado, "regularidade", None)
+        if getattr(resultado, "tipo", None) == "acao":
+            try:
+                acrescentar_referencias_pl(ctx, _referencias_pl_em_cache(ticker))
+            except Exception:
+                pass
         if getattr(resultado, "tipo", None) == "acao" and getattr(resultado, "tec", None) is not None:
             # preço-teto de Bazin (6% sobre os proventos de 12 meses); com lacuna no Yahoo
             # conferida no Fundamentus (regularidade), usa a série completa
@@ -1638,7 +1657,8 @@ with tab_carteira:
                     fonte_dados, tipos_confirmados,
                     lambda t: {"fundamentus": _proventos_fii_em_cache(t),
                                "cvm": (serie_rendimentos(base_cvm, t, "dy")
-                                       if base_cvm is not None and not base_cvm.empty else None)})
+                                       if base_cvm is not None and not base_cvm.empty else None)},
+                    proventos_da_acao=_proventos_acao_em_cache)
                 linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_rendimentos,
                                                             periodo_carteira)
                 linhas_analise = []
@@ -1658,7 +1678,7 @@ with tab_carteira:
                                                cdi_liquido_aa=_cdi_liquido_atual())
                     linhas_analise.append((ticker, tipo, resultado))
                     try:
-                        dividendos_por_ticker[ticker] = fonte_dados.baixar_dividendos(ticker)
+                        dividendos_por_ticker[ticker] = fonte_rendimentos.baixar_dividendos(ticker)
                     except Exception:
                         dividendos_por_ticker[ticker] = pd.Series(dtype=float)
 
@@ -1796,11 +1816,12 @@ with tab_ativo:
                     fonte_dados, {ticker_limpo: tipo_individual},
                     lambda t: {"fundamentus": _proventos_fii_em_cache(t),
                                "cvm": (serie_rendimentos(base_cvm_ind, t, "dy")
-                                       if base_cvm_ind is not None and not base_cvm_ind.empty else None)})
+                                       if base_cvm_ind is not None and not base_cvm_ind.empty else None)},
+                    proventos_da_acao=_proventos_acao_em_cache)
                 resultado = analisar_ativo(ticker_limpo, tipo_individual, periodo_individual, fonte_individual,
                                            cdi_liquido_aa=_cdi_liquido_atual())
                 try:
-                    dividendos_individual = fonte_dados.baixar_dividendos(ticker_limpo)
+                    dividendos_individual = fonte_individual.baixar_dividendos(ticker_limpo)
                 except Exception:
                     dividendos_individual = pd.Series(dtype=float)
 
