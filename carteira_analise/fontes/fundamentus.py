@@ -488,6 +488,7 @@ URL_RESULTADO_GRUPO = "https://www.fundamentus.com.br/resultado.php?{tipo}={id}"
 PL_MAXIMO_REFERENCIA = 100.0
 LIQUIDEZ_MINIMA_REFERENCIA = 1_000_000.0
 MINIMO_EMPRESAS_SEGMENTO = 5
+MINIMO_EMPRESAS_SETOR = 3  # com 1 ou 2 empresas a "mediana" é o P/L de uma delas (LEVE3: 40,1)
 _cache_html: dict[str, str] = {}
 _ultimo_pedido = 0.0
 
@@ -562,16 +563,21 @@ def referencias_pl(papel: str, grupos: list[tuple[dict, pd.DataFrame]], bolsa: p
     Usa o segmento se tiver ao menos ``MINIMO_EMPRESAS_SEGMENTO`` empresas
     além da própria; senão, o setor."""
     escolhido = None
+    motivos = []
     for info, tabela in grupos:
-        mediana, n = mediana_pl(tabela, excluir=papel)
-        if mediana is None:
+        if tabela is None:
+            motivos.append(f"{info['tipo']} {info['nome']}: {info.get('erro', 'não baixado')}")
             continue
-        if info["tipo"] == "segmento" and n < MINIMO_EMPRESAS_SEGMENTO:
+        mediana, n = mediana_pl(tabela, excluir=papel)
+        minimo = MINIMO_EMPRESAS_SEGMENTO if info["tipo"] == "segmento" else MINIMO_EMPRESAS_SETOR
+        if mediana is None or n < minimo:
+            motivos.append(f"{info['tipo']} {info['nome']}: {n} empresa(s) com lucro e liquidez")
             continue
         escolhido = {"tipo": info["tipo"], "nome": info["nome"], "mediana": mediana, "n": n}
         break
     mediana_b, n_b = mediana_pl(bolsa)
-    return {"grupo": escolhido, "bolsa": {"mediana": mediana_b, "n": n_b} if mediana_b else None}
+    return {"grupo": escolhido, "bolsa": {"mediana": mediana_b, "n": n_b} if mediana_b else None,
+            "motivo_sem_grupo": None if escolhido else ("; ".join(motivos) or "links de setor não encontrados")}
 
 
 def buscar_referencias_pl(ticker: str) -> dict | None:
@@ -582,8 +588,8 @@ def buscar_referencias_pl(ticker: str) -> dict | None:
         for info in grupos_setoriais_de_html(_baixar_html(URL_ACAO_DETALHES.format(papel=papel))):
             try:
                 grupos.append((info, tabela_pl_de_html(_baixar_html(URL_RESULTADO_GRUPO.format(**info)))))
-            except Exception:
-                continue
+            except Exception as e:
+                grupos.append(({**info, "erro": f"{type(e).__name__}: {str(e)[:60]}"}, None))
         try:
             bolsa = tabela_pl_de_html(_baixar_html(URL_ACAO_RESULTADO))
         except Exception:
