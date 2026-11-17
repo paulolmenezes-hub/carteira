@@ -98,3 +98,41 @@ def test_carregar_base_aceita_csv_descompactado(tmp_path):
     csv.write_text("ticker,mes,data,fechamento,media,pregoes\nAFHI11,2021-04,2021-04-30,99.89,100.1,15\n")
     base = b3_cotahist.carregar_base(str(tmp_path / "cotacoes_b3_mensais.csv.gz"))
     assert base is not None and list(base["ticker"]) == ["AFHI11"]
+
+
+def _zip_cotahist_mes(linhas: list[str]) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("COTAHIST_M112026.TXT", "\n".join(linhas))
+    return buf.getvalue()
+
+
+def _linha_mes(data: str, papel: str, preco_centavos: int) -> str:
+    linha = [" "] * 245
+    def poe(ini, txt):
+        linha[ini - 1:ini - 1 + len(txt)] = list(txt)
+    poe(1, "01"); poe(3, data); poe(11, "02"); poe(13, papel.ljust(12)); poe(25, "010")
+    poe(109, str(preco_centavos).zfill(13)); poe(211, "0000001")
+    return "".join(linha)
+
+
+def test_meses_faltando_e_acrescentar_meses():
+    from carteira_analise.fontes.b3_cotahist import acrescentar_meses, meses_faltando
+    base = pd.DataFrame({"ticker": ["AFHI11"], "mes": ["2026-09"], "data": pd.to_datetime(["2026-09-30"]),
+                         "fechamento": [90.0], "media": [89.0], "pregoes": [21]})
+    faltam = meses_faltando(base, hoje="2026-12-03")
+    assert [str(m) for m in faltam] == ["2026-10", "2026-11"]
+    assert meses_faltando(base, hoje="2026-10-15") == []
+
+    def baixar(periodo):
+        if str(periodo) == "2026-11":
+            raise OSError("B3 fora do ar")
+        return _zip_cotahist_mes([_linha_mes("20261030", "AFHI11", 9150), _linha_mes("20261029", "AFHI11", 9100)])
+
+    nova, ok, falhas = acrescentar_meses(base, faltam, baixar=baixar, progresso=lambda *_: None)
+    assert ok == ["2026-10"] and len(falhas) == 1 and "11/2026" in falhas[0]
+    out = nova[nova["mes"] == "2026-10"].iloc[0]
+    assert out["fechamento"] == pytest.approx(91.5) and out["pregoes"] == 2
+    assert len(nova) == 2
