@@ -409,3 +409,29 @@ def contexto_do_ativo(resultado, precos: pd.Series | None = None,
                                                        dividendos_fii)
                                   if tipo == "fii" and pa is None else None),
     }
+
+
+def texto_referencias_pl(ref: dict | None) -> str:
+    """Complemento do indicador P/L com as medianas: "segmento Bancos: 7,9 ·
+    bolsa: 9,4". Vazio sem referências."""
+    if not ref:
+        return ""
+    partes = []
+    g = ref.get("grupo")
+    if g and g.get("mediana"):
+        partes.append(f"{g['tipo']} {g['nome']}: {_dec(g['mediana'], 1)}")
+    b = ref.get("bolsa")
+    if b and b.get("mediana"):
+        partes.append(f"bolsa: {_dec(b['mediana'], 1)}")
+    return " · ".join(partes)
+
+
+def acrescentar_referencias_pl(ctx: dict | None, ref: dict | None) -> None:
+    """Acrescenta as referências ao indicador P/L do contexto (in place)."""
+    texto = texto_referencias_pl(ref)
+    if not ctx or not texto:
+        return
+    for ind in ctx.get("indicadores") or []:
+        if ind.get("nome") == "P/L" and ind.get("valor") not in (None, "—"):
+            ind["leitura"] = f"{ind['leitura']} · {texto}"
+            ind["referencias"] = ref
