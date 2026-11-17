@@ -1,1 +1,39 @@
+# Atualiza a base de cotações mensais da B3 (dados/) com os meses fechados.
+# Roda às 9h (horário de Brasília) todos os dias do dia 2 ao dia 10 de cada mês, e também pelo botão "Run workflow" na aba Actions do GitHub. A
+# primeira execução depois de a B3 publicar o arquivo do mês fechado acrescenta
+# o mês; as seguintes não encontram nada faltando e terminam sem gravar. Assim
+# não é preciso calendário de feriados para achar o "3º dia útil".
+name: Atualizar cotações da B3
 
+on:
+  schedule:
+    - cron: "0 12 2-10 * *"   # dias 2 a 10, 12h UTC = 9h em Brasília
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Instalar o pandas
+        run: pip install pandas
+      - name: Acrescentar os meses fechados
+        run: python scripts/atualizar_base_b3.py
+      - name: Gravar no repositório (se mudou)
+        run: |
+          if git diff --quiet -- dados/; then
+            echo "Base sem alterações."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dados/
+          git commit -m "Base da B3: meses fechados até $(date -u -d 'last month' +%m/%Y)"
+          git push
