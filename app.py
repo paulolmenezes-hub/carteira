@@ -1222,10 +1222,26 @@ def _proventos_fii_em_cache(ticker: str):
     return buscar_proventos_fii(ticker)
 
 
+class _ReferenciaIncompleta(Exception):
+    """Resultado parcial (falta o segmento/setor ou a bolsa): não vai para o cache."""
+
+
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _referencias_pl_completas(ticker: str):
+    ref = buscar_referencias_pl(ticker)
+    if not ref or not ref.get("completa"):
+        raise _ReferenciaIncompleta(ref)  # exceção não é guardada: a próxima análise tenta de novo
+    return ref
+
+
 def _referencias_pl_em_cache(ticker: str):
-    """Mediana do P/L do segmento (ou setor) e da bolsa, no Fundamentus, uma vez por dia."""
-    return buscar_referencias_pl(ticker)
+    """Mediana do P/L do segmento (ou setor) e da bolsa, no Fundamentus. Só o
+    resultado completo fica no cache (um dia); o parcial é usado nesta análise
+    e buscado de novo na próxima."""
+    try:
+        return _referencias_pl_completas(ticker)
+    except _ReferenciaIncompleta as e:
+        return e.args[0] if e.args else None
 
 
 @st.cache_data(ttl=12 * 3600, show_spinner=False)
