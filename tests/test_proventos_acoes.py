@@ -54,3 +54,14 @@ def test_fonte_completa_so_acoes():
     assert fonte.baixar_dividendos("CPFE3.SA").sum() == pytest.approx(2.5)
     assert fonte.complementos_acoes["CPFE3.SA"]["adicionados"] == 1
     assert fonte.baixar_dividendos("IVVB11.SA").sum() == pytest.approx(1.0)
+
+
+def test_completa_parcelas_faltantes_na_mesma_data_com():
+    """CPFE3 (17/11/2026): sete parcelas com data-com 29/04/2026 somam R$ 3,73;
+    o Yahoo registrou só R$ 2,82 na data ex de 30/04/2026."""
+    yahoo = _s([("2026-04-30", 2.82)])
+    fund = _s([("2026-04-29", v) for v in (0.303473, 1.128223, 1.128223, 0.130179, 0.216965, 0.607504, 0.216965)])
+    serie, info = completar_proventos_acao(yahoo, fund)
+    assert serie.sum() == pytest.approx(3.731532) and info["adicionados"] == 1
+    # diferença pequena (arredondamento) não entra
+    assert completar_proventos_acao(_s([("2026-04-30", 3.70)]), fund)[1]["adicionados"] == 0
