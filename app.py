@@ -1185,6 +1185,9 @@ def _html_contexto(ctx: dict | None, tipo: str | None, aviso_cenarios: bool = Tr
     evidencia = ("" if tipo == "fii" else
                  f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Sobre a leitura "
                  f"combinada:</b> {FRASE_EVIDENCIA_TECNICA}</div>")
+    if ctx.get("regua_pl"):
+        evidencia += (f"<div style='font-size:.76em;color:#4b5563;line-height:1.4'><b>Sobre o P/L:</b> "
+                      f"{html.escape(ctx['regua_pl'])}</div>")
     preco_atrativo = (_html_preco_atrativo(ctx) if tipo == "fii"
                       else _html_regularidade(ctx.get("regularidade")) + _html_preco_teto(ctx.get("preco_teto")))
     return ("<div style='margin-top:12px;background:#ffffff;color:#1f2937;border-radius:14px;padding:12px 14px;"
