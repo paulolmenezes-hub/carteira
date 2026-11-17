@@ -493,10 +493,16 @@ _cache_html: dict[str, str] = {}
 _ultimo_pedido = 0.0
 
 
-def _baixar_html(url: str, tentativas: int = 3, pausa: float = 0.6) -> str:
+def _baixar_html(url: str, tentativas: int = 4, pausa: float = 1.0, exigir: str | None = None) -> str:
     """Baixa com pausa entre pedidos e novas tentativas: o Fundamentus recusa
     pedidos seguidos (no teste de 17/11/2026, só a primeira ação recebeu o P/L
-    do segmento; as demais ficaram sem). Guarda só o que deu certo."""
+    do segmento; as demais ficaram sem). Guarda só o que deu certo.
+
+    O Fundamentus às vezes responde "200 OK" com a página VAZIA quando recebe
+    pedidos seguidos (no painel, 17/11/2026: "XMLSyntaxError: no text parsed
+    from document" em Seguradoras, Energia Elétrica, Petróleo...). Página sem
+    o trecho ``exigir`` (ex.: "<table") conta como falha: nova tentativa, com
+    pausa maior, e nada vai para o cache."""
     import time
     if url in _cache_html:
         return _cache_html[url]
@@ -510,8 +516,11 @@ def _baixar_html(url: str, tentativas: int = 3, pausa: float = 0.6) -> str:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
             with urllib.request.urlopen(req, timeout=20) as resp:
-                _cache_html[url] = resp.read().decode("latin-1")
-            return _cache_html[url]
+                texto = resp.read().decode("latin-1")
+            if not texto.strip() or (exigir and exigir not in texto.lower()):
+                raise ValueError("página vazia ou incompleta do Fundamentus")
+            _cache_html[url] = texto
+            return texto
         except Exception as e:
             erro = e
     raise erro
@@ -585,13 +594,14 @@ def buscar_referencias_pl(ticker: str) -> dict | None:
     papel = re.sub(r"\.SA$", "", ticker.strip().upper())
     try:
         grupos = []
-        for info in grupos_setoriais_de_html(_baixar_html(URL_ACAO_DETALHES.format(papel=papel))):
+        for info in grupos_setoriais_de_html(_baixar_html(URL_ACAO_DETALHES.format(papel=papel),
+                                                          exigir="<table")):
             try:
-                grupos.append((info, tabela_pl_de_html(_baixar_html(URL_RESULTADO_GRUPO.format(**info)))))
+                grupos.append((info, tabela_pl_de_html(_baixar_html(URL_RESULTADO_GRUPO.format(**info), exigir="<table"))))
             except Exception as e:
                 grupos.append(({**info, "erro": f"{type(e).__name__}: {str(e)[:60]}"}, None))
         try:
-            bolsa = tabela_pl_de_html(_baixar_html(URL_ACAO_RESULTADO))
+            bolsa = tabela_pl_de_html(_baixar_html(URL_ACAO_RESULTADO, exigir="<table"))
         except Exception:
             bolsa = None
         ref = referencias_pl(papel, grupos, bolsa)
