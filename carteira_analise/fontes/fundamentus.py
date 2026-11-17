@@ -489,14 +489,31 @@ PL_MAXIMO_REFERENCIA = 100.0
 LIQUIDEZ_MINIMA_REFERENCIA = 1_000_000.0
 MINIMO_EMPRESAS_SEGMENTO = 5
 _cache_html: dict[str, str] = {}
+_ultimo_pedido = 0.0
 
 
-def _baixar_html(url: str) -> str:
-    if url not in _cache_html:
-        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            _cache_html[url] = resp.read().decode("latin-1")
-    return _cache_html[url]
+def _baixar_html(url: str, tentativas: int = 3, pausa: float = 0.6) -> str:
+    """Baixa com pausa entre pedidos e novas tentativas: o Fundamentus recusa
+    pedidos seguidos (no teste de 17/11/2026, só a primeira ação recebeu o P/L
+    do segmento; as demais ficaram sem). Guarda só o que deu certo."""
+    import time
+    if url in _cache_html:
+        return _cache_html[url]
+    global _ultimo_pedido
+    erro = None
+    for n in range(tentativas):
+        espera = pausa * (2 ** n) - (time.monotonic() - _ultimo_pedido)  # só o que falta da pausa
+        if espera > 0:
+            time.sleep(espera)
+        _ultimo_pedido = time.monotonic()
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                _cache_html[url] = resp.read().decode("latin-1")
+            return _cache_html[url]
+        except Exception as e:
+            erro = e
+    raise erro
 
 
 def grupos_setoriais_de_html(html: str) -> list[dict]:
@@ -572,6 +589,7 @@ def buscar_referencias_pl(ticker: str) -> dict | None:
         except Exception:
             bolsa = None
         ref = referencias_pl(papel, grupos, bolsa)
+        ref["completa"] = bool(ref["grupo"] and ref["bolsa"])
         return ref if (ref["grupo"] or ref["bolsa"]) else None
     except Exception:
         return None

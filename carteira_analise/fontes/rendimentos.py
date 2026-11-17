@@ -375,7 +375,8 @@ def resumo_conferencia(conferencia: dict) -> dict:
 # anos inteiros, ou de pagamentos isolados. O Fundamentus registra cada
 # provento pela data-com. A série do Yahoo (data ex, na escala de hoje) é a
 # base; cada provento do Fundamentus SEM registro do Yahoo por perto (data-com
-# até 3 dias depois ou 10 dias antes da data ex) entra na série.
+# até 3 dias depois ou 10 dias antes da data ex) entra na série, e quando o
+# Yahoo registra só parte dos proventos de uma data-com, entra a diferença.
 JANELA_DATA_EX = (-3, 10)
 
 
@@ -418,9 +419,20 @@ def completar_proventos_acao(yahoo: pd.Series | None, fundamentus: pd.Series | N
         if razoes and abs(float(pd.Series(razoes).median()) - 1) <= 0.15:
             fator_por_data = acumulado  # Fundamentus sem ajuste: põe na escala do Yahoo
     adicionados = []
+    usados: set = set()
     for d, v in fu.items():
-        if len(perto(d, y)) == 0:
-            adicionados.append((d + pd.Timedelta(days=1), v / float(fator_por_data[d])))
+        v = v / float(fator_por_data[d])
+        par = perto(d, y)
+        par = par[[i not in usados for i in par.index]]
+        if len(par) == 0:
+            adicionados.append((d + pd.Timedelta(days=1), v))
+            continue
+        usados.update(par.index)
+        # mesma data-com com vários proventos (caso CPFE3, 29/04/2026: sete parcelas
+        # somando R$ 3,73, e o Yahoo só com R$ 2,82): entra a diferença
+        falta = v - float(par.sum())
+        if falta > 0.05 * v:
+            adicionados.append((par.index[0], falta))
     if not adicionados:
         return y, {"adicionados": 0, "datas": [], "escala": 1.0}
     extra = pd.Series([v for _, v in adicionados], index=pd.DatetimeIndex([d for d, _ in adicionados]))
