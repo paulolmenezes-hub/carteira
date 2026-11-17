@@ -89,3 +89,33 @@ def test_motivo_quando_nao_ha_referencia_do_setor():
     assert ref["grupo"] is None
     assert "segmento Energia: 1 empresa(s)" in ref["motivo_sem_grupo"] and "429" in ref["motivo_sem_grupo"]
     assert "sem referência do setor" in texto_referencias_pl(ref)
+
+
+def test_pagina_vazia_conta_como_falha_e_nao_vai_para_o_cache(monkeypatch):
+    import io
+    from carteira_analise.fontes import fundamentus as fm
+    respostas = iter([b"", b"<html><table><tr><td>ok</td></tr></table></html>"])
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(fm.urllib.request, "urlopen", lambda req, timeout=20: _Resp(next(respostas)))
+    monkeypatch.setattr(fm, "_cache_html", {})
+    texto = fm._baixar_html("https://x/teste-vazia", pausa=0, exigir="<table")
+    assert "<table" in texto  # a primeira resposta (vazia) foi descartada
+
+
+def test_pagina_sempre_vazia_levanta_erro_sem_cache(monkeypatch):
+    import io
+    from carteira_analise.fontes import fundamentus as fm
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(fm.urllib.request, "urlopen", lambda req, timeout=20: _Resp(b"   "))
+    monkeypatch.setattr(fm, "_cache_html", {})
+    with pytest.raises(ValueError):
+        fm._baixar_html("https://x/sempre-vazia", tentativas=2, pausa=0, exigir="<table")
+    assert fm._cache_html == {}
