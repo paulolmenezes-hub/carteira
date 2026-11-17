@@ -473,3 +473,105 @@ def buscar_imoveis_pl_fii(ticker: str) -> float | None:
         return None
     _cache_imoveis_pl[papel] = valor
     return valor
+
+
+# =============================================================================
+# P/L de referência: segmento (ou setor) e bolsa — 17/11/2026
+# =============================================================================
+# A página de detalhes de cada ação traz links para a lista das empresas do
+# mesmo setor e do mesmo segmento (resultado.php?setor=N / ?segmento=N), no
+# mesmo formato da tabela geral. A referência é a MEDIANA do P/L das empresas
+# com lucro (P/L entre 0 e 100) e negociadas (liquidez média de 2 meses de pelo
+# menos R$ 1 milhão por dia). O segmento só vale com pelo menos 5 empresas.
+URL_ACAO_DETALHES = "https://www.fundamentus.com.br/detalhes.php?papel={papel}"
+URL_RESULTADO_GRUPO = "https://www.fundamentus.com.br/resultado.php?{tipo}={id}"
+PL_MAXIMO_REFERENCIA = 100.0
+LIQUIDEZ_MINIMA_REFERENCIA = 1_000_000.0
+MINIMO_EMPRESAS_SEGMENTO = 5
+_cache_html: dict[str, str] = {}
+
+
+def _baixar_html(url: str) -> str:
+    if url not in _cache_html:
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            _cache_html[url] = resp.read().decode("latin-1")
+    return _cache_html[url]
+
+
+def grupos_setoriais_de_html(html: str) -> list[dict]:
+    """Links de setor e segmento da página de detalhes, do mais específico
+    (segmento) para o mais amplo (setor): [{"tipo", "id", "nome"}]."""
+    import html as _html
+    achados = {}
+    for tipo, ident, nome in re.findall(r'resultado\.php\?(setor|segmento)=(\d+)[^>]*>\s*([^<]+?)\s*<', html):
+        achados.setdefault(tipo, {"tipo": tipo, "id": ident, "nome": _html.unescape(nome).strip()})
+    return [achados[t] for t in ("segmento", "setor") if t in achados]
+
+
+def tabela_pl_de_html(html: str) -> pd.DataFrame:
+    """Papel, P/L e liquidez média de 2 meses de uma tabela de resultado."""
+    df = _ler_tabela_como_texto(html)
+    colunas = {c: str(c).strip().lower() for c in df.columns}
+    col_papel = _achar_coluna(colunas, "papel")
+    col_pl = _achar_coluna(colunas, "p/l")
+    col_liq = _achar_coluna(colunas, "liq.2m", "liq. 2m", "liq.2 m")
+    linhas = []
+    for _, linha in df.iterrows():
+        papel = re.sub(r"\s+", "", str(linha.get(col_papel, ""))).upper()
+        if not papel or papel == "NAN":
+            continue
+        linhas.append({"papel": papel, "pl": _parse_numero_br(linha.get(col_pl)),
+                       "liquidez": _parse_numero_br(linha.get(col_liq)) if col_liq else None})
+    return pd.DataFrame(linhas, columns=["papel", "pl", "liquidez"])
+
+
+def mediana_pl(tabela: pd.DataFrame | None, excluir: str | None = None) -> tuple[float | None, int]:
+    """(mediana do P/L das empresas com lucro e negociadas, número delas)."""
+    if tabela is None or tabela.empty:
+        return None, 0
+    t = tabela[(tabela["pl"] > 0) & (tabela["pl"] <= PL_MAXIMO_REFERENCIA)]
+    if "liquidez" in t and t["liquidez"].notna().any():
+        t = t[t["liquidez"].fillna(0) >= LIQUIDEZ_MINIMA_REFERENCIA]
+    if excluir:
+        t = t[t["papel"] != excluir]
+    if t.empty:
+        return None, 0
+    return float(t["pl"].median()), int(len(t))
+
+
+def referencias_pl(papel: str, grupos: list[tuple[dict, pd.DataFrame]], bolsa: pd.DataFrame | None) -> dict:
+    """{"grupo": {"tipo", "nome", "mediana", "n"} | None, "bolsa": {"mediana", "n"} | None}.
+    Usa o segmento se tiver ao menos ``MINIMO_EMPRESAS_SEGMENTO`` empresas
+    além da própria; senão, o setor."""
+    escolhido = None
+    for info, tabela in grupos:
+        mediana, n = mediana_pl(tabela, excluir=papel)
+        if mediana is None:
+            continue
+        if info["tipo"] == "segmento" and n < MINIMO_EMPRESAS_SEGMENTO:
+            continue
+        escolhido = {"tipo": info["tipo"], "nome": info["nome"], "mediana": mediana, "n": n}
+        break
+    mediana_b, n_b = mediana_pl(bolsa)
+    return {"grupo": escolhido, "bolsa": {"mediana": mediana_b, "n": n_b} if mediana_b else None}
+
+
+def buscar_referencias_pl(ticker: str) -> dict | None:
+    """Referências de P/L de uma ação da B3 (segmento ou setor, e bolsa). None se falhar."""
+    papel = re.sub(r"\.SA$", "", ticker.strip().upper())
+    try:
+        grupos = []
+        for info in grupos_setoriais_de_html(_baixar_html(URL_ACAO_DETALHES.format(papel=papel))):
+            try:
+                grupos.append((info, tabela_pl_de_html(_baixar_html(URL_RESULTADO_GRUPO.format(**info)))))
+            except Exception:
+                continue
+        try:
+            bolsa = tabela_pl_de_html(_baixar_html(URL_ACAO_RESULTADO))
+        except Exception:
+            bolsa = None
+        ref = referencias_pl(papel, grupos, bolsa)
+        return ref if (ref["grupo"] or ref["bolsa"]) else None
+    except Exception:
+        return None

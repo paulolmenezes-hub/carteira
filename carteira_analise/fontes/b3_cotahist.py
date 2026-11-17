@@ -165,3 +165,72 @@ def medias_mensais(base: pd.DataFrame | None, ticker: str, eventos: pd.Series | 
     DY anual quando o Yahoo não cobre o ano inteiro."""
     _, medias = series_do_papel(base, ticker)
     return ajustar_desdobramentos(medias, eventos)
+
+
+# ---------------------------------------------------------------------------
+# Atualização mensal (17/11/2026): só os meses fechados que faltam, pelos
+# arquivos MENSAIS da B3 (poucos MB cada), em vez do arquivo do ano inteiro.
+# Usada pela tarefa automática do GitHub (scripts/atualizar_base_b3.py, todo
+# dia 3) e, de reserva, pelo botão da Seção 15 do notebook.
+# ---------------------------------------------------------------------------
+URL_COTAHIST_MES = "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_M{mes:02d}{ano}.ZIP"
+
+
+def caminho_base_existente(caminho: str | None = None) -> str:
+    """O arquivo da base no repositório: .csv.gz, ou .csv quando o navegador
+    descompactou ao baixar."""
+    caminho = caminho or CAMINHO_BASE
+    if not os.path.exists(caminho) and caminho.endswith(".gz") and os.path.exists(caminho[:-3]):
+        return caminho[:-3]
+    return caminho
+
+
+def meses_faltando(base: pd.DataFrame | None, hoje=None) -> list[pd.Period]:
+    """Meses FECHADOS depois do último mês da base (até o mês anterior a hoje)."""
+    hoje = pd.Timestamp(hoje) if hoje is not None else pd.Timestamp.today()
+    ultimo_fechado = hoje.to_period("M") - 1
+    if base is None or base.empty:
+        return []
+    ultimo = pd.Period(str(base["mes"].max()), freq="M")
+    return [ultimo + i for i in range(1, (ultimo_fechado - ultimo).n + 1)]
+
+
+def baixar_mes_cotahist(periodo: pd.Period, timeout: int = 300) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(URL_COTAHIST_MES.format(mes=periodo.month, ano=periodo.year),
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def acrescentar_meses(base: pd.DataFrame, meses: list[pd.Period], baixar=baixar_mes_cotahist,
+                      progresso=print) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Baixa cada mês, resume e acrescenta à base (substitui o mês, se já
+    existir). Devolve (base nova, meses acrescentados, falhas). Um mês que
+    falha (B3 fora do ar, arquivo ainda não publicado) não impede os outros."""
+    novos, ok, falhas = [], [], []
+    for periodo in meses:
+        try:
+            pregoes = filtrar_papeis(ler_zip_cotahist(baixar(periodo)))
+            resumo = resumo_mensal(pregoes)
+            resumo = resumo[resumo["mes"] == str(periodo)]
+            if resumo.empty:
+                raise ValueError("arquivo sem pregões do mês")
+            novos.append(resumo)
+            ok.append(str(periodo))
+            progresso(f"✓ {periodo.strftime('%m/%Y')}: {resumo['ticker'].nunique()} papéis")
+        except Exception as e:
+            falhas.append(f"{periodo.strftime('%m/%Y')} ({type(e).__name__}: {str(e)[:80]})")
+            progresso(f"✗ {periodo.strftime('%m/%Y')}: {type(e).__name__}: {str(e)[:80]}")
+    if not novos:
+        return base, ok, falhas
+    nova = pd.concat([base[~base["mes"].astype(str).isin(ok)]] + novos, ignore_index=True)
+    nova["data"] = pd.to_datetime(nova["data"])
+    nova = nova.sort_values(["ticker", "data"]).reset_index(drop=True)
+    return nova, ok, falhas
+
+
+def salvar_base(base: pd.DataFrame, caminho: str) -> None:
+    compressao = "gzip" if caminho.endswith(".gz") else None
+    base.to_csv(caminho, index=False, compression=compressao, date_format="%Y-%m-%d")
+    _CACHE_BASE.pop(caminho, None)

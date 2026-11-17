@@ -371,6 +371,64 @@ def resumo_conferencia(conferencia: dict) -> dict:
     return linha
 
 
+# Ações (17/11/2026, caso CPFE3): o Yahoo às vezes não registra proventos de
+# anos inteiros, ou de pagamentos isolados. O Fundamentus registra cada
+# provento pela data-com. A série do Yahoo (data ex, na escala de hoje) é a
+# base; cada provento do Fundamentus SEM registro do Yahoo por perto (data-com
+# até 3 dias depois ou 10 dias antes da data ex) entra na série.
+JANELA_DATA_EX = (-3, 10)
+
+
+def _sem_fuso(serie: pd.Series) -> pd.Series:
+    s = serie.dropna().copy()
+    s.index = pd.DatetimeIndex(s.index)
+    if s.index.tz is not None:
+        s.index = s.index.tz_localize(None)
+    return s.astype(float).sort_index()  # dias entre a data-com (Fundamentus) e a data ex (Yahoo)
+
+
+def completar_proventos_acao(yahoo: pd.Series | None, fundamentus: pd.Series | None,
+                             eventos: pd.Series | None = None) -> tuple[pd.Series, dict]:
+    """(série completa, info) — info: {"adicionados": n, "datas": [...],
+    "escala": fator aplicado ao Fundamentus}. Sem Fundamentus, devolve o Yahoo."""
+    y = _sem_fuso(yahoo) if yahoo is not None else pd.Series(dtype=float)
+    y = y[y > 0] if len(y) else y
+    if fundamentus is None or len(fundamentus) == 0:
+        return y, {"adicionados": 0, "datas": [], "escala": 1.0}
+    fu = _sem_fuso(fundamentus)
+    fu = fu[fu > 0].groupby(level=0).sum().sort_index()
+    ini, fim = JANELA_DATA_EX
+
+    def perto(data, serie):
+        return serie[(serie.index >= data + pd.Timedelta(days=ini)) & (serie.index <= data + pd.Timedelta(days=fim))]
+
+    # Escala: o Yahoo ajusta proventos antigos por desdobramentos e bonificações; o
+    # Fundamentus pode não ajustar. Fator = mediana de Fundamentus ÷ Yahoo nos pares
+    # encontrados ANTES de cada evento; só aplica se os pares mostrarem a diferença.
+    fator_por_data = pd.Series(1.0, index=fu.index)
+    if eventos is not None and len(eventos):
+        ev = _sem_fuso(eventos)
+        ev = ev[(ev > 0) & (ev != 1)].sort_index()
+        acumulado = pd.Series([float(ev[ev.index > d].prod()) for d in fu.index], index=fu.index)
+        razoes = []
+        for d, v in fu.items():
+            par = perto(d, y)
+            if len(par) and acumulado[d] >= 1.5:
+                razoes.append((v / float(par.sum())) / acumulado[d])
+        if razoes and abs(float(pd.Series(razoes).median()) - 1) <= 0.15:
+            fator_por_data = acumulado  # Fundamentus sem ajuste: põe na escala do Yahoo
+    adicionados = []
+    for d, v in fu.items():
+        if len(perto(d, y)) == 0:
+            adicionados.append((d + pd.Timedelta(days=1), v / float(fator_por_data[d])))
+    if not adicionados:
+        return y, {"adicionados": 0, "datas": [], "escala": 1.0}
+    extra = pd.Series([v for _, v in adicionados], index=pd.DatetimeIndex([d for d, _ in adicionados]))
+    serie = pd.concat([y, extra]).groupby(level=0).sum().sort_index()
+    return serie, {"adicionados": len(adicionados), "datas": [d for d, _ in adicionados],
+                   "escala": float(fator_por_data.max())}
+
+
 class FonteComRendimentosConferidos:
     """Embrulha a fonte de dados do pacote (protocolo ``baixar_precos``,
     ``baixar_dividendos``...) trocando, só para FIIs, os dividendos do Yahoo
@@ -382,18 +440,34 @@ class FonteComRendimentosConferidos:
     ``series_do_fii(ticker)`` devolve {"fundamentus": ..., "cvm": ...} (o
     Yahoo vem da própria fonte). Se nenhuma fonte responder, cai no Yahoo."""
 
-    def __init__(self, fonte, tipos: dict[str, str], series_do_fii):
+    def __init__(self, fonte, tipos: dict[str, str], series_do_fii, proventos_da_acao=None):
         self._fonte = fonte
         self._tipos = tipos or {}
         self._series_do_fii = series_do_fii
+        self._proventos_da_acao = proventos_da_acao  # ações da B3: proventos do Fundamentus
         self._cache: dict[str, pd.Series] = {}
         self.conferencias: dict[str, dict] = {}
+        self.complementos_acoes: dict[str, dict] = {}
 
     def __getattr__(self, nome):
         return getattr(self._fonte, nome)
 
     def baixar_dividendos(self, ticker: str) -> pd.Series:
         yahoo = self._fonte.baixar_dividendos(ticker)
+        if self._tipos.get(ticker) == "acao" and self._proventos_da_acao is not None:
+            if ticker not in self._cache:
+                try:
+                    fund = self._proventos_da_acao(ticker)
+                    try:
+                        eventos = self._fonte.baixar_eventos(ticker)
+                    except Exception:
+                        eventos = None
+                    serie, info = completar_proventos_acao(yahoo, fund, eventos)
+                    self.complementos_acoes[ticker] = info
+                except Exception:
+                    serie = yahoo
+                self._cache[ticker] = serie if serie is not None else pd.Series(dtype=float)
+            return self._cache[ticker]
         if self._tipos.get(ticker) != "fii":
             return yahoo
         if ticker not in self._cache:
