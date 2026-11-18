@@ -586,7 +586,9 @@ def referencias_pl(papel: str, grupos: list[tuple[dict, pd.DataFrame]], bolsa: p
         break
     mediana_b, n_b = mediana_pl(bolsa)
     return {"grupo": escolhido, "bolsa": {"mediana": mediana_b, "n": n_b} if mediana_b else None,
-            "motivo_sem_grupo": None if escolhido else ("; ".join(motivos) or "links de setor não encontrados")}
+            "motivo_sem_grupo": None if escolhido else ("; ".join(motivos) or "links de setor não encontrados"),
+            # falha de download (tenta de novo na próxima carga) x poucas empresas comparáveis
+            "sem_grupo_por_falha": (not escolhido) and (not grupos or any(t is None for _, t in grupos))}
 
 
 def buscar_referencias_pl(ticker: str) -> dict | None:
