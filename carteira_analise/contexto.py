@@ -411,6 +411,14 @@ def contexto_do_ativo(resultado, precos: pd.Series | None = None,
     }
 
 
+def _nota_sem_grupo(ref: dict) -> str:
+    """Nota curta quando não há referência de segmento/setor. O motivo
+    detalhado continua em ``ref["motivo_sem_grupo"]``."""
+    if ref.get("sem_grupo_por_falha"):
+        return "(setor indisponível no momento)"
+    return "(sem empresas comparáveis no setor)"
+
+
 def texto_referencias_pl(ref: dict | None) -> str:
     """Complemento do indicador P/L com as medianas: "segmento Bancos: 7,9 ·
     bolsa: 9,4". Vazio sem referências."""
@@ -424,18 +432,15 @@ def texto_referencias_pl(ref: dict | None) -> str:
     if b and b.get("mediana"):
         partes.append(f"bolsa: {_dec(b['mediana'], 1)}")
     if not g and ref.get("motivo_sem_grupo"):
-        partes.append(f"(sem referência do setor — {ref['motivo_sem_grupo']})")
+        partes.append(_nota_sem_grupo(ref))
     return " · ".join(partes)
 
 
 FAIXA_PL_EM_LINHA = 0.15  # até 15% acima ou abaixo da referência: "em linha"
 
-REGUA_PL = ("comparado com a mediana do P/L do segmento (5 ou mais empresas) ou, na falta, do setor "
-            "(3 ou mais); sem elas, com a mediana da bolsa — só empresas com lucro, P/L até 100 e "
-            "liquidez de R$ 1 milhão/dia ou mais (Fundamentus). “Abaixo” = 15% ou mais abaixo da "
-            "referência; “em linha” = até 15% de diferença; “acima” = mais de 15% acima. Sem "
-            "referência, vale a régua fixa: baixo abaixo de 15, alto acima de 25. A pontuação "
-            "(leitura combinada) continua na régua fixa, a testada no backtest.")
+REGUA_PL = ("Mediana das empresas com lucro e liquidez; em linha = até 15% de diferença. A leitura "
+            "combinada usa a régua fixa (15 e 25).")
+FATOR_PL_INFLADO = 3.0  # P/L 3 vezes a referência: lucro de 12 meses deprimido (VALE3, KLBN11 em 11/2026)
 
 
 def comparar_pl(pl: float, ref: dict | None) -> tuple[str, str, str] | None:
@@ -445,7 +450,7 @@ def comparar_pl(pl: float, ref: dict | None) -> tuple[str, str, str] | None:
         return None
     g, b = ref.get("grupo"), ref.get("bolsa")
     if g and g.get("mediana"):
-        mediana, nome = g["mediana"], f"o {g['tipo']} {g['nome']}"
+        mediana, nome = g["mediana"], f"o {g['tipo']}"
     elif b and b.get("mediana"):
         mediana, nome = b["mediana"], "a bolsa"
     else:
@@ -479,9 +484,17 @@ def acrescentar_referencias_pl(ctx: dict | None, ref: dict | None) -> None:
         pos, nome, nivel = comp
         partes = [f"{pos} {nome}"]
         g, b = ref.get("grupo"), ref.get("bolsa")
-        if g and g.get("mediana") and b and b.get("mediana"):
-            partes.append(f"bolsa: {_dec(b['mediana'], 1)}")
-        if not g and ref.get("motivo_sem_grupo"):
-            partes.append(f"(sem referência do setor — {ref['motivo_sem_grupo']})")
+        mediana_ref = (g or {}).get("mediana") or (b or {}).get("mediana")
+        if mediana_ref and pl >= FATOR_PL_INFLADO * mediana_ref:
+            partes.append("lucro de 12 meses muito baixo")
         ind["leitura"], ind["nivel"], ind["referencias"] = " · ".join(partes), nivel, ref
-        ctx["regua_pl"] = REGUA_PL
+        # o chip fica curto; os nomes e a bolsa vão para a linha "Sobre o P/L"
+        refs = []
+        if g and g.get("mediana"):
+            refs.append(f"{g['tipo']} {g['nome']} {_dec(g['mediana'], 1)}")
+        if b and b.get("mediana"):
+            refs.append(f"bolsa {_dec(b['mediana'], 1)}")
+        texto = ("Referência: " + " · ".join(refs) + ". ") if refs else ""
+        if not g:
+            texto += _nota_sem_grupo(ref).strip("()").capitalize() + ". "
+        ctx["regua_pl"] = texto + REGUA_PL
