@@ -802,10 +802,8 @@ def _html_tabela(colunas: list, linhas: list, moeda: str) -> str:
 _COR_TRECHO = {"queda": "#f0a93b", "fora": "#2bb3a3", "realizacao": "#7b8fff"}
 _COR_NIVEL = {BOM: "#2bb3a3", ATENCAO: "#f0a93b"}
 _ROTULO_FAIXA = {"queda": "queda", "fora": "fora das faixas", "realizacao": "realização de lucro"}
-FRASE_EVIDENCIA_TECNICA = ("a leitura considera só fundamentos e renda. Os sinais técnicos (MM200, RSI, piso e "
-                           "topo) ficaram próximos de “não fazer nada” no backtest e aparecem apenas na pontuação "
-                           "completa; os fundamentos não têm histórico gratuito para teste. Use como contexto, "
-                           "não como sinal.")
+FRASE_EVIDENCIA_TECNICA = ("considera só fundamentos e renda. Os sinais técnicos não mostraram vantagem no "
+                           "backtest e ficam na pontuação completa. Use como contexto, não como sinal.")
 
 
 
@@ -1081,8 +1079,7 @@ def _html_regularidade(reg: dict | None) -> str:
         # dezembro do ano anterior e conta naquele ano)
         nota_corrente = (f" Em {corrente['ano']}, nenhuma data-com até agora"
                          + (" (o Fundamentus também não registra)" if reg.get("conferencia") == "ok" else "")
-                         + ". O DY de cada ano conta pela data-com: proventos declarados no fim de um ano e pagos "
-                         "no ano seguinte entram no ano da declaração.")
+                         + f"; os pagos em {corrente['ano']} foram declarados em {corrente['ano'] - 1} e contam lá.")
     elif corrente:
         nota_corrente = f" Em {corrente['ano']}, até agora: {_pct_br(corrente['dy'], 1)} (ano incompleto, fora da conta)."
     else:
@@ -1121,7 +1118,7 @@ def _html_preco_teto(pt: dict | None) -> str:
         cor, fundo, borda = "#a16207", "#fefce8", "#fde68a"
         frase = f"preço {(preco / teto - 1) * 100:.0f}% acima do teto"
     rende = "acima" if pt["yield_12m"] >= BAZIN_YIELD else "abaixo"
-    motivo = (f"Os proventos dos últimos 12 meses ({formatar_valor(pt['div12'], 'R$')} por ação) rendem "
+    motivo = (f"Os proventos dos últimos 12 meses ({formatar_valor(pt['div12'], 'R$')} por ação, JCP bruto) rendem "
               f"{pct(pt['yield_12m'])} ao preço de hoje, {rende} dos 6% do teto.")
     nota = ""
     if pt.get("dividendos_fora_da_media") and pt.get("teto_5a"):
