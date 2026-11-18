@@ -248,8 +248,10 @@ def _rsi(tec):
     rsi = _num(getattr(tec, "rsi14", None))
     if rsi is None:
         return _ind("RSI 14", "—", "sem histórico", NEUTRO)
+    if rsi < 30:  # convenção de mercado: abaixo de 30, sobrevendido
+        return _ind("RSI 14", _dec(rsi, 0), "sobrevendido", BOM)
     if rsi < 40:
-        return _ind("RSI 14", _dec(rsi, 0), "não sobrecomprado", BOM)
+        return _ind("RSI 14", _dec(rsi, 0), "perto de sobrevendido", BOM)
     if rsi > 70:
         return _ind("RSI 14", _dec(rsi, 0), "sobrecomprado", ATENCAO)
     return _ind("RSI 14", _dec(rsi, 0), "neutro", NEUTRO)
