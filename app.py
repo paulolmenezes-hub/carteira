@@ -628,23 +628,27 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
-st.markdown(
-    "Faça upload da sua planilha (Excel) com uma ou duas abas:\n\n"
-    "- **Resumo** (ou **1ª Compra**, ou **Posição inicial**) — o ponto de partida de cada ativo: a "
-    "quantidade e o preço médio que você tinha na data de início, **não a posição de hoje** (a posição de "
-    "hoje o painel calcula somando as movimentações): `ticker`, `quantidade`, "
-    "`preco_medio` (ou `valor_investido`), `data_inicio`.\n"
-    "- **Operações** (ou **Movimentações**, ou **Compras e vendas posteriores**) — o que aconteceu depois "
-    "da data de início: `ticker`, `tipo` "
-    "(compra/venda), `quantidade`, `preco`, `data`. Eventos da empresa também entram nessa aba, "
-    "com a **diferença** de ações na quantidade: `bonificação` (ações recebidas; no preço, o custo "
-    "atribuído informado pela empresa, ou 0), `desdobramento` (ações recebidas; preço em branco) e "
-    "`grupamento` (ações que deixaram de existir; preço em branco).\n\n"
-    "Você pode ter só uma das abas, ou as duas — quando tiver as duas, a "
-    "posição inicial entra como o primeiro registro, e cada operação "
-    "lançada depois ajusta quantidade, preço médio e ganho automaticamente, "
-    "igual um extrato."
-)
+CAMINHO_MODELO = Path(__file__).resolve().parent / "modelos" / "modelo_carteira.xlsx"
+
+st.markdown("**Como carregar a sua carteira:** baixe o modelo, preencha com os seus ativos e envie o "
+            "arquivo abaixo. A planilha fica só nesta sessão do navegador; não é gravada no servidor.")
+if CAMINHO_MODELO.exists():
+    st.download_button("⬇️ Baixar o modelo (Excel)", CAMINHO_MODELO.read_bytes(), file_name="modelo_carteira.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+with st.expander("Como preencher a planilha", expanded=st.session_state.get("planilha_bytes") is None):
+    st.markdown(
+        "**Aba Resumo** — o ponto de partida de cada ativo: Ticker, Quantidade, Preço (médio), Data e Tipo Ativo.\n"
+        "- Com a aba Operações: lance a **primeira compra**; a posição de hoje o painel calcula.\n"
+        "- Só com o Resumo: lance a **posição de hoje**, com o preço médio e a data de entrada.\n\n"
+        "**Aba Operações** (opcional) — compras e vendas depois da data do Resumo: Ticker, Tipo "
+        "(Compra/Venda), Quantidade, Preço, Data e Tipo Ativo. Eventos da empresa também entram aqui, com a "
+        "**diferença** de ações: Bonificação (ações recebidas; preço = custo atribuído ou 0), Desdobramento "
+        "(ações recebidas; preço em branco) e Grupamento (ações que deixaram de existir; preço em branco).\n\n"
+        "**Uma ou duas abas?** Com as duas, o painel mostra também vendas, ganho realizado e posições "
+        "encerradas. Só com o Resumo, a análise começa na data de entrada.\n\n"
+        "**Ticker:** B3 com ou sem .SA (VALE3 ou VALE3.SA); EUA como no Yahoo Finance (BRK-B, NOBL). "
+        "**Tipo Ativo:** Ação, FII ou ETF."
+    )
 
 # A planilha fica guardada SÓ na sessão do navegador de quem a enviou
 # (st.session_state). Uma versão anterior a gravava num arquivo do servidor,
