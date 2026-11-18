@@ -50,17 +50,21 @@ def test_texto_no_indicador_do_contexto():
     ref = {"grupo": {"tipo": "segmento", "nome": "Bancos", "mediana": 7.94, "n": 12}, "bolsa": {"mediana": 9.4, "n": 250}}
     acrescentar_referencias_pl(ctx, ref)
     # 6,1 / 7,94 = 0,77: 15% ou mais abaixo do segmento
-    assert ctx["indicadores"][0]["leitura"] == "abaixo do segmento Bancos (7,9) · bolsa: 9,4"
+    assert ctx["indicadores"][0]["leitura"] == "abaixo do segmento (7,9)"
     assert ctx["indicadores"][0]["nivel"] == "bom"
     assert ctx["indicadores"][1]["leitura"] == "neutro"
-    assert "15%" in ctx["regua_pl"]
+    assert ctx["regua_pl"].startswith("Referência: segmento Bancos 7,9 · bolsa 9,4.")
 
 
 @pytest.mark.parametrize("pl, grupo, esperado, nivel", [
     (8.7, None, "em linha com a bolsa (8,6)", "neutro"),                     # CPFE3
     (14.1, None, "acima da bolsa (8,6)", "atencao"),                         # CXSE3
-    (7.9, ("segmento", "Bancos", 7.5), "em linha com o segmento Bancos (7,5) · bolsa: 8,6", "neutro"),  # ITSA4
-    (5.0, ("setor", "Madeira e Papel", 13.0), "abaixo do setor Madeira e Papel (13,0) · bolsa: 8,6", "bom"),
+    (7.9, ("segmento", "Bancos", 7.5), "em linha com o segmento (7,5)", "neutro"),  # ITSA4
+    (5.0, ("setor", "Madeira e Papel", 13.0), "abaixo do setor (13,0)", "bom"),
+    (122.4, ("segmento", "Minerais Metálicos", 20.1),                       # VALE3: lucro deprimido
+     "acima do segmento (20,1) · lucro de 12 meses muito baixo", "atencao"),
+    (20.0, ("segmento", "Minerais Metálicos", 20.1),
+     "em linha com o segmento (20,1)", "neutro"),
 ])
 def test_rotulo_relativo_a_referencia(pl, grupo, esperado, nivel):
     from carteira_analise.contexto import acrescentar_referencias_pl, ATENCAO, BOM, NEUTRO
@@ -88,7 +92,19 @@ def test_motivo_quando_nao_ha_referencia_do_setor():
     ref = referencias_pl("CPFE3", grupos, t)
     assert ref["grupo"] is None
     assert "segmento Energia: 1 empresa(s)" in ref["motivo_sem_grupo"] and "429" in ref["motivo_sem_grupo"]
-    assert "sem referência do setor" in texto_referencias_pl(ref)
+    assert ref["sem_grupo_por_falha"]  # o setor falhou no download
+    assert texto_referencias_pl(ref).endswith("(setor indisponível no momento)")
+
+
+def test_nota_sem_empresas_comparaveis():
+    from carteira_analise.contexto import texto_referencias_pl
+    t = tabela_pl_de_html(TABELA)
+    poucas = t[t["papel"].isin(["CPFE3", "EGIE3"])]
+    grupos = [({"tipo": "segmento", "id": "1", "nome": "Energia"}, poucas),
+              ({"tipo": "setor", "id": "2", "nome": "Utilidade"}, poucas)]
+    ref = referencias_pl("CPFE3", grupos, t)
+    assert not ref["sem_grupo_por_falha"]
+    assert texto_referencias_pl(ref).endswith("(sem empresas comparáveis no setor)")
 
 
 def test_pagina_vazia_conta_como_falha_e_nao_vai_para_o_cache(monkeypatch):
