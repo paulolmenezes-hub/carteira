@@ -32,6 +32,7 @@ OPERACOES = [
     ("VALE3.SA", "Compra", 150, 67.78, date(2022, 7, 18), "Ação"),
     ("HGCR11.SA", "Venda", 41, 102.83, date(2022, 8, 10), "FII"),
     ("NOBL", "Compra", 1.08454, 92.20, date(2023, 6, 22), "ETF"),
+    ("NOBL", "Desdobramento", 3.22638, None, date(2026, 5, 28), "ETF"),  # 1 para 2: +1 cota por cota
     ("VALE3.SA", "Venda", 40, 72.24, date(2026, 8, 13), "Ação"),
     ("POSB11.SA", "Compra", 25, 106.87, date(2026, 9, 17), "ETF"),
 ]
