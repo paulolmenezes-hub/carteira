@@ -1590,7 +1590,7 @@ def _html_cabecalho_evidencias(cards_do_grupo: list) -> str:
             "<br>" + "<br>".join(blocos) + "</div>")
 
 
-def _html_grupos_cenarios(cards: list, evidencias) -> str:
+def _html_grupos_cenarios(cards: list, evidencias, colunas: int | None = None) -> str:
     """Cards agrupados por mercado e tipo de ativo, com um cabeçalho único
     no topo de cada grupo (FIIs: evidências e como ler a tabela; demais:
     evidências por faixa)."""
@@ -1604,7 +1604,8 @@ def _html_grupos_cenarios(cards: list, evidencias) -> str:
         partes.append(_html_cabecalho_fiis(evidencias) if chave[1] == "FIIs"
                       else _html_cabecalho_evidencias(cards_do_grupo))
         grade = [_html_card_cenario({**c, "evidencia": None}) for c in cards_do_grupo]
-        partes.append("<div style='display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));"
+        grade_css = (f"repeat({colunas},minmax(0,1fr))" if colunas else "repeat(auto-fill,minmax(460px,1fr))")
+        partes.append(f"<div style='display:grid;grid-template-columns:{grade_css};"
                       "gap:16px;margin-bottom:22px;align-items:start'>" + "".join(grade) + "</div>")
     return "".join(partes)
 
@@ -1893,6 +1894,18 @@ def _dados_visao_geral(df_resumo, df_operacoes, tipos: dict) -> dict:
     return {"linhas": linhas, "meta": meta, "sem_preco": sem_preco, "meses": meses, "cambio": cambio}
 
 
+def _evolucao_patrimonio(r: dict, fv) -> str:
+    """Linha de baixo do box do patrimônio: quanto ele mudou no período
+    (inclui aportes e vendas; a rentabilidade fica no último box)."""
+    ini, fim = r["patrimonio_inicial"], r["patrimonio_final"]
+    dif = fim - ini
+    sinal = "+" if dif > 0 else ("−" if dif < 0 else "")
+    txt = f"{sinal}{fv(abs(dif))}"
+    if ini > 1e-6:
+        txt += f" ({_pct_vg(dif / ini)})"
+    return f"{txt} no período"
+
+
 def _kpi_vg(rotulo, valor, sub, cor="#111827"):
     return (f"<div style='flex:1;min-width:170px;background:#fff;border-radius:12px;padding:10px 12px'>"
             f"<div style='font-size:.75em;color:#4b5563'>{rotulo}</div>"
@@ -1932,23 +1945,28 @@ def _grafico_linhas(df: pd.DataFrame, eixo_y: str, formato: str, cores: dict, tr
     ).properties(height=280))
 
 
-def _faixas_e_destaques(escolhidos, linhas, i0, i1) -> None:
-    """Faixas das posições abertas (clicáveis: mostram os cards) e as maiores
-    altas e quedas no período, logo abaixo dos números do topo."""
+def _faixas(escolhidos) -> None:
+    """Faixas das posições abertas, clicáveis: mostram os cards dos ativos."""
     cards = (st.session_state.get("carteira_cenarios") or ([], []))[0]
     cards = [c for c in cards if c.get("ticker") in escolhidos]
     if cards:
         rotulos = {"realizacao": "📈 {n} na faixa de realização", "queda": "📉 {n} na faixa de queda",
                    "fora": "↔️ {n} fora das faixas"}
         opcoes = {rot.format(n=sum(1 for c in cards if c.get("situacao") == k)): k for k, rot in rotulos.items()}
+        st.html("<style>div[data-testid='stButtonGroup'] button p{font-size:1.08rem;font-weight:600}"
+                "div[data-testid='stButtonGroup'] button{padding:6px 16px}</style>")
         escolha = st.pills("Clique numa faixa para ver os cards dos ativos", list(opcoes), selection_mode="single",
                            key="vg_faixa")
         if escolha:
             selecionados = [c for c in cards if c.get("situacao") == opcoes[escolha]]
             if selecionados:
-                st.html(_html_grupos_cenarios(selecionados, carregar_evidencias()))
+                st.html(_html_grupos_cenarios(selecionados, carregar_evidencias(), colunas=3))
             else:
                 st.caption("Nenhum ativo nesta faixa.")
+
+
+def _destaques(escolhidos, linhas, i0, i1) -> None:
+    """Maiores altas e quedas no período (posições abertas)."""
     abertos = [(t, linhas[t]) for t in escolhidos if linhas[t]["quantidade"].iloc[-1] > 1e-9]
     if abertos:
         rent_ativo = []
@@ -1977,17 +1995,22 @@ def _renderizar_visao_geral() -> None:
     linhas, meta, meses = dados["linhas"], dados["meta"], dados["meses"]
 
     # filtros: abre sempre nos últimos 12 meses
-    rotulos = [_rotulo_mes(m) for m in meses]
     c1, c2, c3, c4, c5 = st.columns([1, 1, 1.2, 1.6, 2])
-    ini = c1.selectbox("De", rotulos, index=max(0, len(rotulos) - 12), key="vg_de")
-    fim = c2.selectbox("Até", rotulos, index=len(rotulos) - 1, key="vg_ate")
     mercados = c3.multiselect("Mercado", ["B3", "EUA"], default=["B3", "EUA"], key="vg_mercado")
     tipos_sel = c4.multiselect("Tipo", ["Ações", "FIIs", "ETFs"], default=["Ações", "FIIs", "ETFs"], key="vg_tipo")
     candidatos = sorted(t for t, m in meta.items() if m["mercado"] in mercados and m["tipo"] in tipos_sel)
     ativos = c5.multiselect("Ativo", candidatos, default=[], placeholder="Todos", key="vg_ativo",
                             format_func=lambda t: t.replace(".SA", ""))
     escolhidos = ativos or candidatos
-    i0, i1 = rotulos.index(ini), rotulos.index(fim)
+    # o período começa no primeiro mês com posição dos ativos filtrados (EUA: mai/2023, não jul/2019)
+    com_posicao = [i for i in range(len(meses))
+                   if any(linhas[t]["aportes"].iloc[i] > 0 or linhas[t]["quantidade"].iloc[i] > 1e-9
+                          for t in escolhidos)]
+    primeiro = com_posicao[0] if com_posicao else 0
+    rotulos = [_rotulo_mes(m) for m in meses][primeiro:]
+    ini = c1.selectbox("De", rotulos, index=max(0, len(rotulos) - 12), key=f"vg_de_{primeiro}")
+    fim = c2.selectbox("Até", rotulos, index=len(rotulos) - 1, key=f"vg_ate_{primeiro}")
+    i0, i1 = primeiro + rotulos.index(ini), primeiro + rotulos.index(fim)
     if i0 > i1:
         st.warning("O mês inicial é depois do final.")
         return
@@ -2024,14 +2047,14 @@ def _renderizar_visao_geral() -> None:
         cdi_txt = f"CDI {_pct_vg(c_fim)}{rel}"
     fv = lambda v: formatar_valor(v, moeda)
     st.html("<div style='display:flex;gap:8px;flex-wrap:wrap'>"
-            + _kpi_vg(f"Patrimônio em {fim}", fv(r["patrimonio_final"]), f"no início: {fv(r['patrimonio_inicial'])}")
+            + _kpi_vg(f"Patrimônio em {fim}", fv(r["patrimonio_final"]), _evolucao_patrimonio(r, fv))
             + _kpi_vg("Aportes líquidos no período", fv(r["aportes"] - r["vendas"]),
                       f"compras {fv(r['aportes'])} − vendas {fv(r['vendas'])}")
             + _kpi_vg("Proventos no período", fv(r["proventos"]), f"média de {fv(r['proventos_mes'])} por mês", "#0f7f73")
             + _kpi_vg("Rentabilidade no período", _pct_vg(r["rentabilidade"]), cdi_txt, "#1e3a8a")
             + "</div>")
 
-    _faixas_e_destaques(escolhidos, linhas, i0, i1)
+    _faixas(escolhidos)
 
     idx = periodo.index.to_timestamp()
     g1, g2 = st.columns(2)
@@ -2059,6 +2082,7 @@ def _renderizar_visao_geral() -> None:
             tooltip=[alt.Tooltip("Rótulo:O", title="Mês"), "Tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
         ).properties(height=280), width="stretch")
 
+    _destaques(escolhidos, linhas, i0, i1)
     st.markdown("**Rentabilidade da carteira × CDI**")
     df3 = pd.DataFrame({"Carteira": rent.values}, index=pd.Index(idx, name="Mês"))
     if cdi is not None:
