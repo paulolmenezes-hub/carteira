@@ -140,15 +140,19 @@ def somar(linhas: dict[str, pd.DataFrame], tickers=None, cambio: dict[str, pd.Se
 def rentabilidade_cotas(df: pd.DataFrame, patrimonio_inicial: float = 0.0) -> pd.Series:
     """Rentabilidade acumulada (0,10 = +10%) mês a mês, pelo método das cotas.
 
-    Cada mês: r = (V1 − V0 − F + P) / (V0 + F/2), com F = aportes − vendas
-    (meio do mês, Dietz modificado) e P = proventos recebidos. Os meses são
-    encadeados, então aportes e vendas não contam como rentabilidade."""
+    Cada mês: r = (V1 + vendas + P − V0 − aportes) / (V0 + aportes): o
+    ganho do mês sobre o capital empregado nele. O que foi comprado rende a
+    partir do preço de compra; o que foi vendido rende até o preço de venda
+    (estava em V0). P = proventos recebidos. Os meses são encadeados, então
+    aportes e vendas não contam como rentabilidade. (Com a convenção de
+    "meio do mês", uma compra no fim do mês dobrava o ganho aparente: o
+    painel mostrava +25% em jul/2019.)"""
     v0 = float(patrimonio_inicial)
     acumulado, cota = [], 1.0
     for _, linha in df.iterrows():
-        fluxo = float(linha["aportes"]) - float(linha["vendas"])
-        base = v0 + fluxo / 2
-        ganho = float(linha["patrimonio"]) - v0 - fluxo + float(linha["proventos"])
+        aportes, vendas = float(linha["aportes"]), float(linha["vendas"])
+        base = v0 + aportes
+        ganho = float(linha["patrimonio"]) + vendas + float(linha["proventos"]) - v0 - aportes
         r = ganho / base if base > 1e-6 else 0.0
         cota *= 1 + r
         acumulado.append(cota - 1)
