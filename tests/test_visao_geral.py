@@ -103,3 +103,17 @@ def test_resumo_do_periodo():
     r = resumo_periodo(df, patrimonio_inicial=1000.0)
     assert r["proventos"] == 10 and r["proventos_mes"] == 5 and r["patrimonio_final"] == 1210
     assert r["rentabilidade"] == pytest.approx(1.105 * (1215 / 1100) - 1)
+
+
+def test_compra_no_fim_do_mes_rende_sobre_o_preco_de_compra():
+    # compra no dia 24 de julho a 100 e fechamento a 105: rentabilidade de 5% (o "meio do mês" dava 10%)
+    ops = [_op("2019-07-24", "compra", 100, 100)]
+    precos = pd.Series([105.0], index=pd.to_datetime(["2019-07-31"]))
+    df = linha_do_tempo_ativo(ops, meses_entre("2019-07", "2019-07"), precos)
+    assert rentabilidade_cotas(df).iloc[0] == pytest.approx(0.05)
+
+
+def test_venda_rende_ate_o_preco_de_venda():
+    # 100 cotas valendo 10 (V0 = 1000); vende 50 a 12 e as outras fecham a 12: +20%
+    df = pd.DataFrame({"patrimonio": [600.0], "aportes": [0.0], "vendas": [600.0], "proventos": [0.0]})
+    assert rentabilidade_cotas(df, patrimonio_inicial=1000.0).iloc[0] == pytest.approx(0.20)
