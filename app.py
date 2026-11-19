@@ -1379,6 +1379,8 @@ def _html_caixas_posicao(card: dict) -> str:
     if card.get("renda_recebida") is not None:
         # terceira linha: o que a posição rendeu desde o início (proventos, resultado e rentabilidade)
         nome = {"FIIs": "Rendimentos", "Ações": "Dividendos e JCP"}.get(card.get("grupo"), "Proventos")
+        if nome == "Dividendos e JCP" and moeda != "R$":
+            nome = "Dividendos"  # JCP só existe no Brasil
         # Resultado total = ganho/perda da caixa acima (mesma cotação) + vendas já feitas
         # no ciclo atual (ganho realizado) + proventos recebidos.
         realizado = float(card.get("ganho_realizado_ciclo") or 0.0)
