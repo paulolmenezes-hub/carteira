@@ -46,12 +46,16 @@ from carteira_analise.contexto import (ATENCAO, BOM, acrescentar_referencias_pl,
 from carteira_analise.fundamentalistas import classificar_fii, motivo_classificacao, texto_regularidade
 from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
+from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, rentabilidade_cotas,
+                                          resumo_periodo, somar)
 from carteira_analise.regra_posicao import formatar_valor
 from carteira_analise.planilha import (
     NOMES_ABA_OPERACOES,
     NOMES_ABA_RESUMO,
     achar_aba,
     construir_dashboard_por_ativo,
+    linhas_resumo_por_ticker,
+    operacoes_do_ticker,
     normalizar_aba_operacoes,
     normalizar_aba_resumo,
     normalizar_ticker,
@@ -1620,8 +1624,8 @@ def _renderizar_cenarios(cenarios) -> None:
         st.caption(f"⚠️ {_sem_formula(aviso)}")
 
 
-tab_carteira, tab_ativo, tab_dashboard, tab_guia = st.tabs([
-    "📂 Carteira", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
+tab_carteira, tab_visao, tab_ativo, tab_dashboard, tab_guia = st.tabs([
+    "📂 Carteira", "🧭 Visão geral", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
 ])
 
 # =============================================================================
@@ -1765,6 +1769,8 @@ with tab_carteira:
             st.session_state["carteira_linhas_ganho"] = linhas_ganho
             st.session_state["carteira_linhas_analise"] = linhas_analise
             st.session_state["carteira_dividendos"] = dividendos_por_ticker
+            st.session_state["carteira_fonte_rendimentos"] = fonte_rendimentos
+            st.session_state.pop("visao_geral_dados", None)  # recalcula a aba Visão geral
             st.session_state["carteira_tipos_confirmados"] = tipos_confirmados
             st.session_state["carteira_data_analise"] = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
             st.session_state["carteira_cenarios"] = cenarios
@@ -1797,7 +1803,284 @@ with tab_carteira:
                        "recomendação de investimento nem substitui um assessor ou consultor licenciado (CVM).")
 
 # =============================================================================
-# ABA 2 — Ativo Específico
+# ABA 2 — Visão geral (a carteira mês a mês, com filtros)
+# =============================================================================
+_NOME_TIPO_VG = {"acao": "Ações", "acao_us": "Ações", "fii": "FIIs", "etf_br": "ETFs", "etf_us": "ETFs"}
+_MES_PT = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+
+
+def _rotulo_mes(p: pd.Period) -> str:
+    return f"{_MES_PT[p.month - 1]}/{p.year}"
+
+
+def _serie_mensal(serie: pd.Series | None) -> pd.Series | None:
+    if serie is None or len(serie) == 0:
+        return None
+    s = pd.Series(serie, dtype=float).dropna()
+    idx = pd.DatetimeIndex(s.index)
+    s.index = (idx.tz_localize(None) if idx.tz is not None else idx).to_period("M")
+    return s.groupby(level=0).last()
+
+
+def _dados_visao_geral(df_resumo, df_operacoes, tipos: dict) -> dict:
+    """Cada ativo da planilha (abertos e encerrados) mês a mês, do primeiro
+    mês com operação até hoje. Preços: base mensal da B3 (escala da época)
+    completada pela cotação de hoje; sem a base (EUA, ativos fora dela),
+    Yahoo ajustado por desdobramento, convertido pela escala dos eventos."""
+    resumo = linhas_resumo_por_ticker(df_resumo)
+    grupos = {}
+    if df_operacoes is not None and not df_operacoes.empty:
+        chaves = df_operacoes["ticker"].apply(lambda t: normalizar_ticker(t)[0])
+        grupos = {t: g for t, g in df_operacoes.groupby(chaves)}
+    ops_por = {}
+    for t in sorted(set(resumo) | set(grupos)):
+        ops, _, _ = operacoes_do_ticker(resumo.get(t), grupos.get(t))
+        if ops:
+            ops_por[t] = ops
+    if not ops_por:
+        return {}
+    hoje = pd.Timestamp(datetime.now(ZoneInfo("America/Sao_Paulo")).date())
+    inicio = min(pd.Timestamp(o["data"]) for ops in ops_por.values() for o in ops)
+    meses = meses_entre(inicio, hoje)
+    try:
+        base = carregar_base_b3()
+    except Exception:
+        base = None
+    fonte_rend = st.session_state.get("carteira_fonte_rendimentos")
+    dividendos_sessao = st.session_state.get("carteira_dividendos") or {}
+    linhas, meta, sem_preco = {}, {}, []
+    for t, ops in ops_por.items():
+        b3 = t.endswith(".SA")
+        try:
+            eventos = fonte_dados.baixar_eventos(t)
+        except Exception:
+            eventos = None
+        precos, ajustados = None, True
+        if b3 and base is not None and not base.empty:
+            b = base[base["ticker"] == t[:-3]]
+            if len(b):
+                precos = pd.Series(b["fechamento"].values, index=pd.to_datetime(b["data"]))
+                ajustados = False
+                try:  # cotação de hoje (escala de hoje = escala da época no mês atual)
+                    ult = fonte_dados.baixar_precos(t, "5d").dropna()
+                    if len(ult):
+                        precos.loc[hoje] = float(ult.iloc[-1])
+                except Exception:
+                    pass
+        if precos is None:
+            try:
+                precos = fonte_dados.baixar_precos(t, "max")
+            except Exception:
+                precos = None
+        if precos is None or len(precos) == 0:
+            sem_preco.append(t)
+            continue
+        divs = dividendos_sessao.get(t)
+        if divs is None:
+            try:
+                divs = (fonte_rend or fonte_dados).baixar_dividendos(t)
+            except Exception:
+                divs = None
+        linhas[t] = linha_do_tempo_ativo(ops, meses, precos, divs, eventos, precos_ajustados=ajustados)
+        tipo = tipos.get(t) or ("acao" if b3 else "etf_us")
+        meta[t] = {"mercado": "B3" if b3 else "EUA", "tipo": _NOME_TIPO_VG.get(tipo, "Ações")}
+    try:
+        cambio = _serie_mensal(fonte_dados.baixar_precos("BRL=X", "max"))
+    except Exception:
+        cambio = None
+    return {"linhas": linhas, "meta": meta, "sem_preco": sem_preco, "meses": meses, "cambio": cambio}
+
+
+def _kpi_vg(rotulo, valor, sub, cor="#111827"):
+    return (f"<div style='flex:1;min-width:170px;background:#fff;border-radius:12px;padding:10px 12px'>"
+            f"<div style='font-size:.75em;color:#4b5563'>{rotulo}</div>"
+            f"<div style='font-size:1.25em;font-weight:700;color:{cor}'>{valor}</div>"
+            f"<div style='font-size:.74em;color:#4b5563'>{sub}</div></div>")
+
+
+def _pct_vg(v):
+    return ("+" if v > 0 else ("−" if v < 0 else "")) + f"{abs(v) * 100:.1f}%".replace(".", ",")
+
+
+_EIXO_MIL = "replace(format(datum.value / 1000, ',.0f'), ',', '.') + ' mil'"
+_EIXO_PCT = "replace(format(datum.value, '.0%'), '.', ',')"
+
+
+def _grafico_linhas(df: pd.DataFrame, eixo_y: str, formato: str, cores: dict, tracejadas=()):
+    dados = df.reset_index().melt("Mês", var_name="Série", value_name="valor")
+    return (alt.Chart(dados).mark_line(strokeWidth=2.4).encode(
+        x=alt.X("Mês:T", title=None, axis=alt.Axis(format="%m/%Y")),
+        y=alt.Y("valor:Q", title=eixo_y, axis=alt.Axis(labelExpr=_EIXO_PCT if "%" in formato else _EIXO_MIL)),
+        color=alt.Color("Série:N", scale=alt.Scale(domain=list(cores), range=list(cores.values())),
+                        legend=alt.Legend(orient="top", title=None)),
+        strokeDash=alt.condition(alt.FieldOneOfPredicate("Série", list(tracejadas)), alt.value([6, 4]),
+                                 alt.value([1, 0])),
+        tooltip=[alt.Tooltip("Mês:T", format="%m/%Y"), "Série:N", alt.Tooltip("valor:Q", format=formato)],
+    ).properties(height=280))
+
+
+def _renderizar_visao_geral() -> None:
+    dados = st.session_state.get("visao_geral_dados")
+    if dados is None:
+        with st.spinner("Montando a carteira mês a mês (preços, proventos e câmbio)..."):
+            dados = _dados_visao_geral(df_resumo, df_operacoes,
+                                       st.session_state.get("carteira_tipos_confirmados", {}))
+        st.session_state["visao_geral_dados"] = dados
+    if not dados or not dados.get("linhas"):
+        st.info("Sem operações com cotação para montar a visão geral.")
+        return
+    linhas, meta, meses = dados["linhas"], dados["meta"], dados["meses"]
+
+    # filtros: abre sempre nos últimos 12 meses
+    rotulos = [_rotulo_mes(m) for m in meses]
+    c1, c2, c3, c4, c5 = st.columns([1, 1, 1.2, 1.6, 2])
+    ini = c1.selectbox("De", rotulos, index=max(0, len(rotulos) - 12), key="vg_de")
+    fim = c2.selectbox("Até", rotulos, index=len(rotulos) - 1, key="vg_ate")
+    mercados = c3.multiselect("Mercado", ["B3", "EUA"], default=["B3", "EUA"], key="vg_mercado")
+    tipos_sel = c4.multiselect("Tipo", ["Ações", "FIIs", "ETFs"], default=["Ações", "FIIs", "ETFs"], key="vg_tipo")
+    candidatos = sorted(t for t, m in meta.items() if m["mercado"] in mercados and m["tipo"] in tipos_sel)
+    ativos = c5.multiselect("Ativo", candidatos, default=[], placeholder="Todos", key="vg_ativo",
+                            format_func=lambda t: t.replace(".SA", ""))
+    escolhidos = ativos or candidatos
+    i0, i1 = rotulos.index(ini), rotulos.index(fim)
+    if i0 > i1:
+        st.warning("O mês inicial é depois do final.")
+        return
+    if not escolhidos:
+        st.info("Nenhum ativo com esses filtros.")
+        return
+    so_eua = all(meta[t]["mercado"] == "EUA" for t in escolhidos)
+    moeda = "US$" if so_eua else "R$"
+    cambio = None if so_eua else {t: dados["cambio"] for t in escolhidos if meta[t]["mercado"] == "EUA"}
+    if cambio and dados["cambio"] is None:
+        st.caption("⚠️ Cotação do dólar indisponível: ativos dos EUA ficam de fora da soma em reais.")
+        escolhidos = [t for t in escolhidos if meta[t]["mercado"] == "B3"]
+        cambio = None
+    total = somar(linhas, escolhidos, cambio)
+    periodo = total.iloc[i0:i1 + 1]
+    inicial = float(total["patrimonio"].iloc[i0 - 1]) if i0 > 0 else 0.0
+    r = resumo_periodo(periodo, inicial)
+    rent = rentabilidade_cotas(periodo, inicial)
+    st.caption(f"Período: {ini} a {fim} · valores em {moeda}"
+               + (" (EUA convertidos pelo dólar de cada mês)" if cambio else ""))
+
+    cdi_txt, cdi = "CDI indisponível", None
+    try:
+        serie_cdi = _cdi_bcb_em_cache(str(periodo.index[0].start_time.date()), str(periodo.index[-1].end_time.date()))
+        cdi = cdi_acumulado(serie_cdi, periodo.index)
+    except Exception:
+        cdi = None
+    if cdi is not None and len(cdi):
+        c_fim = float(cdi.iloc[-1])
+        if c_fim > 0 and r["rentabilidade"] > 0:
+            rel = f" · {r['rentabilidade'] / c_fim * 100:.0f}% do CDI"
+        else:
+            rel = " · abaixo do CDI" if r["rentabilidade"] < c_fim else ""
+        cdi_txt = f"CDI {_pct_vg(c_fim)}{rel}"
+    fv = lambda v: formatar_valor(v, moeda)
+    st.html("<div style='display:flex;gap:8px;flex-wrap:wrap'>"
+            + _kpi_vg(f"Patrimônio em {fim}", fv(r["patrimonio_final"]), f"no início: {fv(r['patrimonio_inicial'])}")
+            + _kpi_vg("Aportes líquidos no período", fv(r["aportes"] - r["vendas"]),
+                      f"compras {fv(r['aportes'])} − vendas {fv(r['vendas'])}")
+            + _kpi_vg("Proventos no período", fv(r["proventos"]), f"média de {fv(r['proventos_mes'])} por mês", "#0f7f73")
+            + _kpi_vg("Rentabilidade no período", _pct_vg(r["rentabilidade"]), cdi_txt, "#1e3a8a")
+            + "</div>")
+
+    idx = periodo.index.to_timestamp()
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("**Patrimônio × valor investido**")
+        df1 = pd.DataFrame({"Patrimônio": periodo["patrimonio"].values, "Valor investido": periodo["custo"].values},
+                           index=pd.Index(idx, name="Mês"))
+        st.altair_chart(_grafico_linhas(df1, moeda, ",.0f", {"Patrimônio": "#1e3a8a", "Valor investido": "#9ca3af"},
+                                        tracejadas=["Valor investido"]), width="stretch")
+    with g2:
+        st.markdown("**Patrimônio por tipo**")
+        por_tipo = {}
+        for nome in ("Ações", "FIIs", "ETFs"):
+            ts = [t for t in escolhidos if meta[t]["tipo"] == nome]
+            if ts:
+                por_tipo[nome] = somar(linhas, ts, cambio)["patrimonio"].iloc[i0:i1 + 1].values
+        df2 = pd.DataFrame(por_tipo, index=pd.Index(idx, name="Mês")).reset_index().melt("Mês", var_name="Tipo",
+                                                                                             value_name="valor")
+        cores = {"Ações": "#2563eb", "FIIs": "#0f766e", "ETFs": "#a855f7"}
+        st.altair_chart(alt.Chart(df2).mark_area(opacity=.85).encode(
+            x=alt.X("Mês:T", title=None, axis=alt.Axis(format="%m/%Y")),
+            y=alt.Y("valor:Q", stack=True, title=moeda, axis=alt.Axis(labelExpr=_EIXO_MIL)),
+            color=alt.Color("Tipo:N", scale=alt.Scale(domain=list(cores), range=list(cores.values())),
+                            legend=alt.Legend(orient="top", title=None)),
+            tooltip=[alt.Tooltip("Mês:T", format="%m/%Y"), "Tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
+        ).properties(height=280), width="stretch")
+
+    st.markdown("**Rentabilidade da carteira × CDI**")
+    df3 = pd.DataFrame({"Carteira": rent.values}, index=pd.Index(idx, name="Mês"))
+    if cdi is not None:
+        df3["CDI"] = cdi.values
+    st.altair_chart(_grafico_linhas(df3, "acumulado no período", ".1%", {"Carteira": "#1e3a8a", "CDI": "#d9831c"},
+                                    tracejadas=["CDI"]), width="stretch")
+    st.caption("Rentabilidade pelo método das cotas: preço + proventos, sem contar aportes e vendas como ganho. "
+               "Ativos vendidos contam enquanto estavam na carteira; o valor da venda sai como resgate.")
+
+    st.markdown("**Proventos por mês**")
+    prov = pd.DataFrame({"Proventos": periodo["proventos"].values}, index=pd.Index(idx, name="Mês"))
+    media = total["proventos"].rolling(12, min_periods=1).mean().iloc[i0:i1 + 1].values
+    prov["Média de 12 meses"] = media
+    base_graf = alt.Chart(prov.reset_index())
+    st.altair_chart(
+        (base_graf.mark_bar(color="#0f7f73", opacity=.85).encode(
+            x=alt.X("yearmonth(Mês):T", title=None, axis=alt.Axis(format="%m/%Y")),
+            y=alt.Y("Proventos:Q", title=moeda, axis=alt.Axis(labelExpr="replace(format(datum.value, ',.0f'), ',', '.')")),
+            tooltip=[alt.Tooltip("yearmonth(Mês):T", format="%m/%Y", title="Mês"),
+                     alt.Tooltip("Proventos:Q", format=",.2f")])
+         + base_graf.mark_line(color="#d9831c", strokeWidth=2).encode(
+            x="yearmonth(Mês):T", y="Média de 12 meses:Q")).properties(height=240), width="stretch")
+    st.caption("Barras: proventos recebidos no mês (dividendos e JCP brutos, rendimentos), pela quantidade na data-ex. "
+               "Linha laranja: média dos últimos 12 meses.")
+
+    # faixas e destaques: posições abertas (dos cards)
+    cards = (st.session_state.get("carteira_cenarios") or ([], []))[0]
+    cards = [c for c in cards if c.get("ticker") in escolhidos]
+    if cards:
+        cont = {k: sum(1 for c in cards if c.get("situacao") == k) for k in ("realizacao", "queda", "fora")}
+        chip = lambda ic, n, txt, fundo, cor: (f"<div style='flex:1;background:{fundo};border-radius:10px;padding:8px;"
+                                              f"text-align:center'><b style='color:{cor};font-size:1.2em'>{ic} {n}</b>"
+                                              f"<div style='font-size:.78em;color:#374151'>{txt}</div></div>")
+        st.html("<div style='display:flex;gap:8px;margin-top:6px'>"
+                + chip("📈", cont["realizacao"], "na faixa de realização", "#eef1ff", "#2f45e0")
+                + chip("📉", cont["queda"], "na faixa de queda", "#fff7ed", "#d9831c")
+                + chip("↔️", cont["fora"], "fora das faixas", "#ecfaf8", "#0f7f73") + "</div>")
+    abertos = [(t, linhas[t]) for t in escolhidos if linhas[t]["quantidade"].iloc[-1] > 1e-9]
+    if abertos:
+        rent_ativo = []
+        for t, df_t in abertos:
+            p = df_t.iloc[i0:i1 + 1]
+            v0 = float(df_t["patrimonio"].iloc[i0 - 1]) if i0 > 0 else 0.0
+            rent_ativo.append((t.replace(".SA", ""), float(rentabilidade_cotas(p, v0).iloc[-1])))
+        rent_ativo.sort(key=lambda x: -x[1])
+        fmt = lambda lst: " · ".join(f"{t} {_pct_vg(v)}" for t, v in lst)
+        st.html("<div style='background:#fff;color:#111827;border-radius:10px;padding:8px 12px;font-size:.88em;"
+                "margin-top:8px'>"
+                f"<b style='color:#2f45e0'>Maiores altas no período:</b> {fmt(rent_ativo[:3])}<br>"
+                f"<b style='color:#d9831c'>Maiores quedas no período:</b> {fmt(rent_ativo[::-1][:3])}</div>")
+    if dados.get("sem_preco"):
+        st.caption("Sem cotação, fora da conta: " + ", ".join(t.replace(".SA", "") for t in dados["sem_preco"]) + ".")
+
+
+with tab_visao:
+    st.subheader("🧭 Visão geral da carteira")
+    if bytes_planilha is None:
+        st.info("Envie um arquivo Excel na aba 'Carteira' para ver a visão geral.")
+    elif "carteira_linhas_ganho" not in st.session_state:
+        st.info("Clique em 'Analisar carteira' na aba 'Carteira' para montar a visão geral.")
+    else:
+        try:
+            _renderizar_visao_geral()
+        except Exception as e:
+            st.error(f"Não foi possível montar a visão geral ({e}).")
+
+
+# =============================================================================
+# ABA 3 — Ativo Específico
 # =============================================================================
 with tab_ativo:
     st.subheader("🔍 Analisar um ativo específico")
@@ -1896,7 +2179,7 @@ with tab_ativo:
             st.altair_chart(grafico, width='stretch')
 
 # =============================================================================
-# ABA 3 — Dashboard da Carteira (extrato por ativo)
+# ABA 4 — Dashboard da Carteira (extrato por ativo)
 # =============================================================================
 with tab_dashboard:
     st.subheader("💼 Dashboard da Carteira")
@@ -1959,7 +2242,7 @@ with tab_dashboard:
                    "é tratada como bonificação sem custo.")
 
 # =============================================================================
-# ABA 4 — Guia de Indicadores
+# ABA 5 — Guia de Indicadores
 # =============================================================================
 with tab_guia:
     st.subheader("📖 Guia de Indicadores")
