@@ -1953,14 +1953,25 @@ def _faixas(escolhidos) -> None:
         rotulos = {"realizacao": "📈 {n} na faixa de realização", "queda": "📉 {n} na faixa de queda",
                    "fora": "↔️ {n} fora das faixas"}
         opcoes = {rot.format(n=sum(1 for c in cards if c.get("situacao") == k)): k for k, rot in rotulos.items()}
-        st.html("<style>div[data-testid='stButtonGroup'] button p{font-size:1.08rem;font-weight:600}"
-                "div[data-testid='stButtonGroup'] button{padding:6px 16px}</style>")
+        # botões com as cores das faixas (as mesmas dos cards), letra branca; o escolhido ganha contorno
+        st.html("<style>"
+                ".st-key-vg_faixa button{color:#fff !important;border:none !important;padding:6px 16px}"
+                ".st-key-vg_faixa button p{font-size:1.08rem;font-weight:600;color:#fff !important}"
+                ".st-key-vg_faixa button:nth-of-type(1){background:#2f45e0 !important}"
+                ".st-key-vg_faixa button:nth-of-type(2){background:#d9831c !important}"
+                ".st-key-vg_faixa button:nth-of-type(3){background:#0f7f73 !important}"
+                ".st-key-vg_faixa button[aria-checked='true']{box-shadow:0 0 0 3px #ffffff !important}"
+                "</style>")
         escolha = st.pills("Clique numa faixa para ver os cards dos ativos", list(opcoes), selection_mode="single",
                            key="vg_faixa")
         if escolha:
             selecionados = [c for c in cards if c.get("situacao") == opcoes[escolha]]
             if selecionados:
-                st.html(_html_grupos_cenarios(selecionados, carregar_evidencias(), colunas=3))
+                # uma grade só, 3 por linha, sem separar por mercado/tipo (o card já mostra
+                # o ticker e a moeda; os cabeçalhos com as evidências ficam no Dashboard)
+                grade = "".join(_html_card_cenario({**c, "evidencia": None}) for c in selecionados)
+                st.html("<div style='display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;"
+                        f"margin:4px 0 18px;align-items:start'>{grade}</div>")
             else:
                 st.caption("Nenhum ativo nesta faixa.")
 
@@ -2008,8 +2019,13 @@ def _renderizar_visao_geral() -> None:
                           for t in escolhidos)]
     primeiro = com_posicao[0] if com_posicao else 0
     rotulos = [_rotulo_mes(m) for m in meses][primeiro:]
-    ini = c1.selectbox("De", rotulos, index=max(0, len(rotulos) - 12), key=f"vg_de_{primeiro}")
-    fim = c2.selectbox("Até", rotulos, index=len(rotulos) - 1, key=f"vg_ate_{primeiro}")
+    # carteira inteira: abre nos últimos 12 meses; com filtro de mercado, tipo ou ativo,
+    # desde o primeiro aporte desses ativos
+    filtro_padrao = (set(mercados) == {"B3", "EUA"} and set(tipos_sel) == {"Ações", "FIIs", "ETFs"}
+                     and not ativos)
+    ini = c1.selectbox("De", rotulos, index=max(0, len(rotulos) - 12) if filtro_padrao else 0,
+                       key=f"vg_de_{primeiro}_{filtro_padrao}")
+    fim = c2.selectbox("Até", rotulos, index=len(rotulos) - 1, key=f"vg_ate_{primeiro}_{filtro_padrao}")
     i0, i1 = primeiro + rotulos.index(ini), primeiro + rotulos.index(fim)
     if i0 > i1:
         st.warning("O mês inicial é depois do final.")
