@@ -632,100 +632,105 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
-CAMINHO_MODELO = Path(__file__).resolve().parent / "modelos" / "modelo_carteira.xlsx"
+tab_carteira, tab_visao, tab_ativo, tab_dashboard, tab_guia = st.tabs([
+    "📂 Carteira", "🧭 Visão geral", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
+])
 
-st.markdown("**Como carregar a sua carteira:** baixe o modelo, preencha com os seus ativos e envie o "
-            "arquivo abaixo. A planilha fica só nesta sessão do navegador; não é gravada no servidor.")
-if CAMINHO_MODELO.exists():
-    st.download_button("⬇️ Baixar o modelo (Excel)", CAMINHO_MODELO.read_bytes(), file_name="modelo_carteira.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-with st.expander("Como preencher a planilha", expanded=st.session_state.get("planilha_bytes") is None):
-    st.markdown(
-        "**Aba Resumo** — o ponto de partida de cada ativo: Ticker, Quantidade, Preço (médio), Data e Tipo Ativo.\n"
-        "- Com a aba Operações: lance a **primeira compra**; a posição de hoje o painel calcula.\n"
-        "- Só com o Resumo: lance a **posição de hoje**, com o preço médio e a data de entrada.\n\n"
-        "**Aba Operações** (opcional) — compras e vendas depois da data do Resumo: Ticker, Tipo "
-        "(Compra/Venda), Quantidade, Preço, Data e Tipo Ativo. Eventos da empresa também entram aqui, com a "
-        "**diferença** de ações: Bonificação (ações recebidas; preço = custo atribuído ou 0), Desdobramento "
-        "(ações recebidas; preço em branco) e Grupamento (ações que deixaram de existir; preço em branco).\n\n"
-        "**Uma ou duas abas?** Com as duas, o painel mostra também vendas, ganho realizado e posições "
-        "encerradas. Só com o Resumo, a análise começa na data de entrada.\n\n"
-        "**Ticker:** B3 com ou sem .SA (VALE3 ou VALE3.SA); EUA como no Yahoo Finance (BRK-B, NOBL). "
-        "**Tipo Ativo:** Ação, FII ou ETF."
-    )
+with tab_carteira:
+    CAMINHO_MODELO = Path(__file__).resolve().parent / "modelos" / "modelo_carteira.xlsx"
 
-# A planilha fica guardada SÓ na sessão do navegador de quem a enviou
-# (st.session_state). Uma versão anterior a gravava num arquivo do servidor,
-# compartilhado por todos os acessos ao painel: um segundo usuário veria a
-# carteira do primeiro. Custo da correção: ao recarregar a página (F5), é
-# preciso enviar a planilha de novo.
-arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
-
-df_resumo = None
-df_operacoes = None
-tickers_encontrados: list[str] = []
-tipos_planilha: dict[str, str] = {}
-avisos_tipos_planilha: list[str] = []
-bytes_planilha = None
-
-if arquivo is not None:
-    bytes_planilha = arquivo.getvalue()
-    if st.session_state.get("planilha_bytes") not in (None, bytes_planilha):
-        # planilha nova: cards e extrato calculados com a anterior deixam de valer
-        for chave in ("carteira_cenarios", "carteira_linhas_ganho", "carteira_linhas_analise"):
-            st.session_state.pop(chave, None)
-    st.session_state["planilha_bytes"] = bytes_planilha
-    st.session_state["planilha_nome"] = arquivo.name
-elif st.session_state.get("planilha_bytes") is not None:
-    # Reaproveita a planilha já enviada NESTA sessão (ex.: ao trocar de aba)
-    bytes_planilha = st.session_state["planilha_bytes"]
-    col_info, col_limpar = st.columns([5, 1])
-    with col_info:
-        st.info(f"📎 Usando a planilha enviada nesta sessão ({st.session_state.get('planilha_nome', 'carteira')}). "
-                "Envie um novo arquivo acima para substituir.")
-    with col_limpar:
-        if st.button("🗑️ Limpar"):
-            for chave in ("planilha_bytes", "planilha_nome", "carteira_cenarios"):
-                st.session_state.pop(chave, None)
-            st.rerun()
-
-if bytes_planilha is not None:
-    try:
-        abas = pd.read_excel(io.BytesIO(bytes_planilha), sheet_name=None)
-    except Exception as e:
-        st.error(f"Não consegui ler o arquivo: {e}")
-        st.stop()
-
-    df_resumo_bruto = achar_aba(abas, NOMES_ABA_RESUMO)
-    df_operacoes_bruto = achar_aba(abas, NOMES_ABA_OPERACOES)
-
-    if df_resumo_bruto is None and df_operacoes_bruto is None:
-        st.warning(
-            "Não encontrei as abas da carteira. Nomes aceitos: 'Resumo', '1ª Compra' ou 'Posição inicial' "
-            "(ponto de partida) e 'Operações', 'Movimentações' ou 'Compras e vendas posteriores'. "
-            "Renomeie as abas do arquivo e tente de novo."
+    st.markdown("**Como carregar a sua carteira:** baixe o modelo, preencha com os seus ativos e envie o "
+                "arquivo abaixo. A planilha fica só nesta sessão do navegador; não é gravada no servidor.")
+    if CAMINHO_MODELO.exists():
+        st.download_button("⬇️ Baixar o modelo (Excel)", CAMINHO_MODELO.read_bytes(), file_name="modelo_carteira.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with st.expander("Como preencher a planilha", expanded=st.session_state.get("planilha_bytes") is None):
+        st.markdown(
+            "**Aba Resumo** — o ponto de partida de cada ativo: Ticker, Quantidade, Preço (médio), Data e Tipo Ativo.\n"
+            "- Com a aba Operações: lance a **primeira compra**; a posição de hoje o painel calcula.\n"
+            "- Só com o Resumo: lance a **posição de hoje**, com o preço médio e a data de entrada.\n\n"
+            "**Aba Operações** (opcional) — compras e vendas depois da data do Resumo: Ticker, Tipo "
+            "(Compra/Venda), Quantidade, Preço, Data e Tipo Ativo. Eventos da empresa também entram aqui, com a "
+            "**diferença** de ações: Bonificação (ações recebidas; preço = custo atribuído ou 0), Desdobramento "
+            "(ações recebidas; preço em branco) e Grupamento (ações que deixaram de existir; preço em branco).\n\n"
+            "**Uma ou duas abas?** Com as duas, o painel mostra também vendas, ganho realizado e posições "
+            "encerradas. Só com o Resumo, a análise começa na data de entrada.\n\n"
+            "**Ticker:** B3 com ou sem .SA (VALE3 ou VALE3.SA); EUA como no Yahoo Finance (BRK-B, NOBL). "
+            "**Tipo Ativo:** Ação, FII ou ETF."
         )
-        st.stop()
 
-    try:
-        df_resumo = normalizar_aba_resumo(df_resumo_bruto) if df_resumo_bruto is not None else None
-        df_operacoes = normalizar_aba_operacoes(df_operacoes_bruto) if df_operacoes_bruto is not None else None
-    except ValueError as e:
-        st.error(f"Problema nas colunas da planilha: {e}")
-        st.stop()
+    # A planilha fica guardada SÓ na sessão do navegador de quem a enviou
+    # (st.session_state). Uma versão anterior a gravava num arquivo do servidor,
+    # compartilhado por todos os acessos ao painel: um segundo usuário veria a
+    # carteira do primeiro. Custo da correção: ao recarregar a página (F5), é
+    # preciso enviar a planilha de novo.
+    arquivo = st.file_uploader("Escolha o arquivo Excel (.xlsx) da sua carteira", type=["xlsx"])
 
-    st.success(
-        f"Planilha lida — "
-        f"{'sem aba Resumo' if df_resumo is None else f'{len(df_resumo)} ativo(s) na aba Resumo'}, "
-        f"{'sem aba Operações' if df_operacoes is None else f'{len(df_operacoes)} operação(ões)'}."
-    )
+    df_resumo = None
+    df_operacoes = None
+    tickers_encontrados: list[str] = []
+    tipos_planilha: dict[str, str] = {}
+    avisos_tipos_planilha: list[str] = []
+    bytes_planilha = None
 
-    if df_resumo is not None:
-        tickers_encontrados += [normalizar_ticker(t)[0] for t in df_resumo["ticker"]]
-    if df_operacoes is not None:
-        tickers_encontrados += [normalizar_ticker(t)[0] for t in df_operacoes["ticker"]]
-    tickers_encontrados = sorted(set(tickers_encontrados))
-    tipos_planilha, avisos_tipos_planilha = tipos_da_planilha(df_resumo, df_operacoes)
+    if arquivo is not None:
+        bytes_planilha = arquivo.getvalue()
+        if st.session_state.get("planilha_bytes") not in (None, bytes_planilha):
+            # planilha nova: cards e extrato calculados com a anterior deixam de valer
+            for chave in ("carteira_cenarios", "carteira_linhas_ganho", "carteira_linhas_analise"):
+                st.session_state.pop(chave, None)
+        st.session_state["planilha_bytes"] = bytes_planilha
+        st.session_state["planilha_nome"] = arquivo.name
+    elif st.session_state.get("planilha_bytes") is not None:
+        # Reaproveita a planilha já enviada NESTA sessão (ex.: ao trocar de aba)
+        bytes_planilha = st.session_state["planilha_bytes"]
+        col_info, col_limpar = st.columns([5, 1])
+        with col_info:
+            st.info(f"📎 Usando a planilha enviada nesta sessão ({st.session_state.get('planilha_nome', 'carteira')}). "
+                    "Envie um novo arquivo acima para substituir.")
+        with col_limpar:
+            if st.button("🗑️ Limpar"):
+                for chave in ("planilha_bytes", "planilha_nome", "carteira_cenarios"):
+                    st.session_state.pop(chave, None)
+                st.rerun()
+
+    if bytes_planilha is not None:
+        try:
+            abas = pd.read_excel(io.BytesIO(bytes_planilha), sheet_name=None)
+        except Exception as e:
+            st.error(f"Não consegui ler o arquivo: {e}")
+            st.stop()
+
+        df_resumo_bruto = achar_aba(abas, NOMES_ABA_RESUMO)
+        df_operacoes_bruto = achar_aba(abas, NOMES_ABA_OPERACOES)
+
+        if df_resumo_bruto is None and df_operacoes_bruto is None:
+            st.warning(
+                "Não encontrei as abas da carteira. Nomes aceitos: 'Resumo', '1ª Compra' ou 'Posição inicial' "
+                "(ponto de partida) e 'Operações', 'Movimentações' ou 'Compras e vendas posteriores'. "
+                "Renomeie as abas do arquivo e tente de novo."
+            )
+            st.stop()
+
+        try:
+            df_resumo = normalizar_aba_resumo(df_resumo_bruto) if df_resumo_bruto is not None else None
+            df_operacoes = normalizar_aba_operacoes(df_operacoes_bruto) if df_operacoes_bruto is not None else None
+        except ValueError as e:
+            st.error(f"Problema nas colunas da planilha: {e}")
+            st.stop()
+
+        st.success(
+            f"Planilha lida — "
+            f"{'sem aba Resumo' if df_resumo is None else f'{len(df_resumo)} ativo(s) na aba Resumo'}, "
+            f"{'sem aba Operações' if df_operacoes is None else f'{len(df_operacoes)} operação(ões)'}."
+        )
+
+        if df_resumo is not None:
+            tickers_encontrados += [normalizar_ticker(t)[0] for t in df_resumo["ticker"]]
+        if df_operacoes is not None:
+            tickers_encontrados += [normalizar_ticker(t)[0] for t in df_operacoes["ticker"]]
+        tickers_encontrados = sorted(set(tickers_encontrados))
+        tipos_planilha, avisos_tipos_planilha = tipos_da_planilha(df_resumo, df_operacoes)
 
 
 def _sem_formula(texto: str) -> str:
@@ -1624,9 +1629,6 @@ def _renderizar_cenarios(cenarios) -> None:
         st.caption(f"⚠️ {_sem_formula(aviso)}")
 
 
-tab_carteira, tab_visao, tab_ativo, tab_dashboard, tab_guia = st.tabs([
-    "📂 Carteira", "🧭 Visão geral", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
-])
 
 # =============================================================================
 # ABA 1 — Carteira (carregar e analisar)
@@ -1906,17 +1908,60 @@ _EIXO_MIL = "replace(format(datum.value / 1000, ',.0f'), ',', '.') + ' mil'"
 _EIXO_PCT = "replace(format(datum.value, '.0%'), '.', ',')"
 
 
+def _eixo_meses(indice) -> tuple[list[str], alt.X]:
+    """Eixo X por mês (rótulos "mm/aaaa"), com no máximo ~12 rótulos visíveis.
+    Ordinal: barras centradas no mês e sem rótulos repetidos."""
+    rot = [f"{d:%m/%Y}" for d in pd.DatetimeIndex(indice)]
+    passo = max(1, -(-len(rot) // 12))
+    eixo = alt.X("Rótulo:O", title=None, sort=None,
+                 axis=alt.Axis(values=rot[::passo], labelAngle=0, labelOverlap=True))
+    return rot, eixo
+
+
 def _grafico_linhas(df: pd.DataFrame, eixo_y: str, formato: str, cores: dict, tracejadas=()):
-    dados = df.reset_index().melt("Mês", var_name="Série", value_name="valor")
+    rot, eixo_x = _eixo_meses(df.index)
+    dados = df.assign(Rótulo=rot).reset_index(drop=True).melt("Rótulo", var_name="Série", value_name="valor")
     return (alt.Chart(dados).mark_line(strokeWidth=2.4).encode(
-        x=alt.X("Mês:T", title=None, axis=alt.Axis(format="%m/%Y")),
+        x=eixo_x,
         y=alt.Y("valor:Q", title=eixo_y, axis=alt.Axis(labelExpr=_EIXO_PCT if "%" in formato else _EIXO_MIL)),
         color=alt.Color("Série:N", scale=alt.Scale(domain=list(cores), range=list(cores.values())),
                         legend=alt.Legend(orient="top", title=None)),
         strokeDash=alt.condition(alt.FieldOneOfPredicate("Série", list(tracejadas)), alt.value([6, 4]),
                                  alt.value([1, 0])),
-        tooltip=[alt.Tooltip("Mês:T", format="%m/%Y"), "Série:N", alt.Tooltip("valor:Q", format=formato)],
+        tooltip=[alt.Tooltip("Rótulo:O", title="Mês"), "Série:N", alt.Tooltip("valor:Q", format=formato)],
     ).properties(height=280))
+
+
+def _faixas_e_destaques(escolhidos, linhas, i0, i1) -> None:
+    """Faixas das posições abertas (clicáveis: mostram os cards) e as maiores
+    altas e quedas no período, logo abaixo dos números do topo."""
+    cards = (st.session_state.get("carteira_cenarios") or ([], []))[0]
+    cards = [c for c in cards if c.get("ticker") in escolhidos]
+    if cards:
+        rotulos = {"realizacao": "📈 {n} na faixa de realização", "queda": "📉 {n} na faixa de queda",
+                   "fora": "↔️ {n} fora das faixas"}
+        opcoes = {rot.format(n=sum(1 for c in cards if c.get("situacao") == k)): k for k, rot in rotulos.items()}
+        escolha = st.pills("Clique numa faixa para ver os cards dos ativos", list(opcoes), selection_mode="single",
+                           key="vg_faixa")
+        if escolha:
+            selecionados = [c for c in cards if c.get("situacao") == opcoes[escolha]]
+            if selecionados:
+                st.html(_html_grupos_cenarios(selecionados, carregar_evidencias()))
+            else:
+                st.caption("Nenhum ativo nesta faixa.")
+    abertos = [(t, linhas[t]) for t in escolhidos if linhas[t]["quantidade"].iloc[-1] > 1e-9]
+    if abertos:
+        rent_ativo = []
+        for t, df_t in abertos:
+            p = df_t.iloc[i0:i1 + 1]
+            v0 = float(df_t["patrimonio"].iloc[i0 - 1]) if i0 > 0 else 0.0
+            rent_ativo.append((t.replace(".SA", ""), float(rentabilidade_cotas(p, v0).iloc[-1])))
+        rent_ativo.sort(key=lambda x: -x[1])
+        fmt = lambda lst: " · ".join(f"{t} {_pct_vg(v)}" for t, v in lst)
+        st.html("<div style='background:#fff;color:#111827;border-radius:10px;padding:8px 12px;font-size:.88em;"
+                "margin:4px 0 8px'>"
+                f"<b style='color:#2f45e0'>Maiores altas no período:</b> {fmt(rent_ativo[:3])}<br>"
+                f"<b style='color:#d9831c'>Maiores quedas no período:</b> {fmt(rent_ativo[::-1][:3])}</div>")
 
 
 def _renderizar_visao_geral() -> None:
@@ -1986,6 +2031,8 @@ def _renderizar_visao_geral() -> None:
             + _kpi_vg("Rentabilidade no período", _pct_vg(r["rentabilidade"]), cdi_txt, "#1e3a8a")
             + "</div>")
 
+    _faixas_e_destaques(escolhidos, linhas, i0, i1)
+
     idx = periodo.index.to_timestamp()
     g1, g2 = st.columns(2)
     with g1:
@@ -2001,15 +2048,15 @@ def _renderizar_visao_geral() -> None:
             ts = [t for t in escolhidos if meta[t]["tipo"] == nome]
             if ts:
                 por_tipo[nome] = somar(linhas, ts, cambio)["patrimonio"].iloc[i0:i1 + 1].values
-        df2 = pd.DataFrame(por_tipo, index=pd.Index(idx, name="Mês")).reset_index().melt("Mês", var_name="Tipo",
-                                                                                             value_name="valor")
+        rot2, eixo2 = _eixo_meses(idx)
+        df2 = pd.DataFrame(por_tipo).assign(Rótulo=rot2).melt("Rótulo", var_name="Tipo", value_name="valor")
         cores = {"Ações": "#2563eb", "FIIs": "#0f766e", "ETFs": "#a855f7"}
         st.altair_chart(alt.Chart(df2).mark_area(opacity=.85).encode(
-            x=alt.X("Mês:T", title=None, axis=alt.Axis(format="%m/%Y")),
+            x=eixo2,
             y=alt.Y("valor:Q", stack=True, title=moeda, axis=alt.Axis(labelExpr=_EIXO_MIL)),
             color=alt.Color("Tipo:N", scale=alt.Scale(domain=list(cores), range=list(cores.values())),
                             legend=alt.Legend(orient="top", title=None)),
-            tooltip=[alt.Tooltip("Mês:T", format="%m/%Y"), "Tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
+            tooltip=[alt.Tooltip("Rótulo:O", title="Mês"), "Tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
         ).properties(height=280), width="stretch")
 
     st.markdown("**Rentabilidade da carteira × CDI**")
@@ -2025,43 +2072,18 @@ def _renderizar_visao_geral() -> None:
     prov = pd.DataFrame({"Proventos": periodo["proventos"].values}, index=pd.Index(idx, name="Mês"))
     media = total["proventos"].rolling(12, min_periods=1).mean().iloc[i0:i1 + 1].values
     prov["Média de 12 meses"] = media
-    base_graf = alt.Chart(prov.reset_index())
+    rot3, eixo3 = _eixo_meses(idx)
+    base_graf = alt.Chart(prov.assign(Rótulo=rot3).reset_index(drop=True))
     st.altair_chart(
         (base_graf.mark_bar(color="#0f7f73", opacity=.85).encode(
-            x=alt.X("yearmonth(Mês):T", title=None, axis=alt.Axis(format="%m/%Y")),
+            x=eixo3,
             y=alt.Y("Proventos:Q", title=moeda, axis=alt.Axis(labelExpr="replace(format(datum.value, ',.0f'), ',', '.')")),
-            tooltip=[alt.Tooltip("yearmonth(Mês):T", format="%m/%Y", title="Mês"),
-                     alt.Tooltip("Proventos:Q", format=",.2f")])
+            tooltip=[alt.Tooltip("Rótulo:O", title="Mês"), alt.Tooltip("Proventos:Q", format=",.2f")])
          + base_graf.mark_line(color="#d9831c", strokeWidth=2).encode(
-            x="yearmonth(Mês):T", y="Média de 12 meses:Q")).properties(height=240), width="stretch")
+            x=eixo3, y="Média de 12 meses:Q")).properties(height=240), width="stretch")
     st.caption("Barras: proventos recebidos no mês (dividendos e JCP brutos, rendimentos), pela quantidade na data-ex. "
                "Linha laranja: média dos últimos 12 meses.")
 
-    # faixas e destaques: posições abertas (dos cards)
-    cards = (st.session_state.get("carteira_cenarios") or ([], []))[0]
-    cards = [c for c in cards if c.get("ticker") in escolhidos]
-    if cards:
-        cont = {k: sum(1 for c in cards if c.get("situacao") == k) for k in ("realizacao", "queda", "fora")}
-        chip = lambda ic, n, txt, fundo, cor: (f"<div style='flex:1;background:{fundo};border-radius:10px;padding:8px;"
-                                              f"text-align:center'><b style='color:{cor};font-size:1.2em'>{ic} {n}</b>"
-                                              f"<div style='font-size:.78em;color:#374151'>{txt}</div></div>")
-        st.html("<div style='display:flex;gap:8px;margin-top:6px'>"
-                + chip("📈", cont["realizacao"], "na faixa de realização", "#eef1ff", "#2f45e0")
-                + chip("📉", cont["queda"], "na faixa de queda", "#fff7ed", "#d9831c")
-                + chip("↔️", cont["fora"], "fora das faixas", "#ecfaf8", "#0f7f73") + "</div>")
-    abertos = [(t, linhas[t]) for t in escolhidos if linhas[t]["quantidade"].iloc[-1] > 1e-9]
-    if abertos:
-        rent_ativo = []
-        for t, df_t in abertos:
-            p = df_t.iloc[i0:i1 + 1]
-            v0 = float(df_t["patrimonio"].iloc[i0 - 1]) if i0 > 0 else 0.0
-            rent_ativo.append((t.replace(".SA", ""), float(rentabilidade_cotas(p, v0).iloc[-1])))
-        rent_ativo.sort(key=lambda x: -x[1])
-        fmt = lambda lst: " · ".join(f"{t} {_pct_vg(v)}" for t, v in lst)
-        st.html("<div style='background:#fff;color:#111827;border-radius:10px;padding:8px 12px;font-size:.88em;"
-                "margin-top:8px'>"
-                f"<b style='color:#2f45e0'>Maiores altas no período:</b> {fmt(rent_ativo[:3])}<br>"
-                f"<b style='color:#d9831c'>Maiores quedas no período:</b> {fmt(rent_ativo[::-1][:3])}</div>")
     if dados.get("sem_preco"):
         st.caption("Sem cotação, fora da conta: " + ", ".join(t.replace(".SA", "") for t in dados["sem_preco"]) + ".")
 
