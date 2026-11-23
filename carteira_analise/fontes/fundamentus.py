@@ -214,6 +214,8 @@ class FundamentosAcao:
     divida_bruta_patrimonio: float | None
     liquidez_corrente: float | None
     ev_ebitda: float | None = None
+    margem_liquida_pct: float | None = None  # (mantido por compatibilidade: margem_liquida já existe)
+    crescimento_receita_5a: float | None = None
 
 
 def _achar_coluna(colunas: dict[str, str], *pistas: str) -> str | None:
@@ -259,6 +261,7 @@ def buscar_todas_acoes_fundamentus() -> dict[str, FundamentosAcao]:
     col_div_patrim = _achar_coluna(colunas, "div.brut", "dív.brut", "divida bruta")
     col_liq_corrente = _achar_coluna(colunas, "liq.corr", "liq. corr")
     col_ev_ebitda = _achar_coluna(colunas, "ev/ebitda")
+    col_cresc = _achar_coluna(colunas, "cresc")
 
     resultado: dict[str, FundamentosAcao] = {}
     for _, linha in df.iterrows():
@@ -283,6 +286,7 @@ def buscar_todas_acoes_fundamentus() -> dict[str, FundamentosAcao]:
             divida_bruta_patrimonio=num(col_div_patrim),
             liquidez_corrente=num(col_liq_corrente),
             ev_ebitda=num(col_ev_ebitda),
+            crescimento_receita_5a=num(col_cresc),
         )
     return resultado
 
@@ -689,10 +693,11 @@ def referencias_pl(papel: str, grupos: list[tuple[dict, pd.DataFrame]], bolsa: p
         if mediana is None or n < minimo:
             motivos.append(f"{info['tipo']} {info['nome']}: {n} empresa(s) com lucro e liquidez")
             continue
-        escolhido = {"tipo": info["tipo"], "nome": info["nome"], "mediana": mediana, "n": n}
+        escolhido = {"tipo": info["tipo"], "nome": info["nome"], "id": info.get("id"), "mediana": mediana, "n": n}
         break
     mediana_b, n_b = mediana_pl(bolsa)
     return {"grupo": escolhido, "bolsa": {"mediana": mediana_b, "n": n_b} if mediana_b else None,
+            "nomes": {info["tipo"]: info["nome"] for info, _ in grupos},
             "motivo_sem_grupo": None if escolhido else ("; ".join(motivos) or "links de setor não encontrados"),
             # falha de download (tenta de novo na próxima carga) x poucas empresas comparáveis
             "sem_grupo_por_falha": (not escolhido) and (not grupos or any(t is None for _, t in grupos))}
@@ -716,5 +721,33 @@ def buscar_referencias_pl(ticker: str) -> dict | None:
         ref = referencias_pl(papel, grupos, bolsa)
         ref["completa"] = bool(ref["grupo"] and ref["bolsa"])
         return ref if (ref["grupo"] or ref["bolsa"]) else None
+    except Exception:
+        return None
+
+
+def tabela_pares_de_html(html: str) -> pd.DataFrame:
+    """Tabela de um segmento/setor (resultado.php?segmento=N) com as colunas
+    da comparação com os pares: papel, cotação, P/L, P/VP, DY, ROE, liquidez."""
+    df = _ler_tabela_como_texto(html)
+    colunas = {c: str(c).strip().lower() for c in df.columns}
+    cols = {"papel": _achar_coluna(colunas, "papel"), "cotacao": _achar_coluna(colunas, "cotaç", "cotac"),
+            "pl": _achar_coluna(colunas, "p/l"), "pvp": _achar_coluna(colunas, "p/vp"),
+            "dy": _achar_coluna(colunas, "div.yield", "div. yield", "dividend"), "roe": _achar_coluna(colunas, "roe"),
+            "liquidez": _achar_coluna(colunas, "liq.2m", "liq. 2m", "liq.2 m")}
+    linhas = []
+    for _, linha in df.iterrows():
+        papel = re.sub(r"\s+", "", str(linha.get(cols["papel"], ""))).upper()
+        if not papel or papel == "NAN":
+            continue
+        linhas.append({k: (papel if k == "papel" else (_parse_numero_br(linha.get(c)) if c else None))
+                       for k, c in cols.items()})
+    return pd.DataFrame(linhas, columns=list(cols))
+
+
+def buscar_tabela_pares(tipo: str, ident: str) -> pd.DataFrame | None:
+    """Empresas do mesmo segmento/setor no Fundamentus (a página já é baixada
+    para a mediana do P/L, então costuma vir do cache). None se falhar."""
+    try:
+        return tabela_pares_de_html(_baixar_html(URL_RESULTADO_GRUPO.format(tipo=tipo, id=ident), exigir="<table"))
     except Exception:
         return None
