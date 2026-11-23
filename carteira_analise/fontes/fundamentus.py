@@ -744,6 +744,17 @@ def tabela_pares_de_html(html: str) -> pd.DataFrame:
     return pd.DataFrame(linhas, columns=list(cols))
 
 
+def buscar_grupos_setoriais(ticker: str) -> list[dict]:
+    """Segmento e setor de uma ação no Fundamentus ([] se falhar). Independe
+    da mediana do P/L: a comparação com os pares usa o segmento mesmo quando
+    ele tem poucas empresas com lucro para servir de referência de P/L."""
+    papel = re.sub(r"\.SA$", "", ticker.strip().upper())
+    try:
+        return grupos_setoriais_de_html(_baixar_html(URL_ACAO_DETALHES.format(papel=papel), exigir="<table"))
+    except Exception:
+        return []
+
+
 def buscar_tabela_pares(tipo: str, ident: str) -> pd.DataFrame | None:
     """Empresas do mesmo segmento/setor no Fundamentus (a página já é baixada
     para a mediana do P/L, então costuma vir do cache). None se falhar."""
