@@ -21,6 +21,7 @@ import html
 import io
 import re
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1693,6 +1694,7 @@ with tab_carteira:
                                "cvm": (serie_rendimentos(base_cvm, t, "dy")
                                        if base_cvm is not None and not base_cvm.empty else None)},
                     proventos_da_acao=_proventos_acao_em_cache)
+                _tempos = {"inicio": time.perf_counter()}  # tempo de cada etapa (mostrado abaixo do resultado)
                 # Busca de uma vez, em paralelo, o que o Yahoo ainda não tem em cache (preços em
                 # lote; dividendos, eventos e dados cadastrais em até 8 buscas simultâneas). A
                 # análise abaixo, ativo por ativo, encontra tudo pronto. Cache compartilhado
@@ -1702,8 +1704,10 @@ with tab_carteira:
                                         info=True)
                 except Exception:
                     pass
+                _tempos["Yahoo em lote"] = time.perf_counter()
                 linhas_ganho = processar_carteira_combinada(df_resumo, df_operacoes, fonte_rendimentos,
                                                             periodo_carteira)
+                _tempos["extrato"] = time.perf_counter()
                 linhas_analise = []
                 dividendos_por_ticker = {}
                 # posição encerrada (vendida, ou fundo extinto e liquidado, como o BCFF11): fica só no
@@ -1727,6 +1731,7 @@ with tab_carteira:
 
                 # Cenários comparativos por ativo (regra de faixas de preço) — mostrados
                 # na aba Dashboard. Falha aqui não pode derrubar o resto da análise.
+                _tempos["análise de cada ativo"] = time.perf_counter()
                 try:
                     fundamentos_por_ticker = {
                         t: fundamentos_de_resultado(r) for t, tp, r in linhas_analise
@@ -1776,12 +1781,19 @@ with tab_carteira:
                             c["ganho_realizado_ciclo"] = l.ganho_realizado or 0.0
                             c["custo_total_comprado"] = getattr(l, "custo_total_comprado", None)
                     cenarios = (cards, avisos)
+                    _tempos["cards e contexto (Fundamentus)"] = time.perf_counter()
                 except Exception as e:
                     cenarios = ([], [f"não foi possível calcular os cenários ({e})"])
 
             # Guarda tudo na sessão — sobrevive a um clique posterior noutra aba/botão
             # (ver docstring do arquivo) e alimenta também a aba Dashboard.
             st.session_state["carteira_horario"] = texto_horario
+            try:
+                marcas = list(_tempos.items())
+                st.session_state["carteira_tempos"] = [(nome, fim - ini) for (_, ini), (nome, fim)
+                                                       in zip(marcas, marcas[1:])]
+            except Exception:
+                st.session_state["carteira_tempos"] = []
             st.session_state["carteira_pregao_aberto"] = pregao_provavelmente_aberto
             st.session_state["carteira_linhas_ganho"] = linhas_ganho
             st.session_state["carteira_linhas_analise"] = linhas_analise
@@ -1803,6 +1815,10 @@ with tab_carteira:
             n_dados = len(sem_dados)
             st.success(f"✅ Análise de {n_ativos} ativo(s) concluída em {st.session_state['carteira_horario']}. "
                        "Os cards de cada ativo e o extrato estão na aba **💼 Dashboard da Carteira**.")
+            tempos = st.session_state.get("carteira_tempos") or []
+            if tempos:
+                st.caption("⏱️ Tempo da análise: " + " · ".join(f"{n} {seg:.0f}s" for n, seg in tempos)
+                           + f" · total {sum(seg for _, seg in tempos):.0f}s")
             encerrados = st.session_state.get("carteira_encerrados") or []
             if encerrados:
                 st.caption(f"Posições encerradas ({', '.join(encerrados)}): só no extrato do Dashboard, "
@@ -2054,6 +2070,23 @@ def _pp(v: float) -> str:
     return f"{abs(v) * 100:.1f} p.p.".replace(".", ",", 1)
 
 
+def _claro(grafico):
+    """Gráfico em fundo branco (dentro dos cartões da Visão geral)."""
+    return (grafico.configure(background="#ffffff")
+            .configure_axis(labelColor="#374151", titleColor="#4b5563", gridColor="#eef2f7", domainColor="#d1d5db",
+                            tickColor="#d1d5db")
+            .configure_legend(labelColor="#111827", titleColor="#111827")
+            .configure_view(strokeWidth=0))
+
+
+def _titulo_cartao(texto: str) -> None:
+    st.html(f"<div style='font-size:.95em;font-weight:700;color:#1e3a8a'>{texto}</div>")
+
+
+_CSS_CARTOES = ("<style>div[class*='st-key-vgc_']{background:#ffffff;border-radius:12px;padding:10px 12px 4px;"
+                "color:#111827}</style>")
+
+
 def _renderizar_visao_geral() -> None:
     dados = st.session_state.get("visao_geral_dados")
     if dados is None:
@@ -2064,6 +2097,7 @@ def _renderizar_visao_geral() -> None:
     if not dados or not dados.get("linhas"):
         st.info("Sem operações com cotação para montar a visão geral.")
         return
+    st.html(_CSS_CARTOES)
     linhas, meta, meses = dados["linhas"], dados["meta"], dados["meses"]
     aberto = {t: float(df["quantidade"].iloc[-1]) > 1e-9 for t, df in linhas.items()}
 
@@ -2166,38 +2200,40 @@ def _renderizar_visao_geral() -> None:
 
     idx = periodo.index.to_timestamp()
     g1, g2 = st.columns(2)
-    with g1:
-        st.markdown("**Patrimônio × valor investido**")
+    with g1, st.container(key="vgc_patrimonio"):
+        _titulo_cartao("Patrimônio × valor investido")
         df1 = pd.DataFrame({"Patrimônio": periodo["patrimonio"].values, "Valor investido": periodo["custo"].values},
                            index=pd.Index(idx, name="Mês"))
-        st.altair_chart(_grafico_linhas(df1, moeda, ",.0f", {"Patrimônio": "#1e3a8a", "Valor investido": "#9ca3af"},
-                                        tracejadas=["Valor investido"]), width="stretch")
+        st.altair_chart(_claro(_grafico_linhas(df1, moeda, ",.0f", {"Patrimônio": "#1e3a8a", "Valor investido": "#9ca3af"},
+                                        tracejadas=["Valor investido"])), width="stretch")
     por_tipo_df = {}
     for nome in ("Ações", "FIIs", "ETFs"):
         ts = [t for t in escolhidos if meta[t]["tipo"] == nome]
         if ts:
             por_tipo_df[nome] = somar(linhas, ts, cambio).iloc[i0:i1 + 1]
-    with g2:
-        st.markdown("**Patrimônio por tipo**")
+    with g2, st.container(key="vgc_tipo"):
+        _titulo_cartao("Patrimônio por tipo")
         rot2, eixo2 = _eixo_meses(idx)
         df2 = (pd.DataFrame({k: v["patrimonio"].values for k, v in por_tipo_df.items()})
                .assign(Rótulo=rot2).melt("Rótulo", var_name="Tipo", value_name="valor"))
-        st.altair_chart(alt.Chart(df2).mark_area(opacity=.85).encode(
+        st.altair_chart(_claro(alt.Chart(df2).mark_area(opacity=.85).encode(
             x=eixo2,
             y=alt.Y("valor:Q", stack=True, title=moeda, axis=alt.Axis(labelExpr=_EIXO_MIL)),
             color=alt.Color("Tipo:N", scale=alt.Scale(domain=list(_CORES_TIPO), range=list(_CORES_TIPO.values())),
                             legend=alt.Legend(orient="top", title=None)),
             tooltip=[alt.Tooltip("Rótulo:O", title="Mês"), "Tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
-        ).properties(height=280), width="stretch")
+        ).properties(height=280)), width="stretch")
 
     _destaques(escolhidos, linhas, i0, i1)
 
-    st.markdown("**Rentabilidade da carteira × CDI**")
     df3 = pd.DataFrame({"Carteira": rent.values}, index=pd.Index(idx, name="Mês"))
     if cdi is not None:
         df3["CDI"] = cdi.values
-    st.altair_chart(_grafico_linhas(df3, "acumulado no período", ".1%", {"Carteira": "#1e3a8a", "CDI": "#d9831c"},
-                                    tracejadas=["CDI"]), width="stretch")
+    with st.container(key="vgc_rentabilidade"):
+        _titulo_cartao("Rentabilidade da carteira × CDI")
+        st.altair_chart(_claro(_grafico_linhas(df3, "acumulado no período", ".1%",
+                                               {"Carteira": "#1e3a8a", "CDI": "#d9831c"}, tracejadas=["CDI"])),
+                        width="stretch")
     anos = por_ano(periodo, inicial, serie_cdi)
     if len(anos):
         linhas_tab = []
@@ -2218,13 +2254,14 @@ def _renderizar_visao_geral() -> None:
                "resultado). Ativos vendidos contam enquanto estavam na carteira; a venda sai como resgate.")
 
     # proventos: barras por classe, anel por classe e tabela por ano
-    st.markdown("**Proventos por mês**")
     rot3, eixo3 = _eixo_meses(idx)
     df4 = (pd.DataFrame({k: v["proventos"].values for k, v in por_tipo_df.items()})
            .assign(Rótulo=rot3).melt("Rótulo", var_name="Tipo", value_name="valor"))
     media = pd.DataFrame({"Rótulo": rot3,
                           "Média de 12 meses": total["proventos"].rolling(12, min_periods=1).mean().iloc[i0:i1 + 1].values})
-    st.altair_chart(
+    with st.container(key="vgc_proventos"):
+        _titulo_cartao("Proventos por mês")
+        st.altair_chart(_claro(
         (alt.Chart(df4).mark_bar(opacity=.9).encode(
             x=eixo3,
             y=alt.Y("valor:Q", stack=True, title=moeda,
@@ -2233,7 +2270,7 @@ def _renderizar_visao_geral() -> None:
                             legend=alt.Legend(orient="top", title=None)),
             tooltip=[alt.Tooltip("Rótulo:O", title="Mês"), "Tipo:N", alt.Tooltip("valor:Q", format=",.2f")])
          + alt.Chart(media).mark_line(color="#d9831c", strokeWidth=2).encode(x=eixo3, y="Média de 12 meses:Q")
-         ).properties(height=240), width="stretch")
+         ).properties(height=240)), width="stretch")
     st.caption("Proventos recebidos no mês (dividendos e JCP brutos, rendimentos), pela quantidade na data-ex. "
                "Linha laranja: média dos últimos 12 meses.")
     p1, p2 = st.columns(2)
@@ -2241,14 +2278,16 @@ def _renderizar_visao_geral() -> None:
     with p1:
         if soma_tipo:
             dfp = pd.DataFrame({"Tipo": list(soma_tipo), "valor": list(soma_tipo.values())})
-            st.markdown("**Proventos por tipo de ativo**")
-            st.altair_chart(alt.Chart(dfp).mark_arc(innerRadius=55).encode(
+            tot_p = sum(soma_tipo.values())
+            with st.container(key="vgc_prov_tipo"):
+                _titulo_cartao("Proventos por tipo de ativo")
+                st.altair_chart(_claro(alt.Chart(dfp).mark_arc(innerRadius=55).encode(
                 theta="valor:Q",
                 color=alt.Color("Tipo:N", scale=alt.Scale(domain=list(_CORES_TIPO), range=list(_CORES_TIPO.values())),
                                 legend=alt.Legend(orient="right", title=None)),
-                tooltip=["Tipo:N", alt.Tooltip("valor:Q", format=",.2f")]).properties(height=200), width="stretch")
-            tot_p = sum(soma_tipo.values())
-            st.caption(" · ".join(f"{k}: {fv(v)} ({v / tot_p * 100:.0f}%)" for k, v in soma_tipo.items()))
+                tooltip=["Tipo:N", alt.Tooltip("valor:Q", format=",.2f")]).properties(height=200)), width="stretch")
+                st.html("<div style='font-size:.84em;color:#374151'>" + " · ".join(
+                    f"<b>{k}</b> {fv(v)} ({v / tot_p * 100:.0f}%)" for k, v in soma_tipo.items()) + "</div>")
     with p2:
         if len(anos):
             linhas_p, anterior = [], None
