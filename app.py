@@ -39,8 +39,9 @@ from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.b3_cotahist import carregar_base as carregar_base_b3, completar_precos
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
 from carteira_analise.fontes.fundamentus import (buscar_proventos_acao, buscar_proventos_acao_detalhe,
-                                                 buscar_proventos_fii, buscar_referencias_pl)
-from carteira_analise.proventos_ir import a_receber, proventos_recebidos, resumo_por_ano
+                                                 buscar_proventos_fii, buscar_proventos_fii_detalhe,
+                                                 buscar_referencias_pl)
+from carteira_analise.proventos_ir import a_receber, eh_bdr, proventos_recebidos, resumo_por_ano, sem_data_antigos
 from carteira_analise.fontes.rendimentos import (FonteComRendimentosConferidos, ajustar_por_desdobramentos,
                                                   conferir_fontes)
 from carteira_analise.contexto import (ATENCAO, BOM, acrescentar_referencias_pl, cdi_liquido_12m,
@@ -635,8 +636,9 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
-tab_carteira, tab_visao, tab_ativo, tab_dashboard, tab_guia = st.tabs([
-    "📂 Carteira", "🧭 Visão geral", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "📖 Guia de Indicadores",
+tab_carteira, tab_visao, tab_ativo, tab_dashboard, tab_ir, tab_guia = st.tabs([
+    "📂 Carteira", "🧭 Visão geral", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "🧾 Proventos e IR",
+    "📖 Guia de Indicadores",
 ])
 
 with tab_carteira:
@@ -2270,25 +2272,35 @@ def _proventos_detalhe_em_cache(ticker: str):
     return buscar_proventos_acao_detalhe(ticker)
 
 
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _proventos_fii_detalhe_em_cache(ticker: str):
+    """Tipo (rendimento/amortização) e data de pagamento dos proventos de um
+    FII (Fundamentus), compartilhado entre usuários por 12h."""
+    return buscar_proventos_fii_detalhe(ticker)
+
+
 def _renderizar_proventos_ir(dados: dict) -> None:
-    """Dividendos e JCP das ações da B3 por ano de pagamento, para conferir a
-    declaração do IR."""
-    st.markdown("#### 🧾 Dividendos e JCP para o IR (ações da B3)")
-    st.caption("Pelo ano do PAGAMENTO, que é o que vale na declaração. Dividendos: isentos. JCP: 15% retidos na "
-               "fonte; declara-se o líquido (tributação exclusiva). Quantidade da sua planilha na data-com × valor "
-               "por ação informado pela empresa (Fundamentus). Para conferir: o documento oficial é o informe de "
-               "rendimentos da corretora ou da empresa.")
-    acoes = sorted(t for t, m in dados["meta"].items() if m["mercado"] == "B3" and m["tipo"] == "Ações")
-    if not acoes:
-        st.info("Sem ações da B3 na planilha.")
+    """Dividendos e JCP (ações) e rendimentos (FIIs) da B3 por ano de
+    pagamento, para conferir a declaração do IR."""
+    st.caption("Pelo ano do PAGAMENTO, que é o que vale na declaração. Ações: dividendos isentos; JCP com 15% "
+               "retidos na fonte (declara-se o líquido, tributação exclusiva). FIIs: rendimentos isentos para pessoa "
+               "física nas condições da lei; amortização é devolução de capital (reduz o custo, não é rendimento). "
+               "Quantidade da sua planilha na data-com × valor por cota informado (Fundamentus). Para conferir: o "
+               "documento oficial é o informe de rendimentos da corretora ou do emissor.")
+    b3 = {t: m for t, m in dados["meta"].items() if m["mercado"] == "B3"}
+    acoes = sorted(t for t, m in b3.items() if m["tipo"] == "Ações" and not eh_bdr(t))
+    fiis = sorted(t for t, m in b3.items() if m["tipo"] == "FIIs")
+    bdrs = sorted(t for t in b3 if eh_bdr(t))
+    if not acoes and not fiis:
+        st.info("Sem ações ou FIIs da B3 na planilha.")
         return
     if "ir_recebidos" not in st.session_state:
-        if not st.button("Montar a tabela de dividendos e JCP", key="ir_montar"):
+        if not st.button("Montar a tabela de proventos para o IR", key="ir_montar"):
             return
         partes, falhas = [], []
         with st.spinner("Buscando tipo e data de pagamento dos proventos no Fundamentus..."):
-            for t in acoes:
-                detalhe = _proventos_detalhe_em_cache(t)
+            for t in acoes + fiis:
+                detalhe = (_proventos_detalhe_em_cache(t) if t in acoes else _proventos_fii_detalhe_em_cache(t))
                 if detalhe is None:
                     falhas.append(t.replace(".SA", ""))
                     continue
@@ -2297,7 +2309,7 @@ def _renderizar_proventos_ir(dados: dict) -> None:
                                             falhas)
     recebidos, falhas = st.session_state["ir_recebidos"]
     if recebidos is None or recebidos.empty:
-        st.info("Nenhum dividendo ou JCP encontrado para as ações da planilha.")
+        st.info("Nenhum provento encontrado para os ativos da planilha.")
         return
     anos = sorted({int(a) for a in pd.to_datetime(recebidos["pagamento"]).dropna().dt.year}, reverse=True)
     hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
@@ -2305,25 +2317,38 @@ def _renderizar_proventos_ir(dados: dict) -> None:
                        index=anos.index(hoje.year - 1) if hoje.year - 1 in anos else 0, key="ir_ano")
     tab = resumo_por_ano(recebidos, ano)
     fv = lambda v: formatar_valor(v, "R$") if v else "—"
+    nome = lambda t: t.replace(".SA", "")
+
+    def tabela(ativos, colunas, rotulos, titulo):
+        parte = tab[tab["ticker"].isin(ativos)]
+        if parte.empty:
+            return
+        linhas_tab = [[nome(r["ticker"])] + [fv(r[c]) for c in colunas] for _, r in parte.iterrows()]
+        linhas_tab.append(["<b>Total</b>"] + [f"<b>{fv(parte[c].sum())}</b>" for c in colunas])
+        st.html(_caixa_branca(titulo, _tabela_html(["Ativo"] + rotulos, linhas_tab)))
+
     if tab.empty:
         st.info(f"Nenhum pagamento em {ano}.")
     else:
-        tot = tab[["dividendos", "jcp_bruto", "ir_retido", "jcp_liquido", "total_liquido"]].sum()
-        linhas_tab = [[t.replace(".SA", ""), fv(r.dividendos), fv(r.jcp_bruto), fv(r.ir_retido), fv(r.jcp_liquido),
-                       fv(r.total_liquido)] for t, r in zip(tab["ticker"], tab.itertuples())]
-        linhas_tab.append(["<b>Total</b>"] + [f"<b>{fv(tot[c])}</b>" for c in
-                                               ("dividendos", "jcp_bruto", "ir_retido", "jcp_liquido", "total_liquido")])
-        st.html(_caixa_branca(f"Pagos em {ano}", _tabela_html(
-            ["Ativo", "Dividendos (isentos)", "JCP bruto", "IR retido (15%)", "JCP líquido", "Total líquido"],
-            linhas_tab)))
+        tabela(acoes, ["dividendos", "jcp_bruto", "ir_retido", "jcp_liquido"],
+               ["Dividendos (isentos)", "JCP bruto", "IR retido (15%)", "JCP líquido"], f"Ações — pagos em {ano}")
+        tabela(fiis, ["rendimentos", "amortizacao"], ["Rendimentos (isentos)", "Amortização (devolução de capital)"],
+               f"FIIs — pagos em {ano}")
         planilha_ir = io.BytesIO()
+        renomear = {"ticker": "Ativo", "dividendos": "Dividendos (isentos)", "jcp_bruto": "JCP bruto",
+                    "ir_retido": "IR retido (15%)", "jcp_liquido": "JCP líquido",
+                    "rendimentos": "Rendimentos FII (isentos)", "amortizacao": "Amortização FII",
+                    "total_liquido": "Total líquido"}
         with pd.ExcelWriter(planilha_ir, engine="openpyxl") as w:
-            tab.assign(ticker=tab["ticker"].str.replace(".SA", "", regex=False)).rename(columns={
-                "ticker": "Ativo", "dividendos": "Dividendos (isentos)", "jcp_bruto": "JCP bruto",
-                "ir_retido": "IR retido (15%)", "jcp_liquido": "JCP líquido", "total_liquido": "Total líquido",
-            }).to_excel(w, sheet_name=f"Pagos em {ano}", index=False)
+            for rotulo, ativos, cols in (("Ações", acoes, ["ticker", "dividendos", "jcp_bruto", "ir_retido",
+                                                            "jcp_liquido"]),
+                                         ("FIIs", fiis, ["ticker", "rendimentos", "amortizacao"])):
+                parte = tab[tab["ticker"].isin(ativos)][cols]
+                if len(parte):
+                    parte.assign(ticker=parte["ticker"].map(nome)).rename(columns=renomear).to_excel(
+                        w, sheet_name=f"{rotulo} {ano}", index=False)
             det = recebidos[pd.to_datetime(recebidos["pagamento"]).dt.year == ano].copy()
-            det["ticker"] = det["ticker"].str.replace(".SA", "", regex=False)
+            det["ticker"] = det["ticker"].map(nome)
             det.rename(columns={"ticker": "Ativo", "data_com": "Data-com", "pagamento": "Pagamento", "tipo": "Tipo",
                                 "quantidade": "Quantidade", "bruto": "Bruto", "ir_retido": "IR retido",
                                 "liquido": "Líquido"}).to_excel(w, sheet_name="Detalhe", index=False)
@@ -2331,12 +2356,22 @@ def _renderizar_proventos_ir(dados: dict) -> None:
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     pend = a_receber(recebidos, hoje)
     if pend is not None and len(pend):
-        st.caption("A receber (data-com passada, pagamento futuro ou sem data): "
-                   + " · ".join(f"{r.ticker.replace('.SA', '')} {'JCP' if r.tipo == 'jcp' else 'dividendo'} "
-                                f"{formatar_valor(r.bruto, 'R$')}" for r in pend.itertuples()) + ".")
+        tipo_txt = {"jcp": "JCP", "dividendo": "Dividendo", "rendimento": "Rendimento", "amortizacao": "Amortização",
+                    "outro": "Outro"}
+        linhas_p = [[nome(r.ticker), tipo_txt.get(r.tipo, r.tipo), f"{pd.Timestamp(r.data_com):%d/%m/%Y}",
+                     f"{pd.Timestamp(r.pagamento):%d/%m/%Y}" if pd.notna(r.pagamento) else "sem data",
+                     formatar_valor(r.bruto, "R$")] for r in pend.itertuples()]
+        with st.expander(f"A receber ({len(pend)}): data-com passada, pagamento futuro ou ainda sem data"):
+            st.html(_tabela_html(["Ativo", "Tipo", "Data-com", "Pagamento", "Valor bruto"], linhas_p))
+    antigos = sem_data_antigos(recebidos, hoje)
+    if antigos is not None and len(antigos):
+        st.caption(f"{len(antigos)} provento(s) antigo(s) sem data de pagamento no Fundamentus não entram em nenhum "
+                   "ano (" + ", ".join(sorted({nome(t) for t in antigos["ticker"]})) + "): confira no informe.")
+    if bdrs:
+        st.caption("BDRs (" + ", ".join(nome(t) for t in bdrs) + ") ficam de fora: seguem a regra de rendimentos "
+                   "do exterior.")
     if falhas:
         st.caption("Sem dados do Fundamentus agora: " + ", ".join(falhas) + ". Tente de novo mais tarde.")
-
 
 
 with tab_visao:
@@ -2350,12 +2385,7 @@ with tab_visao:
             _renderizar_visao_geral()
         except Exception as e:
             st.error(f"Não foi possível montar a visão geral ({e}).")
-        if st.session_state.get("visao_geral_dados"):
-            st.divider()
-            try:
-                _renderizar_proventos_ir(st.session_state["visao_geral_dados"])
-            except Exception as e:
-                st.error(f"Não foi possível montar a tabela do IR ({e}).")
+
 
 
 # =============================================================================
@@ -2521,7 +2551,29 @@ with tab_dashboard:
                    "é tratada como bonificação sem custo.")
 
 # =============================================================================
-# ABA 5 — Guia de Indicadores
+# ABA — Proventos e IR
+# =============================================================================
+with tab_ir:
+    st.subheader("🧾 Proventos e IR")
+    if bytes_planilha is None:
+        st.info("Envie um arquivo Excel na aba 'Carteira' para ver os proventos para o IR.")
+    elif "carteira_linhas_ganho" not in st.session_state:
+        st.info("Clique em 'Analisar carteira' na aba 'Carteira' para montar a tabela.")
+    else:
+        try:
+            dados_ir = st.session_state.get("visao_geral_dados")
+            if dados_ir is None:
+                with st.spinner("Lendo as operações da planilha..."):
+                    dados_ir = _dados_visao_geral(df_resumo, df_operacoes,
+                                                  st.session_state.get("carteira_tipos_confirmados", {}))
+                st.session_state["visao_geral_dados"] = dados_ir
+            if dados_ir:
+                _renderizar_proventos_ir(dados_ir)
+        except Exception as e:
+            st.error(f"Não foi possível montar a tabela do IR ({e}).")
+
+# =============================================================================
+# ABA 6 — Guia de Indicadores
 # =============================================================================
 with tab_guia:
     st.subheader("📖 Guia de Indicadores")
