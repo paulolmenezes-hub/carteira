@@ -32,15 +32,18 @@ def risco_12m(precos: pd.Series | None) -> dict | None:
 
 
 def selecionar_pares(tabela: pd.DataFrame | None, papel: str, maximo: int = MAXIMO_PARES) -> pd.DataFrame | None:
-    """Pares do segmento para a comparação: empresas com lucro (P/L > 0) e
-    liquidez de pelo menos R$ 1 milhão/dia, as mais negociadas primeiro; o
-    próprio ativo entra sempre. Coluna ``proprio`` marca o ativo."""
+    """Pares do segmento para a comparação: empresas com liquidez de pelo
+    menos R$ 1 milhão/dia, as mais negociadas primeiro (com lucro ou não: o
+    P/L negativo aparece como prejuízo). Outras classes da mesma empresa
+    (PETR3 para PETR4) ficam de fora. O próprio ativo entra sempre; coluna
+    ``proprio`` marca o ativo."""
     if tabela is None or tabela.empty:
         return None
     t = tabela.copy()
     papel = papel.upper().replace(".SA", "")
     t["proprio"] = t["papel"] == papel
-    validos = t[(t["proprio"]) | ((t["pl"].fillna(0) > 0) & (t["liquidez"].fillna(0) >= LIQUIDEZ_MINIMA_PAR))]
+    mesma_empresa = t["papel"].str[:4] == papel[:4]
+    validos = t[(t["proprio"]) | (~mesma_empresa & (t["liquidez"].fillna(0) >= LIQUIDEZ_MINIMA_PAR))]
     validos = validos.sort_values("liquidez", ascending=False)
     escolhidos = validos.head(maximo)
     if not escolhidos["proprio"].any():
