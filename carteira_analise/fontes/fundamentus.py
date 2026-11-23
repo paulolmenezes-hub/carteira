@@ -414,6 +414,68 @@ def proventos_acao_de_html(html: str) -> pd.Series:
 ERRO_PROVENTOS_ACAO: dict[str, str] = {}  # último motivo de falha por papel, mostrado no card
 
 
+def _tipo_provento(texto) -> str:
+    t = _normalizar_coluna(texto)
+    if "jrs" in t or "juros" in t:
+        return "jcp"
+    if "divid" in t or "rend" in t:
+        return "dividendo"
+    return "outro"
+
+
+def proventos_acao_detalhe_de_html(html: str) -> pd.DataFrame:
+    """Proventos de uma ação, um por linha, com o TIPO (dividendo ou JCP) e a
+    DATA DE PAGAMENTO, que contam para o IR (o JCP tem 15% retido na fonte; a
+    declaração segue o ano do pagamento). Colunas: data_com, valor (por ação,
+    na escala da época), tipo, pagamento (NaT se ainda sem data)."""
+    try:
+        tabelas = pd.read_html(io.StringIO(html), thousands=None, flavor="lxml")
+    except ValueError:
+        raise ValueError("a página não tem tabela de proventos (o ativo é mesmo uma ação?)")
+    for df in tabelas:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [" ".join(str(p) for p in c if "Unnamed" not in str(p)) for c in df.columns]
+        colunas = {_normalizar_coluna(c): c for c in df.columns}
+        c_data = next((c for n, c in colunas.items() if n.startswith("data") and "pagamento" not in n), None)
+        c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
+        if not c_data or not c_valor:
+            continue
+        c_tipo = next((c for n, c in colunas.items() if n.startswith("tipo")), None)
+        c_pag = next((c for n, c in colunas.items() if "pagamento" in n), None)
+        c_qtd = next((c for n, c in colunas.items() if "quantas" in n), None)
+        valores = df[c_valor].astype(str).map(_parse_numero_br).astype(float)
+        if c_qtd:
+            qtd = df[c_qtd].astype(str).map(_parse_numero_br).astype(float)
+            valores = valores / qtd.where(qtd > 0, 1).fillna(1)
+        saida = pd.DataFrame({
+            "data_com": pd.to_datetime(df[c_data], dayfirst=True, errors="coerce"),
+            "valor": valores,
+            "tipo": df[c_tipo].map(_tipo_provento) if c_tipo else "dividendo",
+            "pagamento": (pd.to_datetime(df[c_pag].astype(str).str.strip().replace({"-": None}),
+                                         dayfirst=True, errors="coerce") if c_pag else pd.NaT),
+        })
+        saida = saida[saida["data_com"].notna() & saida["valor"].notna() & (saida["valor"] > 0)]
+        return saida.sort_values("data_com").reset_index(drop=True)
+    raise ValueError("nenhuma tabela com colunas de data e valor")
+
+
+_cache_proventos_detalhe: dict[str, pd.DataFrame] = {}
+
+
+def buscar_proventos_acao_detalhe(ticker: str) -> pd.DataFrame | None:
+    """``proventos_acao_detalhe_de_html`` da página do Fundamentus, com cache;
+    None se falhar."""
+    papel = ticker.upper().replace(".SA", "")
+    if papel in _cache_proventos_detalhe:
+        return _cache_proventos_detalhe[papel]
+    try:
+        df = proventos_acao_detalhe_de_html(_baixar_html(URL_ACAO_PROVENTOS.format(papel=papel), exigir="<table"))
+    except Exception:
+        return None
+    _cache_proventos_detalhe[papel] = df
+    return df
+
+
 def buscar_proventos_acao(ticker: str) -> pd.Series | None:
     """Proventos de uma ação (Fundamentus), com cache; None se falhar (o
     motivo fica em ``ERRO_PROVENTOS_ACAO``)."""
