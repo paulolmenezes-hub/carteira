@@ -51,6 +51,8 @@ from carteira_analise.fundamentalistas import classificar_fii, motivo_classifica
 from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.tabela_indicadores import montar_tabelas
+from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
+                                    dividir_aporte, metas_de_texto, metas_para_texto)
 from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, por_ano,
                                           rentabilidade_cotas, resultado_em_reais, resumo_periodo, somar,
                                           tir_anual)
@@ -641,9 +643,9 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
-tab_carteira, tab_visao, tab_ativo, tab_dashboard, tab_ir, tab_guia = st.tabs([
-    "📂 Carteira", "🧭 Visão geral", "🔍 Ativo Específico", "💼 Dashboard da Carteira", "🧾 Proventos e IR",
-    "📖 Guia de Indicadores",
+tab_carteira, tab_visao, tab_metas, tab_ativo, tab_dashboard, tab_ir, tab_guia = st.tabs([
+    "📂 Carteira", "🧭 Visão geral", "🎯 Metas", "🔍 Ativo Específico", "💼 Dashboard da Carteira",
+    "🧾 Proventos e IR", "📖 Guia de Indicadores",
 ])
 
 with tab_carteira:
@@ -2529,6 +2531,105 @@ with tab_visao:
         except Exception as e:
             st.error(f"Não foi possível montar a visão geral ({e}).")
 
+
+
+# =============================================================================
+# ABA — Metas de alocação
+# =============================================================================
+def _valores_por_classe(dados: dict) -> dict[str, float]:
+    """Patrimônio de hoje (último mês) por classe de meta, em reais."""
+    valores = {c: 0.0 for c in CLASSES_META}
+    cambio = dados.get("cambio")
+    for t, df in dados["linhas"].items():
+        v = float(df["patrimonio"].iloc[-1])
+        if v <= 0:
+            continue
+        m = dados["meta"][t]
+        if m["mercado"] == "EUA":
+            if cambio is None or not len(cambio):
+                continue
+            v *= float(cambio.reindex(df.index).ffill().bfill().iloc[-1])
+        valores[classe_do_ativo(m["mercado"], m["tipo"])] += v
+    return valores
+
+
+def _renderizar_metas(dados: dict) -> None:
+    st.caption("Escolha o percentual de cada classe. O painel compara com a carteira de hoje e mostra quanto falta "
+               "ou sobra em cada uma. Não sugere ativos nem compra ou venda: a escolha continua sua. As metas ficam "
+               "guardadas no endereço desta página (nada é gravado no servidor): ao recarregar, continuam; salve o "
+               "link nos favoritos para usar depois.")
+    salvas = metas_de_texto(st.query_params.get("metas")) or METAS_PADRAO
+    colunas = st.columns(len(CLASSES_META))
+    metas = {c: col.number_input(f"{c} (%)", min_value=0.0, max_value=100.0, value=float(salvas[c]), step=1.0,
+                                 format="%.0f", key=f"meta_{i}")
+             for i, (c, col) in enumerate(zip(CLASSES_META, colunas))}
+    soma = sum(metas.values())
+    if abs(soma - 100) > 0.01:
+        st.warning(f"As metas somam {soma:.0f}%: ajuste para 100%.")
+        return
+    st.query_params["metas"] = metas_para_texto(metas)
+    valores = _valores_por_classe(dados)
+    linhas = comparar(valores, metas)
+    total = sum(valores.values())
+    fv = lambda v: formatar_valor(v, "R$")
+    exterior = valores["EUA (ações e ETFs)"] / total * 100 if total else 0
+    meta_ext = metas["EUA (ações e ETFs)"]
+    dif_br = total * (100 - meta_ext) / 100 - (total - valores["EUA (ações e ETFs)"])
+    fora = [l for l in linhas if not l["na_meta"]]
+    st.html("<div style='display:flex;gap:8px;flex-wrap:wrap'>"
+            + _kpi_vg("Patrimônio", fv(total), "posições abertas, EUA pelo dólar de hoje")
+            + _kpi_vg("Brasil × Exterior", f"{100 - exterior:.0f}% · {exterior:.0f}%",
+                      f"meta {100 - meta_ext:.0f}% · {meta_ext:.0f}% → "
+                      + (f"{'+' if dif_br > 0 else '−'}{fv(abs(dif_br))} no Brasil" if abs(dif_br) >= 1 else "na meta"))
+            + _kpi_vg("Fora da meta", f"{len(fora)} classe{'s' if len(fora) != 1 else ''}",
+                      f"diferença maior que {TOLERANCIA_PP:.0f} p.p.")
+            + "</div>")
+    aporte = st.number_input("Simular um aporte (R$): como dividi-lo entre as classes abaixo da meta", min_value=0,
+                             value=0, step=1000, key="meta_aporte")
+    divisao = dividir_aporte(linhas, aporte) if aporte > 0 else {}
+    linhas_tab = []
+    for l in linhas:
+        at = l["atingido"]
+        cor_barra = "#0f7f73" if l["na_meta"] else "#d9831c"
+        barra = ("—" if at is None else
+                 f"<div style='display:flex;align-items:center;gap:6px;justify-content:flex-start'>"
+                 f"<div style='background:#eef2f7;border-radius:6px;height:8px;width:140px'>"
+                 f"<div style='width:{min(at, 100) * 1.4:.0f}px;height:8px;border-radius:6px;background:{cor_barra}'>"
+                 f"</div></div><span>{at:.0f}%</span></div>")
+        falta = l["falta"]
+        falta_txt = (f"<b style='color:{'#15803d' if falta > 0 else '#b91c1c'}'>"
+                     f"{'+' if falta > 0 else '−'}{fv(abs(falta))}</b>") if abs(falta) >= 1 else "—"
+        linha = [f"<b>{l['classe']}</b>", f"{l['meta']:.0f}%", f"{l['hoje']:.1f}%".replace(".", ","), fv(l["alvo"]),
+                 fv(l["tem"]), falta_txt, barra]
+        if divisao:
+            linha.append(fv(divisao[l["classe"]]) if divisao[l["classe"]] >= 0.01 else "—")
+        linhas_tab.append(linha)
+    cab = ["Classe", "Meta", "Hoje", "Valor da meta", "Tem", "Para chegar à meta", "Atingido"]
+    if divisao:
+        cab.append(f"Do aporte de {fv(aporte)}")
+    st.html(_caixa_branca("Alocação por classe", _tabela_html(cab, linhas_tab)))
+    st.caption("Para chegar à meta: positivo = quanto aportar; negativo = quanto a classe está acima da meta. "
+               "O aporte simulado vai só para as classes abaixo da meta, na proporção do que falta a cada uma.")
+
+
+with tab_metas:
+    st.subheader("🎯 Metas de alocação")
+    if bytes_planilha is None:
+        st.info("Envie um arquivo Excel na aba 'Carteira' para usar as metas.")
+    elif "carteira_linhas_ganho" not in st.session_state:
+        st.info("Clique em 'Analisar carteira' na aba 'Carteira' para comparar com as metas.")
+    else:
+        try:
+            dados_m = st.session_state.get("visao_geral_dados")
+            if dados_m is None:
+                with st.spinner("Montando a carteira de hoje..."):
+                    dados_m = _dados_visao_geral(df_resumo, df_operacoes,
+                                                 st.session_state.get("carteira_tipos_confirmados", {}))
+                st.session_state["visao_geral_dados"] = dados_m
+            if dados_m:
+                _renderizar_metas(dados_m)
+        except Exception as e:
+            st.error(f"Não foi possível montar as metas ({e}).")
 
 
 # =============================================================================
