@@ -23,13 +23,15 @@ def test_pares_e_posicao():
             "<tr><td>EGIE3</td><td>40</td><td>10,2</td><td>2,9</td><td>7,4%</td><td>27,1%</td><td>80.000.000</td></tr>"
             "<tr><td>CMIG4</td><td>10</td><td>5,7</td><td>1,0</td><td>11,7%</td><td>17,9%</td><td>200.000.000</td></tr>"
             "<tr><td>XXXX3</td><td>1</td><td>-3,0</td><td>0,5</td><td>0%</td><td>-5%</td><td>2.000.000</td></tr>"
+            "<tr><td>CPFE4</td><td>43</td><td>8,4</td><td>2,1</td><td>8,6%</td><td>24,7%</td><td>90.000.000</td></tr>"
             "<tr><td>YYYY3</td><td>1</td><td>9,0</td><td>1,0</td><td>5%</td><td>10%</td><td>10.000</td></tr>"
             "</tbody></table>")
     t = tabela_pares_de_html(html)
     assert t.loc[t.papel == "CPFE3", "dy"].iloc[0] == pytest.approx(0.086)
     pares = selecionar_pares(t, "CPFE3.SA")
-    assert list(pares["papel"]) == ["CMIG4", "EGIE3", "CPFE3"]  # sem prejuízo nem pouca liquidez
-    assert posicao_entre_pares(pares) == "2º menor P/L e 2º maior DY entre 3"
+    # com prejuízo entra (P/L negativo); pouca liquidez e outra classe da mesma empresa (CPFE4) não
+    assert list(pares["papel"]) == ["CMIG4", "EGIE3", "CPFE3", "XXXX3"]
+    assert posicao_entre_pares(pares) == "2º menor P/L e 2º maior DY entre 4"
 
 
 def test_proventos_por_ano_e_proximo():
