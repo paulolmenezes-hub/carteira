@@ -39,7 +39,7 @@ from carteira_analise.cenarios import (calcular_participacao, carregar_evidencia
 from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.b3_cotahist import carregar_base as carregar_base_b3, completar_precos
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
-from carteira_analise.fontes.fundamentus import (buscar_fundamentos_acao, buscar_proventos_acao, buscar_proventos_acao_detalhe,
+from carteira_analise.fontes.fundamentus import (buscar_fundamentos_acao, buscar_proventos_acao, buscar_tabela_pares, buscar_proventos_acao_detalhe,
                                                  buscar_proventos_fii, buscar_proventos_fii_detalhe,
                                                  buscar_referencias_pl)
 from carteira_analise.proventos_ir import a_receber, eh_bdr, proventos_recebidos, resumo_por_ano, sem_data_antigos
@@ -51,6 +51,8 @@ from carteira_analise.fundamentalistas import classificar_fii, motivo_classifica
 from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.tabela_indicadores import montar_tabelas
+from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_por_ano, proximo_provento, risco_12m,
+                                     selecionar_pares)
 from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
                                     dividir_aporte, metas_de_texto, metas_para_texto)
 from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, por_ano,
@@ -644,7 +646,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
 tab_carteira, tab_visao, tab_metas, tab_ativo, tab_dashboard, tab_ir, tab_guia = st.tabs([
-    "📂 Carteira", "🧭 Visão geral", "🎯 Metas", "🔍 Ativo Específico", "💼 Dashboard da Carteira",
+    "📂 Carteira", "🧭 Visão geral", "🎯 Metas", "🔍 Raio-X do ativo", "💼 Dashboard da Carteira",
     "🧾 Proventos e IR", "📖 Guia de Indicadores",
 ])
 
@@ -1718,7 +1720,7 @@ def _renderizar_cenarios(cenarios) -> None:
         return
     cards, avisos = cenarios
     st.caption("Compare o que acontece em cada caminho. Os números são calculados pela regra de faixas e não "
-               "constituem recomendação: a decisão é sempre sua. Histórico de preço completo na aba Ativo Específico.")
+               "constituem recomendação: a decisão é sempre sua. Histórico de preço completo na aba Raio-X do ativo.")
     if cards:
         cont = {k: sum(1 for c in cards if c.get("situacao") == k) for k in ("realizacao", "queda", "fora")}
         with st.expander(f"Ver os {len(cards)} cards ({cont['realizacao']} na faixa de realização · "
@@ -1927,7 +1929,7 @@ with tab_carteira:
                     "do dia. Rodar a análise de novo após o fechamento (~18h, horário de "
                     "Brasília) pode trazer números diferentes."
                 )
-            st.caption("O gráfico de preço de cada ativo está na aba **🔍 Ativo Específico**. Este painel não é uma "
+            st.caption("O gráfico de preço de cada ativo está na aba **🔍 Raio-X do ativo**. Este painel não é uma "
                        "recomendação de investimento nem substitui um assessor ou consultor licenciado (CVM).")
 
 # =============================================================================
@@ -2153,6 +2155,23 @@ def _tabela_html(cabecalho: list[str], linhas_tab: list[list[str]]) -> str:
     corpo = "".join("<tr>" + "".join(f"<td style='{td}{';text-align:left' if i == 0 else ''}'>{c}</td>"
                                      for i, c in enumerate(l)) + "</tr>" for l in linhas_tab)
     return f"<table style='width:100%;border-collapse:collapse'><tr>{cab}</tr>{corpo}</table>"
+
+
+def _grupos_html(grupos: list[tuple[str, list[tuple[str, str, str]]]]) -> str:
+    """Blocos lado a lado (título + linhas "rótulo ... valor", com nota opcional embaixo)."""
+    blocos = []
+    for titulo, itens in grupos:
+        linhas = "".join(
+            "<div style='display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #f1f5f9'>"
+            f"<span style='color:#4b5563;font-size:.84em'>{r}</span>"
+            f"<span style='text-align:right'><b style='font-size:.92em'>{v}</b>"
+            + (f"<div style='font-size:.72em;color:#6b7280'>{n}</div>" if n else "") + "</span></div>"
+            for r, v, n in itens)
+        blocos.append("<div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:8px 12px'>"
+                      f"<div style='font-size:.78em;font-weight:700;color:#1e3a8a;text-transform:uppercase;"
+                      f"letter-spacing:.04em;margin-bottom:2px'>{titulo}</div>{linhas}</div>")
+    return ("<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px'>"
+            + "".join(blocos) + "</div>")
 
 
 def _caixa_branca(titulo: str, corpo: str) -> str:
@@ -2633,39 +2652,414 @@ with tab_metas:
 
 
 # =============================================================================
-# ABA 3 — Ativo Específico
+# ABA 3 — Raio-X do ativo
 # =============================================================================
-with tab_ativo:
-    st.subheader("🔍 Analisar um ativo específico")
-    st.caption(
-        "Quer olhar um ativo que não está na sua carteira, ou só conferir um antes de "
-        "decidir? Digite o ticker abaixo — não precisa estar em nenhuma planilha."
-    )
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _todos_fiis_em_cache():
+    from carteira_analise.fontes.fundamentus import buscar_todos_fiis_fundamentus
+    return buscar_todos_fiis_fundamentus()
 
-    col_ticker, col_tipo = st.columns([2, 1])
+
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _pares_acao_em_cache(tipo: str, ident: str):
+    return buscar_tabela_pares(tipo, ident)
+
+
+def _kv(rotulo: str, valor: str, sub: str = "", cor: str = "#111827") -> str:
+    return (f"<div style='flex:1;min-width:0;background:#f8fafc;border:1px solid #eef2f7;border-radius:10px;"
+            f"padding:6px 9px'><div style='font-size:.72em;color:#4b5563'>{rotulo}</div>"
+            f"<div style='font-weight:700;font-size:.98em;color:{cor}'>{valor}</div>"
+            + (f"<div style='font-size:.7em;color:#6b7280'>{sub}</div>" if sub else "") + "</div>")
+
+
+def _linha_kv(*caixas) -> str:
+    return "<div style='display:flex;gap:6px;margin-top:6px;flex-wrap:wrap'>" + "".join(c for c in caixas if c) + "</div>"
+
+
+def _pct_txt(v, casas=1, sinal=False) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    s = f"{abs(v) * 100:.{casas}f}%".replace(".", ",")
+    return (("+" if v > 0 else "−" if v < 0 else "") + s) if sinal else ("−" + s if v < 0 else s)
+
+
+def _num_txt(v, casas=1) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"{v:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _mi_txt(v, moeda="R$") -> str:
+    """Valor grande abreviado: R$ 200 mi, R$ 1,2 bi."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    if abs(v) >= 1e9:
+        return f"{moeda} {_num_txt(v / 1e9, 1)} bi"
+    if abs(v) >= 1e6:
+        return f"{moeda} {_num_txt(v / 1e6, 0 if abs(v) >= 1e8 else 1)} mi"
+    return f"{moeda} {_num_txt(v / 1e3, 0)} mil"
+
+
+def _ops_do_ticker(ticker: str) -> list[dict]:
+    """Operações da planilha (escala da época) para marcar no gráfico."""
+    if df_resumo is None and df_operacoes is None:
+        return []
+    resumo = linhas_resumo_por_ticker(df_resumo)
+    grupo = None
+    if df_operacoes is not None and not df_operacoes.empty:
+        chaves = df_operacoes["ticker"].apply(lambda t: normalizar_ticker(t)[0])
+        grupo = df_operacoes[chaves == ticker]
+    ops, _, _ = operacoes_do_ticker(resumo.get(ticker), grupo if grupo is not None and len(grupo) else None)
+    return ops
+
+
+def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto=None, ops=None):
+    s = historico.dropna()
+    idx = pd.DatetimeIndex(s.index)
+    s.index = idx.tz_localize(None) if idx.tz is not None else idx
+    df = pd.DataFrame({"Data": s.index, "Preço": s.values, "Média de 200 dias": s.rolling(200).mean().values})
+    dados = df.melt("Data", var_name="Série", value_name="valor").dropna()
+    linhas = alt.Chart(dados).mark_line().encode(
+        x=alt.X("Data:T", title=None, axis=alt.Axis(format="%m/%Y")),
+        y=alt.Y("valor:Q", title=moeda, scale=alt.Scale(zero=False)),
+        color=alt.Color("Série:N", scale=alt.Scale(domain=["Preço", "Média de 200 dias"],
+                                                    range=["#1e3a8a", "#9ca3af"]),
+                        legend=alt.Legend(orient="top", title=None)),
+        strokeDash=alt.condition(alt.datum["Série"] == "Média de 200 dias", alt.value([6, 4]), alt.value([1, 0])),
+        tooltip=[alt.Tooltip("Data:T", format="%d/%m/%Y"), "Série:N", alt.Tooltip("valor:Q", format=",.2f")])
+    camadas = [linhas]
+    refs = []
+    if pm:
+        refs.append(("Seu preço médio", pm, "#111827", [2, 2]))
+    if faixas:
+        refs.append(("Faixa de aumento", faixas["queda"], "#d9831c", [1, 0]))
+        refs.append(("Faixa de realização", faixas["realizacao"], "#2f45e0", [1, 0]))
+    if teto:
+        refs.append(("Preço-teto", teto, "#15803d", [8, 3, 2, 3]))
+    for nome, valor, cor, traco in refs:
+        camadas.append(alt.Chart(pd.DataFrame({"y": [valor], "nome": [nome]})).mark_rule(
+            color=cor, strokeDash=traco, strokeWidth=1.4).encode(
+            y="y:Q", tooltip=[alt.Tooltip("nome:N", title=""), alt.Tooltip("y:Q", format=",.2f", title=moeda)]))
+        camadas.append(alt.Chart(pd.DataFrame({"y": [valor], "t": [nome], "x": [s.index[0]]})).mark_text(
+            align="left", dy=-6, fontSize=10, color=cor).encode(x="x:T", y="y:Q", text="t:N"))
+    if ops:
+        inicio = s.index[0]
+        marcas = pd.DataFrame([{"Data": pd.Timestamp(o["data"]), "preço": float(o["preco"]),
+                                "op": "Compra" if o["tipo"] == "compra" else "Venda",
+                                "qtd": float(o["quantidade"])}
+                               for o in ops if o["tipo"] in ("compra", "venda") and o.get("preco")
+                               and pd.Timestamp(o["data"]) >= inicio])
+        if len(marcas):
+            camadas.append(alt.Chart(marcas).mark_point(filled=True, size=90).encode(
+                x="Data:T", y="preço:Q",
+                shape=alt.Shape("op:N", scale=alt.Scale(domain=["Compra", "Venda"],
+                                                        range=["triangle-up", "triangle-down"]),
+                                legend=alt.Legend(orient="top", title=None)),
+                color=alt.Color("op:N", scale=alt.Scale(domain=["Compra", "Venda"], range=["#0f7f73", "#b91c1c"]),
+                                legend=None),
+                tooltip=[alt.Tooltip("Data:T", format="%d/%m/%Y"), "op:N", alt.Tooltip("qtd:Q", title="quantidade"),
+                         alt.Tooltip("preço:Q", format=",.2f")]))
+    return alt.layer(*camadas).properties(height=320).resolve_scale(color="independent", shape="independent")
+
+
+def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, dividendos, f12) -> None:
+    moeda = "R$" if ticker.endswith(".SA") else "US$"
+    fv = lambda v: formatar_valor(v, moeda) if v is not None and not pd.isna(v) else "—"
+    papel = ticker.replace(".SA", "")
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    preco = float(resultado.tec.preco_atual)
+    historico = resultado.tec.historico
+    ctx = ctx or {}
+    fund = fundamentos_de_resultado(resultado)
+    b3 = ticker.endswith(".SA")
+    eh_fii = tipo == "fii"
+
+    cenarios_sessao = st.session_state.get("carteira_cenarios")
+    card = next((c for c in (cenarios_sessao[0] if cenarios_sessao else []) if c["ticker"] == ticker), None)
+
+    # dados extras (Fundamentus), todos com cache e sem derrubar a aba se falharem
+    fa = ref = pares = detalhe = None
+    try:
+        if b3 and tipo == "acao":
+            fa = buscar_fundamentos_acao(ticker)
+            ref = _referencias_pl_em_cache(ticker)
+            g = (ref or {}).get("grupo") or {}
+            if g.get("id"):
+                pares = selecionar_pares(_pares_acao_em_cache(g["tipo"], str(g["id"])), ticker)
+            detalhe = _proventos_detalhe_em_cache(ticker)
+        elif eh_fii:
+            pares = pares_fii(_todos_fiis_em_cache(), ticker)
+            detalhe = _proventos_fii_detalhe_em_cache(ticker)
+    except Exception:
+        pass
+    if fa is not None:
+        fund.setdefault("ev_ebitda", fa.ev_ebitda)
+        fund["roic"] = fund.get("roic") if fund.get("roic") is not None else fa.roic
+    try:
+        info = fonte_dados.baixar_info(ticker) or {}
+    except Exception:
+        info = {}
+    nome = info.get("longName") or info.get("shortName") or ""
+    nomes = (ref or {}).get("nomes") or {}
+    classe = ("FII" if eh_fii else "ETF" if tipo in ("etf_br", "etf_us") else "Ação") + (" · B3" if b3 else " · EUA")
+    setor = " › ".join(n for n in (nomes.get("setor"), nomes.get("segmento")) if n) or (fund.get("segmento") or "")
+
+    # cabeçalho: blocos Preço / Rentabilidade e saúde (ou O fundo) / Proventos
+    pseudo = card or {"ticker": ticker, "mercado": "B3" if b3 else "EUA",
+                      "grupo": {"acao": "Ações", "fii": "FIIs"}.get(tipo, "ETF"), "situacao": None,
+                      "preco_atual": preco, "variacao": None}
+    pseudo = {**pseudo, "contexto": ctx}
+    tabelas = montar_tabelas([pseudo], {ticker: fund}, {ticker: dividendos}, hoje)
+    pt = ctx.get("preco_teto") or {}
+    df_l = next(iter(tabelas.values())) if tabelas else None
+
+    def col(c):
+        if df_l is None or c not in df_l.columns:
+            return None
+        v = df_l.iloc[0][c]
+        return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
+    def txt(v):
+        return "—" if v is None else str(v)
+
+    nota_teto = ""
+    if pt.get("teto"):
+        nota_teto = f"preço {_pct_txt(abs(preco / pt['teto'] - 1), 0)} {'abaixo' if preco <= pt['teto'] else 'acima'}"
+    proventos_g = ("Proventos", [("DY 12 meses", _pct_txt(col("DY 12m (%)") / 100) if col("DY 12m (%)") is not None else "—", ""),
+                                 ("Meses de data-com", txt(col("Meses (data-com)")), "")])
+    grupos = []
+    if eh_fii:
+        ff = None
+        try:
+            ff = (_todos_fiis_em_cache() or {}).get(papel)
+        except Exception:
+            pass
+        pa = ctx.get("preco_atrativo") or {}
+        grupos.append(("Preço", [("P/VP", _num_txt(col("P/VP"), 2), ""),
+                                 ("P/VP médio 24 meses", _num_txt(col("P/VP médio 24m"), 2), ""),
+                                 ("Preço atrativo?", txt(col("Preço atrativo?")), "")]))
+        grupos.append(("O fundo", [
+            ("Tipo", ("Tijolo" if (ff.qtd_imoveis or 0) > 0 else "Papel (recebíveis)") if ff else "—", ""),
+            ("Segmento", html.escape(txt(col("Segmento"))), ""),
+            ("Valor de mercado", _mi_txt(getattr(ff, "valor_mercado", None)), ""),
+            ("Liquidez diária", _mi_txt(getattr(ff, "liquidez", None)), ""),
+            ("Imóveis", str(ff.qtd_imoveis) if ff and ff.qtd_imoveis else "—", ""),
+            ("Vacância média", _pct_txt(getattr(ff, "vacancia_media", None)), ""),
+            ("Cap rate", _pct_txt(getattr(ff, "cap_rate", None)), "")]))
+        nome_g, itens_g = proventos_g
+        grupos.append((nome_g, [itens_g[0], ("Yield × média 24 meses",
+                                             f"{_pct_txt(pa.get('yield'))} · {_pct_txt(pa.get('yield_medio_24m'))}", ""),
+                                itens_g[1]]))
+    elif b3 and tipo == "acao":
+        grupos.append(("Preço", [("P/L", _num_txt(col("P/L")), txt(col("P/L × referência")) if col("P/L × referência") else ""),
+                                 ("P/VP", _num_txt(col("P/VP"), 2), ""),
+                                 ("EV/EBITDA", _num_txt(fund.get("ev_ebitda") or None), ""),
+                                 ("Preço-teto (Bazin)", fv(pt.get("teto")), nota_teto),
+                                 ("Teto pela média 5 anos", fv(pt.get("teto_5a")), "")]))
+        grupos.append(("Rentabilidade e saúde", [
+            ("ROE", _pct_txt(fund.get("roe")), ""), ("ROIC", _pct_txt(fund.get("roic") or None), ""),
+            ("Margem líquida", _pct_txt(getattr(fa, "margem_liquida", None)), ""),
+            ("Receita em 5 anos", _pct_txt(getattr(fa, "crescimento_receita_5a", None), 1, True), "ao ano"),
+            ("Dívida bruta / patrimônio", _num_txt(getattr(fa, "divida_bruta_patrimonio", None), 2), ""),
+            ("Liquidez corrente", _num_txt(getattr(fa, "liquidez_corrente", None), 2), "")]))
+        nome_g, itens_g = proventos_g
+        grupos.append((nome_g, [itens_g[0], ("Regularidade", txt(col("Dividendos")), ""), itens_g[1]]))
+    elif df_l is not None:  # ETFs e EUA: o que a tabela do Dashboard tiver
+        fora = ("Ativo", "Preço", "Variação s/ PM (%)", "Faixa", "DY 12m (%)", "Meses (data-com)")
+        itens = []
+        for c in df_l.columns:
+            if c in fora:
+                continue
+            v = col(c)
+            itens.append((c.replace(" (%)", ""), _num_txt(v, 2 if "P/VP" in c else 1) if isinstance(v, (int, float)) else txt(v), ""))
+        grupos += [("Indicadores", itens), proventos_g]
+    linha_html = _grupos_html(grupos)
+
+    sit = (card or {}).get("situacao")
+    cores_fx = {"realizacao": ("📈 Faixa de realização", "#2f45e0"), "queda": ("📉 Faixa de queda", "#d9831c"),
+                "fora": ("↔️ Fora das faixas", "#0f7f73")}
+    if sit in cores_fx:
+        selo_fx = (f"<span style='background:{cores_fx[sit][1]};color:#fff;border-radius:999px;padding:3px 10px;"
+                   f"font-size:.8em;font-weight:600'>{cores_fx[sit][0]}</span>")
+    elif not card:
+        selo_fx = ("<span style='background:#f3f4f6;color:#4b5563;border-radius:999px;padding:3px 10px;font-size:.75em'>"
+                   "Faixas: só para ativos da sua carteira (dependem do seu preço médio)</span>")
+    else:
+        selo_fx = ""
+    var_pm = f"{_pct_txt(card['variacao'], 1, True)} sobre o seu preço médio" if card else "fora da sua carteira"
+    st.html(f"<div style='background:#fff;color:#111827;border-radius:12px;padding:12px 14px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>"
+            f"<div><span style='font-size:1.45em;font-weight:800'>{html.escape(papel)}</span> "
+            f"<span style='color:#4b5563'>{html.escape(nome)}</span>"
+            f"<div style='font-size:.82em;color:#6b7280'>{html.escape(classe)}{(' · ' + html.escape(setor)) if setor else ''}</div></div>"
+            f"<div style='text-align:right'><div style='font-size:1.45em;font-weight:800'>{fv(preco)}</div>"
+            f"<div style='font-size:.82em;color:#4b5563'>{var_pm}</div><div style='margin-top:4px'>{selo_fx}</div></div></div>"
+            f"<div style='margin-top:8px'>{linha_html}</div></div>")
+
+    # preço
+    risco = risco_12m(historico)
+    with st.container(key="vgc_rx_preco"):
+        _titulo_cartao(f"Preço — {OPCOES_PERIODO.get(st.session_state.get('individual_periodo'), '')}")
+        st.altair_chart(_claro(_grafico_raio_x(historico, moeda, pm=card.get("preco_medio") if card else None,
+                                               faixas=card.get("faixas") if card else None, teto=pt.get("teto"),
+                                               ops=_ops_do_ticker(ticker) if card else None)), width="stretch")
+        st.html(_linha_kv(
+            _kv("Mínima 12 meses", fv((f12 or {}).get("minima"))), _kv("Máxima 12 meses", fv((f12 or {}).get("maxima"))),
+            _kv("Maior queda em 12 meses", _pct_txt((risco or {}).get("maior_queda"), 0), "do topo ao fundo"),
+            _kv("Volatilidade 12 meses", _pct_txt((risco or {}).get("volatilidade"), 0) + " ao ano", "oscilação diária anualizada"),
+            _html_movimento_brusco(movimento_brusco_recente(historico), moeda) and _kv(
+                "Movimento recente", "queda ou alta brusca", "veja o aviso no card do Dashboard")))
+
+    # proventos
+    reg = ctx.get("regularidade") or {}
+    dy_ind = next((i for i in ctx.get("indicadores") or [] if str(i.get("nome", "")).startswith(("Dividend", "Yield"))),
+                  None)
+    div12 = pt.get("div12")
+    if div12 is None and dividendos is not None and len(dividendos):
+        d = dividendos.copy()
+        d.index = pd.DatetimeIndex(d.index).tz_localize(None) if pd.DatetimeIndex(d.index).tz is not None else d.index
+        div12 = float(d[d.index >= pd.Timestamp(hoje) - pd.DateOffset(months=12)].sum())
+    yoc = (div12 / card["preco_medio"]) if card and div12 and card.get("preco_medio") else None
+    corpo = _linha_kv(
+        _kv("DY 12 meses", (dy_ind or {}).get("valor", "—"), (dy_ind or {}).get("leitura", "")),
+        _kv("Selo", {"regular": "Regular", "oscilante": "Oscilante", "irregular": "Irregular"}.get(reg.get("selo"), "—"),
+            f"pagou {reg.get('pagou')} de {reg.get('n_anos')} anos" if reg.get("n_anos") else ""),
+        _kv("Yield sobre o seu preço médio", _pct_txt(yoc), f"{fv(div12)} ÷ {fv(card['preco_medio'])}" if yoc else
+            "só para ativos da sua carteira"))
+    anos = [a["ano"] for a in reg.get("anos") or []]
+    if not anos:
+        anos = list(range(hoje.year - 5, hoje.year))
+    anos = sorted(set(anos) | {hoje.year})  # o ano atual também (em andamento)
+    por = proventos_por_ano(detalhe, anos)
+    dy_ano = {a["ano"]: a.get("dy") for a in reg.get("anos") or []}
+    sem_det = "<span style='color:#a16207'>sem detalhe no Fundamentus</span>"
+    def _cel(a, chave):
+        v = por[a][chave]
+        if v:
+            return fv(v)
+        pagou = (dy_ano.get(a) or 0) > 0 and not any(por[a].values())
+        return sem_det if pagou else "—"
+    if eh_fii:
+        cab = ["Ano", "Yield", "Rendimentos por cota", "Amortização por cota"]
+        linhas_t = [[str(a), _pct_txt(dy_ano.get(a)), _cel(a, "rendimentos"),
+                     "—" if not por[a]["amortizacao"] else fv(por[a]["amortizacao"])] for a in sorted(anos, reverse=True)]
+    else:
+        cab = ["Ano", "DY", "Dividendos por ação", "JCP por ação"]
+        linhas_t = [[str(a), _pct_txt(dy_ano.get(a)), _cel(a, "dividendos"),
+                     "—" if not por[a]["jcp"] else fv(por[a]["jcp"])] for a in sorted(anos, reverse=True)]
+    corpo += "<div style='margin-top:8px'>" + _tabela_html(cab, linhas_t) + "</div>"
+    prox = proximo_provento(detalhe, hoje)
+    if prox:
+        tipo_txt = {"jcp": "JCP", "dividendo": "Dividendo", "rendimento": "Rendimento",
+                    "amortizacao": "Amortização"}.get(prox["tipo"], "Provento")
+        corpo += _linha_kv(_kv("Próximo provento", f"{tipo_txt} {fv(prox['valor'])} por {'cota' if eh_fii else 'ação'}",
+                               f"data-com {prox['data_com']:%d/%m/%Y} · pagamento "
+                               + (f"{prox['pagamento']:%d/%m/%Y}" if prox["pagamento"] else "ainda sem data")))
+    corpo += ("<div style='font-size:.7em;color:#6b7280;margin-top:6px'>Valores por " + ("cota" if eh_fii else "ação")
+              + " na data-com, da época (Fundamentus); DY pelo preço médio de cada ano.</div>")
+    st.html(_caixa_branca("Proventos", corpo))
+    # comparação com os pares (ordem fixa: liquidez diária, da maior para a menor)
+    if pares is not None:
+        if eh_fii:
+            cab = ["Ativo", "DY 12m", "P/VP", "Liquidez diária ▼"]
+            lin = [[r.papel, _pct_txt(r.dy), _num_txt(r.pvp, 2), _mi_txt(r.liquidez)] for r in pares.itertuples()]
+            titulo = f"Comparação com FIIs do segmento {html.escape(getattr((_todos_fiis_em_cache() or {}).get(papel), 'segmento', '') or '')}"
+            rodape = "FIIs do mesmo segmento no Fundamentus, ordenados pela liquidez diária (R$ 1 milhão/dia ou mais)."
+        else:
+            cab = ["Ativo", "P/L", "P/VP", "ROE", "DY 12m", "Liquidez diária ▼"]
+            lin = [[r.papel, _num_txt(r.pl), _num_txt(r.pvp, 2), _pct_txt(r.roe), _pct_txt(r.dy), _mi_txt(r.liquidez)]
+                   for r in pares.itertuples()]
+            g = (ref or {}).get("grupo") or {}
+            titulo = f"Comparação com o {g.get('tipo', 'segmento')} {html.escape(g.get('nome', ''))}"
+            pos = posicao_entre_pares(pares)
+            rodape = ((f"{papel}: {pos}. " if pos else "")
+                      + "Empresas com lucro e liquidez de R$ 1 milhão/dia ou mais, ordenadas pela liquidez diária"
+                      + (f" · mediana do P/L {_num_txt(g.get('mediana'))}" if g.get("mediana") else "") + ".")
+        proprio = [i for i, r in enumerate(pares.itertuples()) if r.proprio]
+        tabela = _tabela_html(cab, [[f"<b style='color:#1e3a8a'>▶ {c}</b>" if j == 0 and i in proprio else
+                                     (f"<b>{c}</b>" if i in proprio else c) for j, c in enumerate(l)]
+                                    for i, l in enumerate(lin)])
+        st.html(_caixa_branca(titulo, tabela + f"<div style='font-size:.72em;color:#4b5563;margin-top:6px'>{rodape}</div>"))
+    elif b3 and tipo in ("acao", "fii"):
+        st.html(_caixa_branca("Comparação com os pares",
+                              "<div style='font-size:.85em;color:#4b5563'>Sem pares disponíveis agora no "
+                              "Fundamentus (tente de novo mais tarde).</div>"))
+
+    if card:
+        q = float(card.get("quantidade") or 0)
+        resultado_pos = q * (preco - float(card["preco_medio"]))
+        realizado = float(card.get("ganho_realizado_ciclo") or 0.0)
+        renda = float(card.get("renda_recebida") or 0.0)
+        total = resultado_pos + realizado + renda
+        ops = _ops_do_ticker(ticker)
+        compras = [o for o in ops if o["tipo"] == "compra"]
+        vendas = [o for o in ops if o["tipo"] == "venda"]
+        rent_txt, rent_sub = "—", ""
+        dados_vg = st.session_state.get("visao_geral_dados")
+        if dados_vg and ticker in dados_vg["linhas"]:
+            df_t = dados_vg["linhas"][ticker]
+            ativos = [i for i in range(len(df_t)) if df_t["quantidade"].iloc[i] > 1e-9 or df_t["aportes"].iloc[i] > 0]
+            if ativos:
+                parte = df_t.iloc[ativos[0]:]
+                r = float(rentabilidade_cotas(parte, 0.0).iloc[-1])
+                try:
+                    cdi = cdi_acumulado(_cdi_bcb_em_cache(str(parte.index[0].start_time.date()),
+                                                          str(parte.index[-1].end_time.date())), parte.index)
+                    c_fim = float(cdi.iloc[-1]) if cdi is not None else None
+                except Exception:
+                    c_fim = None
+                rent_txt = _pct_txt(r, 1, True) + (f" · CDI {_pct_txt(c_fim, 1, True)}" if c_fim is not None else "")
+                rent_sub = f"desde {_rotulo_mes(parte.index[0])} (método das cotas)"
+        else:
+            rent_sub = "abra a Visão geral uma vez para calcular"
+        regua = card.get("faixas") or {}
+        corpo = _linha_kv(
+            _kv("Posição", f"{_num_txt(q, 0 if q.is_integer() else 4)} {'cotas' if eh_fii or tipo.startswith('etf') else 'ações'}",
+                fv(q * preco)),
+            _kv("Preço médio", fv(card["preco_medio"])),
+            _kv("Resultado total", ("+" if total >= 0 else "−") + fv(abs(total)), "preço + vendas + proventos",
+                "#15803d" if total >= 0 else "#b91c1c"),
+            _kv("Proventos recebidos", fv(renda), f"desde {card['desde']:%d/%m/%Y}" if card.get("desde") else ""))
+        corpo += _linha_kv(
+            _kv("Rentabilidade × CDI", rent_txt, rent_sub),
+            _kv("Régua de faixas", f"aumentar abaixo de {fv(regua.get('queda'))}",
+                f"realizar a partir de {fv(regua.get('realizacao'))}"),
+            _kv("Operações", f"{len(compras)} compra(s) · {len(vendas)} venda(s)",
+                (f"última: {pd.Timestamp(ops[-1]['data']):%d/%m/%Y}" if ops else "")),
+            _kv("Para o IR", "aba 🧾 Proventos e IR", "dividendos, JCP e rendimentos por ano de pagamento"))
+        st.html(_caixa_branca("Na sua carteira", corpo))
+    st.caption("Informação para investigar, não recomendação. A decisão é sempre sua.")
+
+
+with tab_ativo:
+    st.html(_CSS_CARTOES)
+    st.subheader("🔍 Raio-X do ativo")
+    st.caption("Escolha um ativo da sua carteira ou digite qualquer outro (o .SA da B3 é opcional).")
+    da_carteira = sorted(set(tickers_encontrados)) if tickers_encontrados else []
+    col_lista, col_ticker, col_tipo, col_per = st.columns([1.4, 1.4, 1, 1])
+    with col_lista:
+        escolha_lista = st.selectbox("Ativo da carteira", ["—"] + da_carteira, key="rx_lista",
+                                     format_func=lambda t: t.replace(".SA", "") if t != "—" else "—")
     with col_ticker:
-        ticker_individual = st.text_input(
-            "Ticker", placeholder="ex: PETR4.SA, MXRF11.SA, AAPL", key="ticker_individual"
-        )
+        ticker_individual = st.text_input("ou digite outro ticker", placeholder="ex: PETR4, MXRF11, AAPL",
+                                          key="ticker_individual")
+    ticker_normalizado = (normalizar_ticker(ticker_individual)[0] if ticker_individual.strip()
+                          else (escolha_lista if escolha_lista != "—" else ""))
     with col_tipo:
-        chute_individual = _heuristica_tipo(ticker_individual.strip().upper()) if ticker_individual.strip() else "acao"
+        chute_individual = (tipos_planilha.get(ticker_normalizado) or _heuristica_tipo(ticker_normalizado)
+                            if ticker_normalizado else "acao")
         tipo_individual = st.selectbox(
             "Tipo", options=OPCOES_TIPO, index=OPCOES_TIPO.index(chute_individual),
-            # a chave muda com o palpite: ao trocar de ticker (ex.: de uma ação para MXRF11), o seletor
-            # volta ao tipo sugerido, em vez de manter o tipo escolhido para o ticker anterior
-            format_func=lambda t: NOMES_TIPO[t], key=f"tipo_individual_{chute_individual}",
-        )
+            format_func=lambda t: NOMES_TIPO[t], key=f"tipo_individual_{ticker_normalizado}_{chute_individual}")
+    with col_per:
+        periodo_individual = st.selectbox(
+            "Histórico", options=list(OPCOES_PERIODO.keys()), format_func=lambda p: OPCOES_PERIODO[p],
+            index=list(OPCOES_PERIODO.keys()).index("2y"), key="periodo_individual")
 
-    periodo_individual = st.selectbox(
-        "Histórico para análise técnica", options=list(OPCOES_PERIODO.keys()),
-        format_func=lambda p: OPCOES_PERIODO[p], index=list(OPCOES_PERIODO.keys()).index("2y"),
-        key="periodo_individual",
-    )
-
-    if st.button("🔍 Analisar ativo", type="secondary"):
-        ticker_limpo = ticker_individual.strip().upper()
+    if st.button("🔍 Ver o raio-X", type="secondary"):
+        ticker_limpo = ticker_normalizado
         if not ticker_limpo:
-            st.warning("Digite um ticker antes de analisar.")
+            st.warning("Escolha um ativo da lista ou digite um ticker.")
         else:
             texto_horario, _ = _info_horario_analise()
             with st.spinner(f"Buscando dados de {ticker_limpo}..."):
@@ -2682,7 +3076,6 @@ with tab_ativo:
                     dividendos_individual = fonte_individual.baixar_dividendos(ticker_limpo)
                 except Exception:
                     dividendos_individual = pd.Series(dtype=float)
-
             st.session_state["individual_ticker"] = ticker_limpo
             st.session_state["individual_tipo"] = tipo_individual
             st.session_state["individual_periodo"] = periodo_individual
@@ -2693,7 +3086,7 @@ with tab_ativo:
                 st.session_state["individual_contexto"] = _contexto_para(ticker_limpo, resultado, dividendos_individual)
             except Exception:
                 st.session_state["individual_contexto"] = None
-            try:  # mínima/máxima sempre de 12 meses, qualquer que seja o período do gráfico
+            try:
                 st.session_state["individual_faixa_12m"] = faixa_12m(fonte_dados.baixar_precos(ticker_limpo, "1y"))
             except Exception:
                 st.session_state["individual_faixa_12m"] = None
@@ -2701,35 +3094,20 @@ with tab_ativo:
     if "individual_resultado" in st.session_state:
         ticker_limpo = st.session_state["individual_ticker"]
         resultado = st.session_state["individual_resultado"]
-
-        st.caption(f"🕒 Análise executada em {st.session_state['individual_horario']}")
-
+        st.caption(f"🕒 Dados de {st.session_state['individual_horario']}")
         if resultado is None:
-            st.error(
-                f"Não foi possível obter dados suficientes para {ticker_limpo}. "
-                "Confira se o ticker está certo (tickers da B3 precisam do sufixo '.SA')."
-            )
+            st.error(f"Não foi possível obter dados suficientes para {ticker_limpo}. Confira o ticker e o tipo.")
         else:
-            # Card do ativo: só dados do ativo. A régua de faixas aparece só quando
-            # o ticker está na carteira enviada (o preço médio vem de lá).
-            cenarios_sessao = st.session_state.get("carteira_cenarios")
-            card_carteira = next((c for c in (cenarios_sessao[0] if cenarios_sessao else [])
-                                  if c["ticker"] == ticker_limpo), None)
-            ctx_individual = st.session_state.get("individual_contexto")
-            st.html(_html_card_ativo(
-                ticker_limpo, st.session_state["individual_tipo"], resultado.tec.preco_atual,
-                st.session_state.get("individual_faixa_12m"), ctx_individual,
-                card_carteira.get("regua") if card_carteira else None,
-                movimento_brusco_recente(resultado.tec.historico)))
-
-            st.markdown(f"**Histórico de preço ({OPCOES_PERIODO[st.session_state['individual_periodo']]}):**")
-            st.caption(
-                "Linha azul = preço · laranja = MM50 · vermelho = MM200 · linhas tracejadas = "
-                "mínima/máxima do período (percentil 5%/95%) · triângulos verdes = dividendo "
-                "pago. Painel de baixo: RSI(14), com faixas de referência em 30 e 70."
-            )
-            grafico = _grafico_preco_completo(resultado.tec.historico, st.session_state["individual_dividendos"])
-            st.altair_chart(grafico, width='stretch')
+            try:
+                _renderizar_raio_x(ticker_limpo, st.session_state["individual_tipo"], resultado,
+                                   st.session_state.get("individual_contexto"),
+                                   st.session_state.get("individual_dividendos"),
+                                   st.session_state.get("individual_faixa_12m"))
+            except Exception as e:
+                st.error(f"Não foi possível montar o raio-X ({e}).")
+            with st.expander("Gráfico técnico (MM50, MM200, RSI e dividendos)"):
+                st.altair_chart(_grafico_preco_completo(resultado.tec.historico,
+                                                        st.session_state["individual_dividendos"]), width='stretch')
 
 # =============================================================================
 # ABA 4 — Dashboard da Carteira (extrato por ativo)
