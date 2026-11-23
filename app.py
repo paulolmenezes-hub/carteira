@@ -588,13 +588,14 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
         # crescer além do container (17 colunas com texto sem quebra) pra
         # disparar a rolagem do <div> em volta; travar a tabela em 100%
         # espremia as células em vez de rolar.
-        {"selector": "table", "props": [("border-collapse", "collapse"), ("font-size", "0.82em")]},
+        {"selector": "table", "props": [("border-collapse", "collapse"), ("font-size", "0.82em"),
+                                         ("background-color", "#ffffff"), ("color", "#111827")]},
         {"selector": "td", "props": [
-            ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 6px"), ("white-space", "nowrap"),
+            ("border", "1px solid #e5e7eb"), ("padding", "4px 6px"), ("white-space", "nowrap"),
         ]},
         {"selector": "th", "props": [
-            ("border", "1px solid rgba(255,255,255,0.15)"), ("padding", "4px 6px"),
-            ("text-align", "center"), ("background-color", "rgba(255,255,255,0.08)"),
+            ("border", "1px solid #e5e7eb"), ("padding", "4px 6px"), ("color", "#374151"),
+            ("text-align", "center"), ("background-color", "#f3f4f6"),
             ("white-space", "normal"), ("max-width", "80px"), ("line-height", "1.2"),
         ]},
     ]
@@ -608,17 +609,17 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
         if tipo == "secao":
             estilos.append({
                 "selector": f"tr:nth-child({row_idx + 1})",
-                "props": [("background-color", "rgba(31,119,180,0.25)"), ("font-weight", "bold")],
+                "props": [("background-color", "#dbeafe"), ("font-weight", "bold"), ("color", "#1e3a8a")],
             })
         elif tipo == "subtotal":
             estilos.append({
                 "selector": f"tr:nth-child({row_idx + 1})",
-                "props": [("background-color", "rgba(255,255,255,0.06)"), ("font-style", "italic")],
+                "props": [("background-color", "#f8fafc"), ("font-style", "italic")],
             })
         elif tipo == "total_geral":
             estilos.append({
                 "selector": f"tr:nth-child({row_idx + 1})",
-                "props": [("background-color", "rgba(255,255,255,0.14)"), ("font-weight", "bold")],
+                "props": [("background-color", "#e5e7eb"), ("font-weight", "bold")],
             })
 
     styler = styler.set_table_styles(estilos)
@@ -627,7 +628,8 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
     # monitores comuns; o padrão usual pra tabela financeira larga é
     # rolar só ela, com uma barra visível logo abaixo dela mesma.
     st.markdown(
-        f'<div style="overflow-x: auto; max-width: 100%; display: block;">{styler.to_html()}</div>',
+        f'<div style="overflow-x: auto; max-width: 100%; display: block; background:#ffffff; border-radius:12px; '
+        f'padding:10px">{styler.to_html()}</div>',
         unsafe_allow_html=True,
     )
     # A data do saldo final é a mesma para todos os ativos (a da análise): sai
@@ -1640,33 +1642,41 @@ def _renderizar_tabela_indicadores(cenarios) -> None:
     tabelas = montar_tabelas(cards, fundamentos, st.session_state.get("carteira_dividendos") or {}, hoje)
     if not tabelas:
         return
-    st.caption("Uma linha por posição aberta; clique no cabeçalho para ordenar e numa linha para ver o card do ativo "
-               "logo abaixo. Números iguais aos dos cards. Preço × teto negativo = preço abaixo do preço-teto.")
+    st.caption("Uma linha por posição aberta; clique no cabeçalho para ordenar. Marque até 4 linhas (inclusive de abas "
+               "diferentes) para ver os cards lado a lado e comparar. Números iguais aos dos cards. Preço × teto "
+               "negativo = preço abaixo do preço-teto. Meses: os da data-com dos proventos nos últimos 24 meses.")
     abas = st.tabs([f"{g} ({len(df)})" for g, df in tabelas.items()])
-    escolhido = None
-    # números no formato do navegador (vírgula decimal em português), já arredondados
     casas = {"P/VP": 2, "P/VP médio 24m": 2, "Preço": 2, "Preço-teto": 2, "Preço × teto (%)": 0}
-    formatos = {}
-    for df in tabelas.values():
-        for col in df.columns:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = df[col].round(casas.get(col, 1))
-                formatos[col] = st.column_config.NumberColumn(format="localized")
+    cor_faixa = {"📈": "#2f45e0", "📉": "#d9831c", "↔️": "#0f7f73"}
+
+    def estilo_faixa(valor):
+        cor = next((c for icone, c in cor_faixa.items() if str(valor).startswith(icone)), None)
+        return f"background-color:{cor};color:#ffffff;font-weight:600" if cor else ""
+
+    def estilizar(df):
+        numericas = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        st_df = (df.style.set_properties(**{"background-color": "#ffffff", "color": "#111827"})
+                 .map(estilo_faixa, subset=["Faixa"])
+                 .format({c: f"{{:,.{casas.get(c, 1)}f}}" for c in numericas}, decimal=",", thousands=".",
+                         na_rep="—"))
+        return st_df
+
+    selecionados = []
     for aba, (grupo, df) in zip(abas, tabelas.items()):
         with aba:
-            evento = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
+            evento = st.dataframe(estilizar(df), hide_index=True, width="stretch", on_select="rerun",
                                   height=min(36 * (len(df) + 1) + 3, 640),
-                                  selection_mode="single-row", key=f"tab_ind_{grupo}",
-                                  column_config={k: v for k, v in formatos.items() if k in df.columns})
+                                  selection_mode="multi-row", key=f"tab_ind_{grupo}")
             linhas_sel = getattr(getattr(evento, "selection", None), "rows", None) or []
-            if linhas_sel:
-                escolhido = df.index[linhas_sel[0]]
-    if escolhido:
-        card = next((c for c in cards if c["ticker"] == escolhido), None)
-        if card:
-            col, _ = st.columns([1, 1])
-            with col:
-                st.html(_html_card_cenario({**card, "evidencia": None}))
+            selecionados += [df.index[i] for i in linhas_sel]
+    if selecionados:
+        if len(selecionados) > 4:
+            st.caption("Mostrando os 4 primeiros ativos selecionados.")
+        escolhidos = [c for t in selecionados[:4] for c in cards if c["ticker"] == t]
+        grade = "".join(_html_card_cenario({**c, "evidencia": None}) for c in escolhidos)
+        n = max(len(escolhidos), 2)
+        st.html(f"<div style='display:grid;grid-template-columns:repeat({n},minmax(0,1fr));gap:14px;"
+                f"margin:6px 0 16px;align-items:start'>{grade}</div>")
 
 
 def _renderizar_cenarios(cenarios) -> None:
