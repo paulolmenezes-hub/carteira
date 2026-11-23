@@ -39,7 +39,7 @@ from carteira_analise.cenarios import (calcular_participacao, carregar_evidencia
 from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.b3_cotahist import carregar_base as carregar_base_b3, completar_precos
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
-from carteira_analise.fontes.fundamentus import (buscar_proventos_acao, buscar_proventos_acao_detalhe,
+from carteira_analise.fontes.fundamentus import (buscar_fundamentos_acao, buscar_proventos_acao, buscar_proventos_acao_detalhe,
                                                  buscar_proventos_fii, buscar_proventos_fii_detalhe,
                                                  buscar_referencias_pl)
 from carteira_analise.proventos_ir import a_receber, eh_bdr, proventos_recebidos, resumo_por_ano, sem_data_antigos
@@ -50,6 +50,7 @@ from carteira_analise.contexto import (ATENCAO, BOM, acrescentar_referencias_pl,
 from carteira_analise.fundamentalistas import classificar_fii, motivo_classificacao, texto_regularidade
 from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
+from carteira_analise.tabela_indicadores import montar_tabelas
 from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, por_ano,
                                           rentabilidade_cotas, resultado_em_reais, resumo_periodo, somar,
                                           tir_anual)
@@ -1616,6 +1617,58 @@ def _html_grupos_cenarios(cards: list, evidencias, colunas: int | None = None) -
     return "".join(partes)
 
 
+def _renderizar_tabela_indicadores(cenarios) -> None:
+    """Tabela de indicadores (uma linha por posição aberta, por grupo) no
+    alto do Dashboard; clicar numa linha abre o card do ativo logo abaixo."""
+    st.markdown("#### 📋 Indicadores da carteira")
+    if not cenarios or not cenarios[0]:
+        st.caption("Clique em 'Analisar carteira' na aba 'Carteira' para ver a tabela.")
+        return
+    cards = cenarios[0]
+    fundamentos = {t: fundamentos_de_resultado(r)
+                   for t, _, r in st.session_state.get("carteira_linhas_analise") or []}
+    for t, fund in fundamentos.items():
+        if t.endswith(".SA") and "ev_ebitda" not in fund:
+            try:
+                fa = buscar_fundamentos_acao(t)
+                fund["ev_ebitda"] = fa.ev_ebitda if fa else None
+                if fa and fund.get("roic") is None:
+                    fund["roic"] = fa.roic
+            except Exception:
+                fund["ev_ebitda"] = None
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    tabelas = montar_tabelas(cards, fundamentos, st.session_state.get("carteira_dividendos") or {}, hoje)
+    if not tabelas:
+        return
+    st.caption("Uma linha por posição aberta; clique no cabeçalho para ordenar e numa linha para ver o card do ativo "
+               "logo abaixo. Números iguais aos dos cards. Preço × teto negativo = preço abaixo do preço-teto.")
+    abas = st.tabs([f"{g} ({len(df)})" for g, df in tabelas.items()])
+    escolhido = None
+    # números no formato do navegador (vírgula decimal em português), já arredondados
+    casas = {"P/VP": 2, "P/VP médio 24m": 2, "Preço": 2, "Preço-teto": 2, "Preço × teto (%)": 0}
+    formatos = {}
+    for df in tabelas.values():
+        for col in df.columns:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df[col] = df[col].round(casas.get(col, 1))
+                formatos[col] = st.column_config.NumberColumn(format="localized")
+    for aba, (grupo, df) in zip(abas, tabelas.items()):
+        with aba:
+            evento = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
+                                  height=min(36 * (len(df) + 1) + 3, 640),
+                                  selection_mode="single-row", key=f"tab_ind_{grupo}",
+                                  column_config={k: v for k, v in formatos.items() if k in df.columns})
+            linhas_sel = getattr(getattr(evento, "selection", None), "rows", None) or []
+            if linhas_sel:
+                escolhido = df.index[linhas_sel[0]]
+    if escolhido:
+        card = next((c for c in cards if c["ticker"] == escolhido), None)
+        if card:
+            col, _ = st.columns([1, 1])
+            with col:
+                st.html(_html_card_cenario({**card, "evidencia": None}))
+
+
 def _renderizar_cenarios(cenarios) -> None:
     """Cenários comparativos por ativo (regra de faixas de preço sobre o
     preço médio). ``cenarios`` é o par (cards, avisos) de ``gerar_cenarios``,
@@ -1629,7 +1682,10 @@ def _renderizar_cenarios(cenarios) -> None:
     st.caption("Compare o que acontece em cada caminho. Os números são calculados pela regra de faixas e não "
                "constituem recomendação: a decisão é sempre sua. Histórico de preço completo na aba Ativo Específico.")
     if cards:
-        st.html(_html_resumo_cenarios(cards) + _html_grupos_cenarios(cards, carregar_evidencias()))
+        cont = {k: sum(1 for c in cards if c.get("situacao") == k) for k in ("realizacao", "queda", "fora")}
+        with st.expander(f"Ver os {len(cards)} cards ({cont['realizacao']} na faixa de realização · "
+                         f"{cont['queda']} na de queda · {cont['fora']} fora das faixas)"):
+            st.html(_html_resumo_cenarios(cards) + _html_grupos_cenarios(cards, carregar_evidencias()))
     else:
         st.info("Nenhuma posição aberta encontrada na planilha.")
     for aviso in avisos:
@@ -2559,6 +2615,10 @@ with tab_dashboard:
                 "colunas. Posição inicial, compras e vendas já aparecem abaixo, direto da planilha."
             )
 
+        try:
+            _renderizar_tabela_indicadores(st.session_state.get("carteira_cenarios"))
+        except Exception as e:
+            st.caption(f"Não foi possível montar a tabela de indicadores ({e}).")
         _renderizar_cenarios(st.session_state.get("carteira_cenarios"))
         st.divider()
         st.markdown("#### 📒 Extrato por ativo")
