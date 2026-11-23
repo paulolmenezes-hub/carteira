@@ -592,6 +592,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
                                          ("background-color", "#ffffff"), ("color", "#111827")]},
         {"selector": "td", "props": [
             ("border", "1px solid #e5e7eb"), ("padding", "4px 6px"), ("white-space", "nowrap"),
+            ("color", "#111827 !important"),  # o tema escuro do Streamlit pinta o texto das células de claro
         ]},
         {"selector": "th", "props": [
             ("border", "1px solid #e5e7eb"), ("padding", "4px 6px"), ("color", "#374151"),
@@ -600,7 +601,7 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
         ]},
     ]
     for i, col in enumerate(_COLUNAS_DASHBOARD):
-        alinhamento = "left" if col == "Ticker" else ("right" if col in _COLUNAS_DASHBOARD_MOEDA else "center")
+        alinhamento = "right" if col in _COLUNAS_DASHBOARD_MOEDA else "center"  # valores à direita; o resto ao centro
         estilos.append({"selector": f"td.col{i}", "props": [("text-align", alinhamento)]})
 
     # Linhas de seção e subtotal em negrito/destaque — pela posição da linha,
@@ -1619,6 +1620,16 @@ def _html_grupos_cenarios(cards: list, evidencias, colunas: int | None = None) -
     return "".join(partes)
 
 
+def _colunas_texto_centralizadas(df: pd.DataFrame) -> dict:
+    """Colunas que não são valor (ativo, faixa, leituras) ao centro; números
+    ficam à direita (padrão). ``alignment`` existe a partir do Streamlit 1.47."""
+    import inspect
+    if "alignment" not in inspect.signature(st.column_config.TextColumn).parameters:
+        return {}
+    return {c: st.column_config.TextColumn(alignment="center") for c in df.columns
+            if not pd.api.types.is_numeric_dtype(df[c])}
+
+
 def _renderizar_tabela_indicadores(cenarios) -> None:
     """Tabela de indicadores (uma linha por posição aberta, por grupo) no
     alto do Dashboard; clicar numa linha abre o card do ativo logo abaixo."""
@@ -1666,7 +1677,8 @@ def _renderizar_tabela_indicadores(cenarios) -> None:
         with aba:
             evento = st.dataframe(estilizar(df), hide_index=True, width="stretch", on_select="rerun",
                                   height=min(36 * (len(df) + 1) + 3, 640),
-                                  selection_mode="multi-row", key=f"tab_ind_{grupo}")
+                                  selection_mode="multi-row", key=f"tab_ind_{grupo}",
+                                  column_config=_colunas_texto_centralizadas(df))
             linhas_sel = getattr(getattr(evento, "selection", None), "rows", None) or []
             selecionados += [df.index[i] for i in linhas_sel]
     if selecionados:
