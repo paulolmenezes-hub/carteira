@@ -117,3 +117,33 @@ def test_venda_rende_ate_o_preco_de_venda():
     # 100 cotas valendo 10 (V0 = 1000); vende 50 a 12 e as outras fecham a 12: +20%
     df = pd.DataFrame({"patrimonio": [600.0], "aportes": [0.0], "vendas": [600.0], "proventos": [0.0]})
     assert rentabilidade_cotas(df, patrimonio_inicial=1000.0).iloc[0] == pytest.approx(0.20)
+
+
+def test_tir_de_aporte_unico_igual_a_rentabilidade():
+    # aplica 1000 no início e tem 1100 depois de 12 meses: TIR 10% ao ano
+    idx = meses_entre("2025-01", "2025-12")
+    df = pd.DataFrame({"patrimonio": [1000.0] * 11 + [1100.0], "aportes": [0.0] * 12, "vendas": [0.0] * 12,
+                       "proventos": [0.0] * 12}, index=idx)
+    from carteira_analise.visao_geral import tir_anual
+    assert tir_anual(df, patrimonio_inicial=1000.0) == pytest.approx(0.10, abs=1e-6)
+
+
+def test_tir_pesa_o_dinheiro_e_cotas_nao():
+    # 100 rendem 100% no 1º mês; depois aporta 10.000 que ficam parados: cotas +100%, TIR baixa
+    from carteira_analise.visao_geral import resultado_em_reais, tir_anual
+    df = pd.DataFrame({"patrimonio": [200.0, 10200.0], "aportes": [0.0, 10000.0], "vendas": [0.0, 0.0],
+                       "proventos": [0.0, 0.0]}, index=meses_entre("2025-01", "2025-02"))
+    assert rentabilidade_cotas(df, 100.0).iloc[-1] == pytest.approx(1.0)
+    assert resultado_em_reais(df, 100.0) == pytest.approx(100.0)
+    assert tir_anual(df, 100.0) > 0  # positiva, mas o ganho em R$ é só 100
+
+
+def test_por_ano_encadeia_patrimonio_e_soma_proventos():
+    from carteira_analise.visao_geral import por_ano
+    idx = meses_entre("2024-12", "2025-01")
+    df = pd.DataFrame({"patrimonio": [1100.0, 1210.0], "aportes": [0.0, 0.0], "vendas": [0.0, 0.0],
+                       "proventos": [10.0, 0.0]}, index=idx)
+    t = por_ano(df, 1000.0)
+    assert list(t["ano"]) == [2024, 2025]
+    assert t["rentabilidade"].iloc[0] == pytest.approx(0.11) and t["rentabilidade"].iloc[1] == pytest.approx(0.10)
+    assert t["resultado"].iloc[0] == pytest.approx(110.0) and t["proventos"].sum() == 10

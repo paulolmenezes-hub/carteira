@@ -184,3 +184,52 @@ def test_chave_de_precos_versionada_sem_ajuste(tmp_path):
     chaves = [r[0] for r in fonte._conn.execute("SELECT chave FROM cache").fetchall()] if hasattr(fonte, "_conn") else None
     if chaves is not None:
         assert chaves == ["precos_v2:X:1y"]
+
+
+class _FonteComLote:
+    def __init__(self):
+        self.lotes, self.divs, self.evs = [], 0, 0
+
+    def baixar_precos(self, ticker, periodo):
+        raise AssertionError("deveria usar o lote")
+
+    def baixar_precos_lote(self, tickers, periodo):
+        self.lotes.append((tuple(tickers), periodo))
+        return {t: pd.Series([1.0, 2.0], index=pd.to_datetime(["2026-01-02", "2026-01-05"]))
+                for t in tickers if t != "SEMDADO"}
+
+    def baixar_info(self, ticker):
+        return {}
+
+    def baixar_dividendos(self, ticker):
+        self.divs += 1
+        return pd.Series(dtype=float)  # sem proventos
+
+    def baixar_eventos(self, ticker):
+        self.evs += 1
+        return pd.Series(dtype=float)
+
+
+def test_aquecer_baixa_em_lote_e_guarda_vazios(tmp_path):
+    from carteira_analise.fontes.cache import FonteComCache
+    fonte = _FonteComLote()
+    cache = FonteComCache(fonte, caminho_db=tmp_path / "c.sqlite")
+    cache.aquecer(["A", "B", "SEMDADO"], periodos=("2y",))
+    assert fonte.lotes == [(("A", "B", "SEMDADO"), "2y")]
+    assert fonte.divs == 3 and fonte.evs == 3
+    # segunda vez: nada a buscar (preços no cache; "sem dividendos/eventos" também)
+    cache.aquecer(["A", "B"], periodos=("2y",))
+    assert len(fonte.lotes) == 1 and fonte.divs == 3 and fonte.evs == 3
+    assert list(cache.baixar_precos("A", "2y")) == [1.0, 2.0]
+    assert cache.baixar_dividendos("A").empty and fonte.divs == 3
+
+
+def test_vazio_expira_antes(tmp_path, monkeypatch):
+    from carteira_analise.fontes import cache as mod
+    fonte = _FonteComLote()
+    cache = mod.FonteComCache(fonte, caminho_db=tmp_path / "c.sqlite")
+    cache.baixar_eventos("A")
+    agora = time.time()
+    monkeypatch.setattr(mod.time, "time", lambda: agora + 3 * 3600)  # 3h depois: vazio vencido
+    cache.baixar_eventos("A")
+    assert fonte.evs == 2
