@@ -187,3 +187,58 @@ def resumo_periodo(df: pd.DataFrame, patrimonio_inicial: float = 0.0) -> dict:
             "proventos": float(df["proventos"].sum()),
             "proventos_mes": float(df["proventos"].sum()) / len(df),
             "rentabilidade": float(rent.iloc[-1])}
+
+
+def tir_anual(df: pd.DataFrame, patrimonio_inicial: float = 0.0) -> float | None:
+    """Rentabilidade ponderada pelo dinheiro (TIR) ao ano. Fluxos mensais do
+    ponto de vista do investidor: sai o patrimônio inicial e os aportes,
+    entram as vendas e os proventos, e no fim o patrimônio final. None se não
+    houver solução (sem dinheiro investido, por exemplo)."""
+    if df is None or df.empty:
+        return None
+    fluxos = [-float(patrimonio_inicial)]
+    for _, linha in df.iterrows():
+        fluxos.append(float(linha["vendas"]) + float(linha["proventos"]) - float(linha["aportes"]))
+    fluxos[-1] += float(df["patrimonio"].iloc[-1])
+
+    def vpl(taxa):
+        return sum(f / (1 + taxa) ** i for i, f in enumerate(fluxos))
+    if not any(f < 0 for f in fluxos) or not any(f > 0 for f in fluxos):
+        return None
+    lo, hi = -0.99, 1.0
+    if vpl(lo) * vpl(hi) > 0:
+        return None
+    for _ in range(200):  # bisseção na taxa mensal
+        meio = (lo + hi) / 2
+        if vpl(lo) * vpl(meio) <= 0:
+            hi = meio
+        else:
+            lo = meio
+    return (1 + (lo + hi) / 2) ** 12 - 1
+
+
+def resultado_em_reais(df: pd.DataFrame, patrimonio_inicial: float = 0.0) -> float:
+    """Ganho do período em dinheiro: patrimônio final − inicial − aportes
+    líquidos (compras − vendas) + proventos."""
+    if df is None or df.empty:
+        return 0.0
+    return (float(df["patrimonio"].iloc[-1]) - float(patrimonio_inicial)
+            - float(df["aportes"].sum()) + float(df["vendas"].sum()) + float(df["proventos"].sum()))
+
+
+def por_ano(df: pd.DataFrame, patrimonio_inicial: float = 0.0,
+            cdi_diario_pct: pd.Series | None = None) -> pd.DataFrame:
+    """Uma linha por ano do período: rentabilidade (cotas), CDI do ano,
+    resultado em dinheiro, proventos (total e média por mês)."""
+    linhas = []
+    v0 = float(patrimonio_inicial)
+    for ano, parte in df.groupby(df.index.year):
+        rent = float(rentabilidade_cotas(parte, v0).iloc[-1])
+        cdi = cdi_acumulado(cdi_diario_pct, parte.index)
+        linhas.append({"ano": int(ano), "meses": len(parte), "rentabilidade": rent,
+                       "cdi": float(cdi.iloc[-1]) if cdi is not None else None,
+                       "resultado": resultado_em_reais(parte, v0),
+                       "proventos": float(parte["proventos"].sum()),
+                       "proventos_mes": float(parte["proventos"].sum()) / len(parte)})
+        v0 = float(parte["patrimonio"].iloc[-1])
+    return pd.DataFrame(linhas)
