@@ -1620,14 +1620,24 @@ def _html_grupos_cenarios(cards: list, evidencias, colunas: int | None = None) -
     return "".join(partes)
 
 
+_COLUNAS_DINHEIRO = ("Preço", "Preço-teto")
+
+
 def _colunas_texto_centralizadas(df: pd.DataFrame) -> dict:
-    """Colunas que não são valor (ativo, faixa, leituras) ao centro; números
-    ficam à direita (padrão). ``alignment`` existe a partir do Streamlit 1.47."""
+    """Tudo ao centro, menos os valores em dinheiro (preço e preço-teto), à
+    direita. ``alignment`` existe a partir do Streamlit 1.47."""
     import inspect
     if "alignment" not in inspect.signature(st.column_config.TextColumn).parameters:
         return {}
-    return {c: st.column_config.TextColumn(alignment="center") for c in df.columns
-            if not pd.api.types.is_numeric_dtype(df[c])}
+    config = {}
+    for c in df.columns:
+        if c in _COLUNAS_DINHEIRO:
+            config[c] = st.column_config.Column(alignment="right")
+        elif pd.api.types.is_numeric_dtype(df[c]):
+            config[c] = st.column_config.NumberColumn(alignment="center")
+        else:
+            config[c] = st.column_config.TextColumn(alignment="center")
+    return config
 
 
 def _renderizar_tabela_indicadores(cenarios) -> None:
@@ -1664,18 +1674,22 @@ def _renderizar_tabela_indicadores(cenarios) -> None:
         cor = next((c for icone, c in cor_faixa.items() if str(valor).startswith(icone)), None)
         return f"background-color:{cor};color:#ffffff;font-weight:600" if cor else ""
 
-    def estilizar(df):
+    def estilizar(df, moeda):
         numericas = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-        st_df = (df.style.set_properties(**{"background-color": "#ffffff", "color": "#111827"})
-                 .map(estilo_faixa, subset=["Faixa"])
-                 .format({c: f"{{:,.{casas.get(c, 1)}f}}" for c in numericas}, decimal=",", thousands=".",
-                         na_rep="—"))
-        return st_df
+        def numero_br(casas_dec):
+            return lambda v: ("—" if pd.isna(v) else
+                              f"{v:,.{casas_dec}f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        formatos = {c: numero_br(casas.get(c, 1)) for c in numericas if c not in _COLUNAS_DINHEIRO}
+        formatos.update({c: (lambda v, m=moeda: formatar_valor(v, m) if pd.notna(v) else "—")
+                         for c in _COLUNAS_DINHEIRO if c in df.columns})
+        return (df.style.set_properties(**{"background-color": "#ffffff", "color": "#111827"})
+                .map(estilo_faixa, subset=["Faixa"])
+                .format(formatos))
 
     selecionados = []
     for aba, (grupo, df) in zip(abas, tabelas.items()):
         with aba:
-            evento = st.dataframe(estilizar(df), hide_index=True, width="stretch", on_select="rerun",
+            evento = st.dataframe(estilizar(df, "US$" if grupo == "EUA" else "R$"), hide_index=True, width="stretch", on_select="rerun",
                                   height=min(36 * (len(df) + 1) + 3, 640),
                                   selection_mode="multi-row", key=f"tab_ind_{grupo}",
                                   column_config=_colunas_texto_centralizadas(df))
