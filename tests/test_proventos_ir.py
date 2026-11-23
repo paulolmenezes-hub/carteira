@@ -46,3 +46,32 @@ def test_provento_antes_da_primeira_compra_nao_conta():
     ops = [_op("2025-06-01", "compra", 100)]
     rec = proventos_recebidos("X", ops, proventos_acao_detalhe_de_html(HTML))
     assert set(rec["data_com"].dt.year) == {2025, 2026} and rec["data_com"].min() >= pd.Timestamp("2025-06-01")
+
+
+def test_fii_rendimento_e_amortizacao():
+    from carteira_analise.fontes.fundamentus import proventos_fii_detalhe_de_html
+    html = ("<table><thead><tr><th>Última Data Com</th><th>Tipo</th><th>Data de Pagamento</th><th>Valor</th></tr>"
+            "</thead><tbody><tr><td>31/01/2025</td><td>Rendimento</td><td>14/02/2025</td><td>1,10</td></tr>"
+            "<tr><td>31/01/2025</td><td>Amortização</td><td>14/02/2025</td><td>0,50</td></tr>"
+            "<tr><td>31/12/2025</td><td>Rendimento</td><td>15/01/2026</td><td>1,00</td></tr></tbody></table>")
+    det = proventos_fii_detalhe_de_html(html)
+    assert list(det["tipo"]) == ["rendimento", "amortizacao", "rendimento"]
+    rec = proventos_recebidos("HGLG11.SA", [_op("2024-01-10", "compra", 10)], det)
+    r25 = resumo_por_ano(rec, 2025).iloc[0]
+    assert r25["rendimentos"] == pytest.approx(11) and r25["amortizacao"] == pytest.approx(5)
+    assert r25["total_liquido"] == pytest.approx(16) and r25["ir_retido"] == 0
+    assert resumo_por_ano(rec, 2026).iloc[0]["rendimentos"] == pytest.approx(10)  # data-com dez, pago jan
+
+
+def test_a_receber_ignora_sem_data_antigo():
+    from carteira_analise.proventos_ir import sem_data_antigos
+    det = pd.DataFrame({"data_com": pd.to_datetime(["2023-05-02", "2026-10-01"]), "valor": [1.0, 1.0],
+                        "tipo": ["jcp", "jcp"], "pagamento": [pd.NaT, pd.NaT]})
+    rec = proventos_recebidos("CMIG4.SA", [_op("2023-01-02", "compra", 100)], det)
+    assert list(a_receber(rec, "2026-11-23")["data_com"].dt.year) == [2026]
+    assert list(sem_data_antigos(rec, "2026-11-23")["data_com"].dt.year) == [2023]
+
+
+def test_bdr():
+    from carteira_analise.proventos_ir import eh_bdr
+    assert eh_bdr("NVDC34.SA") and not eh_bdr("PETR4.SA") and not eh_bdr("KLBN11.SA")
