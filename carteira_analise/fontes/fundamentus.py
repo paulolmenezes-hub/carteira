@@ -347,6 +347,48 @@ def proventos_fii_de_html(html: str) -> pd.Series:
     return serie.groupby(level=0).sum().sort_index()
 
 
+def proventos_fii_detalhe_de_html(html: str) -> pd.DataFrame:
+    """Proventos de um FII, um por linha, com o tipo (rendimento ou
+    amortização) e a data de pagamento, para o IR. Colunas: data_com, valor
+    (por cota), tipo ("rendimento" | "amortizacao"), pagamento."""
+    df = _ler_tabela_como_texto(html)
+    colunas = {_normalizar_coluna(c): c for c in df.columns}
+    c_data = next((c for n, c in colunas.items() if "data com" in n), None)
+    c_tipo = next((c for n, c in colunas.items() if n.startswith("tipo")), None)
+    c_valor = next((c for n, c in colunas.items() if n.startswith("valor")), None)
+    c_pag = next((c for n, c in colunas.items() if "pagamento" in n), None)
+    if not c_data or not c_valor:
+        raise ValueError(f"layout inesperado da página de proventos: {list(df.columns)}")
+    tipo = (df[c_tipo].astype(str).map(lambda t: "amortizacao" if "amortiz" in _normalizar_coluna(t) else "rendimento")
+            if c_tipo else "rendimento")
+    saida = pd.DataFrame({
+        "data_com": pd.to_datetime(df[c_data], dayfirst=True, errors="coerce"),
+        "valor": df[c_valor].map(_parse_numero_br).astype(float),
+        "tipo": tipo,
+        "pagamento": (pd.to_datetime(df[c_pag].astype(str).str.strip().replace({"-": None}), dayfirst=True,
+                                     errors="coerce") if c_pag else pd.NaT),
+    })
+    saida = saida[saida["data_com"].notna() & saida["valor"].notna() & (saida["valor"] > 0)]
+    return saida.sort_values("data_com").reset_index(drop=True)
+
+
+_cache_proventos_fii_detalhe: dict[str, pd.DataFrame] = {}
+
+
+def buscar_proventos_fii_detalhe(ticker: str) -> pd.DataFrame | None:
+    """``proventos_fii_detalhe_de_html`` da página do Fundamentus, com cache;
+    None se falhar."""
+    papel = ticker.upper().replace(".SA", "")
+    if papel in _cache_proventos_fii_detalhe:
+        return _cache_proventos_fii_detalhe[papel]
+    try:
+        df = proventos_fii_detalhe_de_html(_baixar_html(URL_FII_PROVENTOS.format(papel=papel), exigir="<table"))
+    except Exception:
+        return None
+    _cache_proventos_fii_detalhe[papel] = df
+    return df
+
+
 def buscar_proventos_fii(ticker: str) -> pd.Series | None:
     """Histórico de rendimentos pagos por cota de um FII (Fundamentus), com
     cache em memória. Devolve None se a busca falhar."""
