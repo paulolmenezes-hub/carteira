@@ -213,6 +213,7 @@ class FundamentosAcao:
     margem_liquida: float | None
     divida_bruta_patrimonio: float | None
     liquidez_corrente: float | None
+    ev_ebitda: float | None = None
 
 
 def _achar_coluna(colunas: dict[str, str], *pistas: str) -> str | None:
@@ -257,6 +258,7 @@ def buscar_todas_acoes_fundamentus() -> dict[str, FundamentosAcao]:
     col_margem_liq = _achar_coluna(colunas, "mrg.liq", "mrg. liq", "margem liq")
     col_div_patrim = _achar_coluna(colunas, "div.brut", "dív.brut", "divida bruta")
     col_liq_corrente = _achar_coluna(colunas, "liq.corr", "liq. corr")
+    col_ev_ebitda = _achar_coluna(colunas, "ev/ebitda")
 
     resultado: dict[str, FundamentosAcao] = {}
     for _, linha in df.iterrows():
@@ -280,6 +282,7 @@ def buscar_todas_acoes_fundamentus() -> dict[str, FundamentosAcao]:
             margem_liquida=num(col_margem_liq),
             divida_bruta_patrimonio=num(col_div_patrim),
             liquidez_corrente=num(col_liq_corrente),
+            ev_ebitda=num(col_ev_ebitda),
         )
     return resultado
 
