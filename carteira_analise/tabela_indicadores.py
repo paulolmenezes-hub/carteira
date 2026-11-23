@@ -71,7 +71,7 @@ def montar_tabelas(cards: list[dict], fundamentos: dict[str, dict], dividendos: 
                 "Preço": c.get("preco_atual"),
                 "Variação s/ PM (%)": (c.get("variacao") * 100) if c.get("variacao") is not None else None,
                 "DY 12m (%)": _numero(dy.get("valor")) if dy else None,
-                "Pagamento": meses_de_pagamento(dividendos.get(t), hoje)}
+                "Meses (data-com)": meses_de_pagamento(dividendos.get(t), hoje)}
         g = grupo_da_tabela(c)
         if g == "Ações B3":
             pl = _indicador(ctx, "P/L")
@@ -84,13 +84,14 @@ def montar_tabelas(cards: list[dict], fundamentos: dict[str, dict], dividendos: 
                      "P/L × referência": leitura_pl.split(" · lucro")[0] if leitura_pl else "—",
                      "P/VP": fund.get("pvp"),
                      "ROE (%)": fund.get("roe") * 100 if fund.get("roe") is not None else None,
-                     "ROIC (%)": fund.get("roic") * 100 if fund.get("roic") is not None else None,
-                     "EV/EBITDA": fund.get("ev_ebitda"),
+                     "ROIC (%)": fund.get("roic") * 100 if fund.get("roic") else None,
+                     # 0 no Fundamentus = não se aplica (bancos e seguradoras não têm EBITDA/ROIC)
+                     "EV/EBITDA": fund.get("ev_ebitda") or None,
                      "Preço-teto": teto,
                      "Preço × teto (%)": ((c.get("preco_atual") / teto - 1) * 100) if teto and c.get("preco_atual") else None,
                      "Dividendos": SELO.get(reg, "—")}
             ordem = ["Ativo", "Faixa", "P/L", "P/L × referência", "P/VP", "ROE (%)", "ROIC (%)", "EV/EBITDA",
-                     "DY 12m (%)", "Preço", "Preço-teto", "Preço × teto (%)", "Dividendos", "Pagamento"]
+                     "DY 12m (%)", "Preço", "Preço-teto", "Preço × teto (%)", "Dividendos", "Meses (data-com)"]
         elif g == "FIIs":
             pa = ctx.get("preco_atrativo") or {}
             linha = {**base, "Segmento": fund.get("segmento") or "—",
@@ -98,13 +99,13 @@ def montar_tabelas(cards: list[dict], fundamentos: dict[str, dict], dividendos: 
                      "P/VP médio 24m": pa.get("pvp_medio_24m"),
                      "Preço atrativo?": PRECO_ATRATIVO.get(pa.get("nivel"), "—")}
             ordem = ["Ativo", "Faixa", "Segmento", "DY 12m (%)", "P/VP", "P/VP médio 24m", "Preço atrativo?",
-                     "Preço", "Variação s/ PM (%)", "Pagamento"]
+                     "Preço", "Variação s/ PM (%)", "Meses (data-com)"]
         else:
             tend = _indicador(ctx, "Tendência")
             linha = {**base, "Tipo": "Ação" if c.get("grupo") == "Ações" else "ETF",
                      "Tendência (MM200)": (tend or {}).get("valor") or "—"}
             ordem = ["Ativo", "Tipo", "Faixa", "Preço", "Variação s/ PM (%)", "DY 12m (%)", "Tendência (MM200)",
-                     "Pagamento"]
+                     "Meses (data-com)"]
         grupos.setdefault(g, []).append({k: linha.get(k) for k in ordem} | {"_ticker": t})
     saida = {}
     for g in ("Ações B3", "FIIs", "ETFs B3", "EUA"):
