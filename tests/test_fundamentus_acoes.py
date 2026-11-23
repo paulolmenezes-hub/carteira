@@ -209,3 +209,10 @@ class TestRegressaoConversaoPandas:
         assert fiis["BTLG11"].pvp is None
         assert fiis["HGLG11"].pvp == pytest.approx(1.02)
         assert fiis["KNIP11"].pvp == pytest.approx(0.88)
+
+
+def test_ev_ebitda_lido_da_tabela(monkeypatch):
+    from carteira_analise.fontes import fundamentus as fm
+    monkeypatch.setattr(fm, "_baixar_html_acao_resultado", lambda: HTML_ACOES)
+    vale = fm.buscar_todas_acoes_fundamentus()["VALE3"]
+    assert vale.ev_ebitda == 3.9
