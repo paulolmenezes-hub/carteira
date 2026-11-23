@@ -34,6 +34,28 @@ def baixar_precos(ticker: str, periodo: str) -> pd.Series:
     return fechamento.dropna()
 
 
+def baixar_precos_lote(tickers: list[str], periodo: str) -> dict[str, pd.Series]:
+    """Fechamentos de vários tickers num único download (o ``yf.download``
+    baixa em paralelo internamente). Mesmo ajuste de ``baixar_precos``: só por
+    desdobramento/grupamento. Tickers sem dados ficam de fora."""
+    if not tickers:
+        return {}
+    hist = yf.download(list(tickers), period=periodo, progress=False, auto_adjust=False,
+                       group_by="column", threads=True)
+    if hist is None or hist.empty:
+        return {}
+    fechamento = hist["Close"]
+    if isinstance(fechamento, pd.Series):  # um ticker só
+        fechamento = fechamento.to_frame(tickers[0])
+    saida = {}
+    for t in tickers:
+        if t in fechamento.columns:
+            serie = fechamento[t].dropna()
+            if len(serie):
+                saida[t] = serie
+    return saida
+
+
 def baixar_info(ticker: str) -> dict:
     """Baixa o dicionário 'info' bruto do Yahoo Finance para um ticker."""
     try:

@@ -17,7 +17,9 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,11 @@ import pandas as pd
 
 CAMINHO_PADRAO = Path.home() / ".carteira_analise_cache.sqlite"
 TTL_PADRAO_HORAS = 12.0  # dados de mercado diário não mudam mais de ~2x/dia úteis
+# Sem dividendos/eventos é o caso mais comum (ETF sem proventos, ativo sem
+# desdobramento): guardar o "vazio" por pouco tempo evita buscar de novo a cada
+# carga, sem prender por 12h um vazio que tenha sido falha de rede.
+TTL_VAZIO_HORAS = 2.0
+TRABALHADORES = 8  # downloads simultâneos ao aquecer o cache
 
 
 class FonteComCache:
@@ -47,6 +54,8 @@ class FonteComCache:
         # only be used in that same thread". Seguro aqui porque o acesso é
         # sequencial (uma requisição por vez), não concorrente de verdade.
         self._conn = sqlite3.connect(str(caminho_db), check_same_thread=False)
+        # vários usuários (e o aquecimento em paralelo) usam a mesma conexão
+        self._trava = threading.Lock()
         self._criar_tabelas()
 
     def _criar_tabelas(self) -> None:
@@ -63,24 +72,34 @@ class FonteComCache:
         self._conn.commit()
 
     def _get(self, chave: str) -> Any | None:
-        cur = self._conn.execute(
-            "SELECT valor, tipo_valor, salvo_em FROM cache WHERE chave = ?", (chave,)
-        )
-        row = cur.fetchone()
+        with self._trava:
+            row = self._conn.execute(
+                "SELECT valor, tipo_valor, salvo_em FROM cache WHERE chave = ?", (chave,)
+            ).fetchone()
         if row is None:
             return None
         valor, tipo_valor, salvo_em = row
-        if time.time() - salvo_em > self._ttl_segundos:
+        ttl = TTL_VAZIO_HORAS * 3600 if tipo_valor == "vazio" else self._ttl_segundos
+        if time.time() - salvo_em > min(ttl, self._ttl_segundos):
             return None
         return self._desserializar(valor, tipo_valor)
 
     def _set(self, chave: str, valor: Any) -> None:
         serializado, tipo_valor = self._serializar(valor)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO cache (chave, valor, tipo_valor, salvo_em) VALUES (?, ?, ?, ?)",
-            (chave, serializado, tipo_valor, time.time()),
-        )
-        self._conn.commit()
+        with self._trava:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cache (chave, valor, tipo_valor, salvo_em) VALUES (?, ?, ?, ?)",
+                (chave, serializado, tipo_valor, time.time()),
+            )
+            self._conn.commit()
+
+    def _set_vazio(self, chave: str) -> None:
+        with self._trava:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cache (chave, valor, tipo_valor, salvo_em) VALUES (?, ?, ?, ?)",
+                (chave, "", "vazio", time.time()),
+            )
+            self._conn.commit()
 
     @staticmethod
     def _serializar(valor: Any) -> tuple[str, str]:
@@ -90,6 +109,8 @@ class FonteComCache:
 
     @staticmethod
     def _desserializar(valor: str, tipo_valor: str) -> Any:
+        if tipo_valor == "vazio":
+            return pd.Series(dtype=float)
         if tipo_valor == "series":
             serie = pd.read_json(io.StringIO(valor), typ="series").astype(float)
             serie.index = pd.to_datetime(serie.index)
@@ -126,6 +147,8 @@ class FonteComCache:
         resultado = self._fonte.baixar_dividendos(ticker)
         if not resultado.empty:
             self._set(chave, resultado)
+        else:
+            self._set_vazio(chave)
         return resultado
 
     def baixar_eventos(self, ticker: str) -> pd.Series:
@@ -140,7 +163,54 @@ class FonteComCache:
         resultado = self._fonte.baixar_eventos(ticker)
         if not resultado.empty:
             self._set(chave, resultado)
+        else:
+            self._set_vazio(chave)
         return resultado
+
+    def aquecer(self, tickers, periodos=("2y",), dividendos: bool = True, eventos: bool = True,
+                info: bool = False) -> None:
+        """Busca de uma vez, em paralelo, o que ainda não está no cache, para
+        que a análise (ativo por ativo) encontre tudo pronto. Preços vão num
+        único download em lote quando a fonte oferece ``baixar_precos_lote``
+        (o ``yf.download`` não é seguro para chamadas simultâneas); o resto,
+        em até ``TRABALHADORES`` buscas ao mesmo tempo. Falhas são ignoradas:
+        a análise busca de novo, sozinha, o que faltar."""
+        tickers = list(dict.fromkeys(tickers))
+        for periodo in periodos:
+            faltam = [t for t in tickers if self._get(f"precos_v2:{t}:{periodo}") is None]
+            if not faltam:
+                continue
+            if hasattr(self._fonte, "baixar_precos_lote"):
+                try:
+                    lote = self._fonte.baixar_precos_lote(faltam, periodo)
+                except Exception:
+                    lote = {}
+                for t, serie in (lote or {}).items():
+                    if serie is not None and not serie.empty:
+                        self._set(f"precos_v2:{t}:{periodo}", serie)
+            else:
+                for t in faltam:
+                    try:
+                        self.baixar_precos(t, periodo)
+                    except Exception:
+                        pass
+        tarefas = []
+        if dividendos:
+            tarefas += [(self.baixar_dividendos, t) for t in tickers if self._get(f"dividendos:{t}") is None]
+        if eventos:
+            tarefas += [(self.baixar_eventos, t) for t in tickers if self._get(f"eventos:{t}") is None]
+        if info:
+            tarefas += [(self.baixar_info, t) for t in tickers if self._get(f"info:{t}") is None]
+
+        def rodar(tarefa):
+            funcao, t = tarefa
+            try:
+                funcao(t)
+            except Exception:
+                pass
+        if tarefas:
+            with ThreadPoolExecutor(max_workers=TRABALHADORES) as ex:
+                list(ex.map(rodar, tarefas))
 
     def limpar(self) -> None:
         """Apaga todo o cache — útil se os dados parecerem desatualizados
