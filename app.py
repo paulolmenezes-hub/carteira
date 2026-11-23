@@ -2234,7 +2234,17 @@ def _renderizar_visao_geral() -> None:
         st.altair_chart(_claro(_grafico_linhas(df3, "acumulado no período", ".1%",
                                                {"Carteira": "#1e3a8a", "CDI": "#d9831c"}, tracejadas=["CDI"])),
                         width="stretch")
-    anos = por_ano(periodo, inicial, serie_cdi)
+    # tabelas por ano: últimos 5 anos completos + o ano atual, independentes do período escolhido
+    # (seguem os filtros de mercado, tipo, situação e ativo)
+    historico = total.iloc[primeiro:]
+    ano_atual = int(historico.index[-1].year)
+    try:
+        cdi_hist = _cdi_bcb_em_cache(str(historico.index[0].start_time.date()),
+                                     str(historico.index[-1].end_time.date()))
+    except Exception:
+        cdi_hist = None
+    anos = por_ano(historico, 0.0, cdi_hist)
+    anos = anos[anos["ano"] >= ano_atual - 5].reset_index(drop=True)
     if len(anos):
         linhas_tab = []
         for _, a in anos.iterrows():
@@ -2247,8 +2257,9 @@ def _renderizar_visao_geral() -> None:
                 dif_txt = (f"<b style='color:{'#15803d' if d >= 0 else '#b91c1c'}'>"
                            f"{'+' if d >= 0 else '−'}{_pp(d)}</b>")
             linhas_tab.append([rotulo, _pct_vg(a["rentabilidade"]), cdi_txt, dif_txt, fs(a["resultado"])])
-        st.html(_caixa_branca("Rentabilidade por ano",
-                              _tabela_html(["Ano", "Carteira", "CDI", "Diferença", "Resultado"], linhas_tab)))
+        st.html(_caixa_branca("Rentabilidade por ano <span style='font-weight:400;font-size:.8em;color:#6b7280'>"
+                              "(últimos 5 anos e o atual; não depende do período escolhido)</span>",
+                              _tabela_html(["Ano", "Carteira", "CDI", "Diferença", "Resultado"], linhas_tab[::-1])))
     st.caption("Rentabilidade pelo método das cotas: preço + proventos, sem contar aportes e vendas como ganho "
                "(mede o desempenho dos ativos). TIR: pondera pelo dinheiro investido em cada mês (mede o seu "
                "resultado). Ativos vendidos contam enquanto estavam na carteira; a venda sai como resgate.")
@@ -2298,7 +2309,8 @@ def _renderizar_visao_geral() -> None:
                 rotulo = f"{int(a['ano'])}" + (f" ({int(a['meses'])} {'mês' if a['meses'] == 1 else 'meses'})" if a["meses"] < 12 else "")
                 linhas_p.append([rotulo, fv(a["proventos"]), fv(a["proventos_mes"]), var])
                 anterior = a
-            st.html(_caixa_branca("Proventos por ano",
+            st.html(_caixa_branca("Proventos por ano <span style='font-weight:400;font-size:.8em;color:#6b7280'>"
+                                  "(últimos 5 anos e o atual)</span>",
                                   _tabela_html(["Ano", "Total", "Média por mês", "Variação"], linhas_p[::-1])))
 
     if dados.get("sem_preco"):
