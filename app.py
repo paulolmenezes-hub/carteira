@@ -39,7 +39,7 @@ from carteira_analise.cenarios import (calcular_participacao, carregar_evidencia
 from carteira_analise.fontes.bcb import buscar_cdi_diario
 from carteira_analise.fontes.b3_cotahist import carregar_base as carregar_base_b3, completar_precos
 from carteira_analise.fontes.cvm_fii import base_recente, serie_rendimentos, serie_valor_patrimonial
-from carteira_analise.fontes.fundamentus import (buscar_fundamentos_acao, buscar_proventos_acao, buscar_tabela_pares, buscar_proventos_acao_detalhe,
+from carteira_analise.fontes.fundamentus import (buscar_fundamentos_acao, buscar_grupos_setoriais, buscar_proventos_acao, buscar_tabela_pares, buscar_proventos_acao_detalhe,
                                                  buscar_proventos_fii, buscar_proventos_fii_detalhe,
                                                  buscar_referencias_pl)
 from carteira_analise.proventos_ir import a_receber, eh_bdr, proventos_recebidos, resumo_por_ano, sem_data_antigos
@@ -645,9 +645,9 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
-tab_carteira, tab_visao, tab_metas, tab_ativo, tab_dashboard, tab_ir, tab_guia = st.tabs([
-    "📂 Carteira", "🧭 Visão geral", "🎯 Metas", "🔍 Raio-X do ativo", "💼 Dashboard da Carteira",
-    "🧾 Proventos e IR", "📖 Guia de Indicadores",
+tab_guia, tab_carteira, tab_visao, tab_dashboard, tab_ativo, tab_metas, tab_ir = st.tabs([
+    "📖 Guia de Indicadores", "📂 Carteira", "🧭 Visão geral", "💼 Dashboard da Carteira", "🔍 Raio-X do ativo",
+    "🎯 Metas", "🧾 Proventos e IR",
 ])
 
 with tab_carteira:
@@ -2661,8 +2661,33 @@ def _todos_fiis_em_cache():
 
 
 @st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _pares_acao_cache(tipo: str, ident: str):
+    t = buscar_tabela_pares(tipo, ident)
+    if t is None:
+        raise RuntimeError("tabela de pares não baixada")  # falha não fica no cache
+    return t
+
+
 def _pares_acao_em_cache(tipo: str, ident: str):
-    return buscar_tabela_pares(tipo, ident)
+    try:
+        return _pares_acao_cache(tipo, ident)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _grupos_setoriais_cache(ticker: str):
+    g = buscar_grupos_setoriais(ticker)
+    if not g:
+        raise RuntimeError("segmento não encontrado")
+    return g
+
+
+def _grupos_setoriais_em_cache(ticker: str) -> list[dict]:
+    try:
+        return _grupos_setoriais_cache(ticker)
+    except Exception:
+        return []
 
 
 def _kv(rotulo: str, valor: str, sub: str = "", cor: str = "#111827") -> str:
@@ -2779,13 +2804,17 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
 
     # dados extras (Fundamentus), todos com cache e sem derrubar a aba se falharem
     fa = ref = pares = detalhe = None
+    grupo_pares = {}
     try:
         if b3 and tipo == "acao":
             fa = buscar_fundamentos_acao(ticker)
             ref = _referencias_pl_em_cache(ticker)
-            g = (ref or {}).get("grupo") or {}
-            if g.get("id"):
+            # pares: segmento primeiro, setor se o segmento não tiver com quem comparar
+            for g in _grupos_setoriais_em_cache(ticker):
                 pares = selecionar_pares(_pares_acao_em_cache(g["tipo"], str(g["id"])), ticker)
+                if pares is not None:
+                    grupo_pares = g
+                    break
             detalhe = _proventos_detalhe_em_cache(ticker)
         elif eh_fii:
             pares = pares_fii(_todos_fiis_em_cache(), ticker)
@@ -2967,14 +2996,16 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
             rodape = "FIIs do mesmo segmento no Fundamentus, ordenados pela liquidez diária (R$ 1 milhão/dia ou mais)."
         else:
             cab = ["Ativo", "P/L", "P/VP", "ROE", "DY 12m", "Liquidez diária ▼"]
-            lin = [[r.papel, _num_txt(r.pl), _num_txt(r.pvp, 2), _pct_txt(r.roe), _pct_txt(r.dy), _mi_txt(r.liquidez)]
+            lin = [[r.papel, _num_txt(r.pl) if pd.notna(r.pl) and r.pl > 0 else ("prejuízo" if pd.notna(r.pl) else "—"),
+                    _num_txt(r.pvp, 2), _pct_txt(r.roe), _pct_txt(r.dy), _mi_txt(r.liquidez)]
                    for r in pares.itertuples()]
             g = (ref or {}).get("grupo") or {}
-            titulo = f"Comparação com o {g.get('tipo', 'segmento')} {html.escape(g.get('nome', ''))}"
+            titulo = f"Comparação com o {grupo_pares.get('tipo', 'segmento')} {html.escape(grupo_pares.get('nome', ''))}"
             pos = posicao_entre_pares(pares)
+            mesma_ref = g.get("tipo") == grupo_pares.get("tipo") and g.get("mediana")
             rodape = ((f"{papel}: {pos}. " if pos else "")
-                      + "Empresas com lucro e liquidez de R$ 1 milhão/dia ou mais, ordenadas pela liquidez diária"
-                      + (f" · mediana do P/L {_num_txt(g.get('mediana'))}" if g.get("mediana") else "") + ".")
+                      + "Empresas com liquidez de R$ 1 milhão/dia ou mais, ordenadas pela liquidez diária"
+                      + (f" · mediana do P/L {_num_txt(g.get('mediana'))}" if mesma_ref else "") + ".")
         proprio = [i for i, r in enumerate(pares.itertuples()) if r.proprio]
         tabela = _tabela_html(cab, [[f"<b style='color:#1e3a8a'>▶ {c}</b>" if j == 0 and i in proprio else
                                      (f"<b>{c}</b>" if i in proprio else c) for j, c in enumerate(l)]
