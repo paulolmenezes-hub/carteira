@@ -49,3 +49,19 @@ def test_limite_por_ativo():
     assert situacao_peso(1100, 100000, LIMITES_PADRAO)["situacao"] == "dentro"  # mínimo 0 = desligado
     p = pesos_dos_ativos({"A": 30.0, "B": 70.0, "C": 0.0}, {"maximo": 50, "minimo": 0})
     assert [l["ticker"] for l in p] == ["B", "A"] and p[0]["situacao"] == "acima"
+
+
+def test_metas_e_limites():
+    from carteira_analise.metas import comparar, metas_e_limites
+    por = {"Ações B3": [40.0, 30.0], "FIIs": [20.0], "ETFs B3": [10.0], "EUA (ações e ETFs)": []}
+    valores = {c: sum(v) for c, v in por.items()}
+    metas = {"Ações B3": 40, "FIIs": 30, "ETFs B3": 15, "EUA (ações e ETFs)": 15}
+    info, avisos = metas_e_limites(comparar(valores, metas), por, {"maximo": 25, "minimo": 0})
+    assert info["Ações B3"]["leitura"] == "acima_da_meta" and info["Ações B3"]["acima"] == 2
+    assert info["FIIs"]["espaco"] == 5.0 and info["FIIs"]["leitura"] == "nao_cabe"  # falta 10, cabe 5
+    assert abs(info["FIIs"]["falta_espaco"] - 5.0) < 1e-9
+    assert info["ETFs B3"]["leitura"] == "cabe"  # falta 5, cabe 15
+    assert info["EUA (ações e ETFs)"]["leitura"] == "sem_ativos"
+    assert any(a.startswith("FIIs: com 1 ativo e limite de 25%") for a in avisos)
+    _, avisos = metas_e_limites(comparar(valores, metas), por, {"maximo": 50, "minimo": 25})
+    assert any("mínimo de 25%" in a and a.startswith("Ações B3") for a in avisos)
