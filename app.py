@@ -55,7 +55,7 @@ from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_p
                                      selecionar_pares, sinal, sinal_pl, LIMIARES_FII)
 from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
                                     dividir_aporte, metas_de_texto, metas_para_texto, LIMITES_PADRAO,
-                                    limites_de_texto, limites_para_texto, pesos_dos_ativos)
+                                    limites_de_texto, limites_para_texto, metas_e_limites, pesos_dos_ativos)
 from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, por_ano,
                                           rentabilidade_cotas, resultado_em_reais, resumo_periodo, somar,
                                           tir_anual)
@@ -2608,6 +2608,10 @@ def _valores_por_classe(dados: dict) -> dict[str, float]:
 
 
 def _limites_salvos() -> dict[str, float]:
+    """Limites dos campos da aba Metas (se já mexidos nesta sessão) ou do endereço da página."""
+    mx, mn = st.session_state.get("limite_max"), st.session_state.get("limite_min")
+    if mx is not None and mn is not None and mn < mx:
+        return {"maximo": float(mx), "minimo": float(mn)}
     return limites_de_texto(st.query_params.get("limites")) or dict(LIMITES_PADRAO)
 
 
@@ -2711,29 +2715,52 @@ def _renderizar_metas(dados: dict) -> None:
     aporte = st.number_input("Simular um aporte (R$): como dividi-lo entre as classes abaixo da meta", min_value=0,
                              value=0, step=1000, key="meta_aporte")
     divisao = dividir_aporte(linhas, aporte) if aporte > 0 else {}
+    limites = _limites_salvos()
+    por_classe = {c: [] for c in CLASSES_META}
+    for t, v in _valores_por_ativo(dados).items():
+        m = dados["meta"][t]
+        por_classe[classe_do_ativo(m["mercado"], m["tipo"])].append(v)
+    cap, avisos = metas_e_limites(linhas, por_classe, limites)
     linhas_tab = []
     for l in linhas:
         at = l["atingido"]
         cor_barra = "#0f7f73" if l["na_meta"] else "#d9831c"
         barra = ("—" if at is None else
                  f"<div style='display:flex;align-items:center;gap:6px;justify-content:flex-start'>"
-                 f"<div style='background:#eef2f7;border-radius:6px;height:8px;width:140px'>"
-                 f"<div style='width:{min(at, 100) * 1.4:.0f}px;height:8px;border-radius:6px;background:{cor_barra}'>"
+                 f"<div style='background:#eef2f7;border-radius:6px;height:8px;width:80px'>"
+                 f"<div style='width:{min(at, 100) * 0.8:.0f}px;height:8px;border-radius:6px;background:{cor_barra}'>"
                  f"</div></div><span>{at:.0f}%</span></div>")
         falta = l["falta"]
         falta_txt = (f"<b style='color:{'#15803d' if falta > 0 else '#b91c1c'}'>"
                      f"{'+' if falta > 0 else '−'}{fv(abs(falta))}</b>") if abs(falta) >= 1 else "—"
-        linha = [f"<b>{l['classe']}</b>", f"{l['meta']:.0f}%", f"{l['hoje']:.1f}%".replace(".", ","), fv(l["alvo"]),
-                 fv(l["tem"]), falta_txt, barra]
+        k = cap[l["classe"]]
+        ativos_txt = (f"{k['n']}" + (f" · <span style='color:#b91c1c'>{k['acima']} acima</span>" if k["acima"] else "")
+                      if k["n"] else "—")
+        leitura = {"acima_da_meta": "<span style='color:#4b5563'>classe acima da meta</span>",
+                   "sem_ativos": "<span style='color:#d9831c;font-weight:600'>sem ativos na classe</span>",
+                   "cabe": "<span style='color:#0f7f73;font-weight:600'>cabe nos ativos atuais</span>",
+                   "nao_cabe": f"<span style='color:#d9831c;font-weight:600'>não cabe: faltam {fv(k['falta_espaco'])} "
+                               f"de espaço</span>"}[k["leitura"]]
+        nw = lambda t: f"<span style='white-space:nowrap'>{t}</span>"
+        linha = [nw(f"<b>{l['classe']}</b>"), f"{l['meta']:.0f}%", f"{l['hoje']:.1f}%".replace(".", ","), nw(fv(l["tem"])),
+                 nw(falta_txt), barra, nw(ativos_txt), nw(fv(k["espaco"])) if k["n"] else "—", leitura]
         if divisao:
             linha.append(fv(divisao[l["classe"]]) if divisao[l["classe"]] >= 0.01 else "—")
         linhas_tab.append(linha)
-    cab = ["Classe", "Meta", "Hoje", "Valor da meta", "Tem", "Para chegar à meta", "Atingido"]
+    cab = ["Classe", "Meta", "Hoje", "Tem", "Para chegar à meta", "Atingido", "Ativos",
+           f"Espaço até o limite ({limites['maximo']:g}%)", "Leitura"]
     if divisao:
         cab.append(f"Do aporte de {fv(aporte)}")
     st.html(_caixa_branca("Alocação por classe", _tabela_html(cab, linhas_tab)))
+    if avisos:
+        st.html("<div style='background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:8px 12px;"
+                "color:#7c2d12;font-size:.86em'><b>⚠️ Metas e limites não fecham</b><ul style='margin:4px 0 0 18px;"
+                "padding:0'>" + "".join(f"<li>{html.escape(a)}</li>" for a in avisos) + "</ul></div>")
     st.caption("Para chegar à meta: positivo = quanto aportar; negativo = quanto a classe está acima da meta. "
-               "O aporte simulado vai só para as classes abaixo da meta, na proporção do que falta a cada uma.")
+               "O aporte simulado vai só para as classes abaixo da meta, na proporção do que falta a cada uma. "
+               "Espaço até o limite: quanto ainda cabe nos ativos que você já tem sem nenhum passar do peso máximo "
+               "(limite por ativo, logo abaixo); se for menor do que falta, a meta só fecha aumentando o limite, "
+               "revendo a meta ou com mais ativos na classe.")
 
 
 with tab_metas:
