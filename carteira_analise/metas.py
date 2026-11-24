@@ -103,3 +103,42 @@ def pesos_dos_ativos(valores: dict[str, float], limites: dict[str, float]) -> li
     total = sum(v for v in valores.values() if v > 0)
     linhas = [{"ticker": t, "valor": v, **situacao_peso(v, total, limites)} for t, v in valores.items() if v > 0]
     return sorted(linhas, key=lambda l: -l["valor"])
+
+
+def metas_e_limites(linhas: list[dict], valores_por_classe: dict[str, list[float]],
+                    limites: dict[str, float]) -> tuple[dict[str, dict], list[str]]:
+    """Liga a meta de cada classe ao limite por ativo.
+
+    ``linhas``: saída de ``comparar``; ``valores_por_classe``: classe -> valores
+    (R$) dos ativos dela. Por classe: n ativos, quantos acima do limite,
+    espaço até o limite (quanto ainda cabe nos ativos atuais sem nenhum passar
+    do máximo) e a leitura: "acima_da_meta", "sem_ativos", "cabe" ou
+    "nao_cabe" (com quanto falta de espaço). Também devolve os avisos de
+    metas e limites que não fecham (texto)."""
+    total = sum(v for vs in valores_por_classe.values() for v in vs)
+    maximo, minimo = limites["maximo"], limites.get("minimo") or 0.0
+    teto_r = total * maximo / 100
+    saida, avisos = {}, []
+    for l in linhas:
+        c = l["classe"]
+        vs = [v for v in valores_por_classe.get(c, []) if v > 0]
+        n = len(vs)
+        espaco = sum(max(teto_r - v, 0.0) for v in vs)
+        falta = l["falta"]
+        if falta < 1:
+            leitura = "acima_da_meta"
+        elif n == 0:
+            leitura = "sem_ativos"
+        elif espaco >= falta:
+            leitura = "cabe"
+        else:
+            leitura = "nao_cabe"
+        saida[c] = {"n": n, "acima": sum(1 for v in vs if total and v / total * 100 > maximo), "espaco": espaco,
+                    "leitura": leitura, "falta_espaco": max(falta - espaco, 0.0)}
+        if n and n * maximo < l["meta"]:
+            avisos.append(f"{c}: com {n} ativo{'s' if n > 1 else ''} e limite de {maximo:g}%, a classe chega no "
+                          f"máximo a {n * maximo:g}%, abaixo da meta de {l['meta']:g}%.")
+        if n and minimo and n * minimo > l["meta"]:
+            avisos.append(f"{c}: {n} ativos com mínimo de {minimo:g}% somam {n * minimo:g}%, acima da meta de "
+                          f"{l['meta']:g}%.")
+    return saida, avisos
