@@ -65,3 +65,12 @@ def test_metas_e_limites():
     assert any(a.startswith("FIIs: com 1 ativo e limite de 25%") for a in avisos)
     _, avisos = metas_e_limites(comparar(valores, metas), por, {"maximo": 50, "minimo": 25})
     assert any("mínimo de 25%" in a and a.startswith("Ações B3") for a in avisos)
+
+
+def test_leitura_na_meta():
+    from carteira_analise.metas import comparar, metas_e_limites
+    por = {"Ações B3": [46.3], "FIIs": [29.8], "ETFs B3": [6.0], "EUA (ações e ETFs)": [17.9]}
+    metas = {"Ações B3": 45, "FIIs": 30, "ETFs B3": 10, "EUA (ações e ETFs)": 15}
+    info, _ = metas_e_limites(comparar({c: sum(v) for c, v in por.items()}, metas), por, {"maximo": 50, "minimo": 0})
+    assert info["Ações B3"]["leitura"] == "na_meta" and info["FIIs"]["leitura"] == "na_meta"
+    assert info["ETFs B3"]["leitura"] == "cabe" and info["EUA (ações e ETFs)"]["leitura"] == "acima_da_meta"
