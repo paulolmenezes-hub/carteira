@@ -56,3 +56,16 @@ def test_pares_fii():
              "HGLG11": F("Logística", .09, 1.0, 8e6), "ZZZZ11": F("Títulos e Val. Mob.", .1, .9, 1e4)}
     p = pares_fii(todos, "HGCR11.SA")
     assert list(p["papel"]) == ["KNCR11", "HGCR11"]
+
+
+def test_sinais_dos_indicadores():
+    from carteira_analise.raio_x import sinal, sinal_pl, LIMIARES_FII
+    assert sinal("roe", 0.247) == "bom" and sinal("roe", 0.05) is None and sinal("roe", -0.02) == "ruim"
+    assert sinal("divida_bruta_patrimonio", 1.32) is None and sinal("divida_bruta_patrimonio", 2.0) == "ruim"
+    assert sinal("divida_bruta_patrimonio", 0.0) is None  # banco
+    assert sinal("liquidez_corrente", 0.8) == "ruim" and sinal("pvp", 1.0) == "bom"
+    assert sinal("pvp", 0.9, LIMIARES_FII) == "bom" and sinal("vacancia_media", 0.15, LIMIARES_FII) == "ruim"
+    assert sinal("ev_ebitda", 5.6) is None and sinal("roe", None) is None
+    assert sinal_pl(8.5, "em linha com o segmento (8,4)") is None
+    assert sinal_pl(6.1, "abaixo do segmento (7,6)") == "bom" and sinal_pl(45.8, "acima do setor") == "ruim"
+    assert sinal_pl(-3.0, None) == "ruim"

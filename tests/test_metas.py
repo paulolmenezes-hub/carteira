@@ -33,3 +33,19 @@ def test_texto_ida_e_volta():
     assert metas_de_texto(metas_para_texto(METAS)) == {c: float(METAS[c]) for c in CLASSES}
     assert metas_de_texto("50-30-10") is None and metas_de_texto("50-30-10-20") is None
     assert metas_de_texto(None) is None
+
+
+def test_limite_por_ativo():
+    from carteira_analise.metas import (LIMITES_PADRAO, limites_de_texto, limites_para_texto, pesos_dos_ativos,
+                                        situacao_peso)
+    assert limites_de_texto("10-0") == {"maximo": 10.0, "minimo": 0.0}
+    assert limites_de_texto("6-2.5") == {"maximo": 6.0, "minimo": 2.5}
+    assert limites_de_texto("5-8") is None and limites_de_texto("abc") is None and limites_de_texto(None) is None
+    assert limites_para_texto({"maximo": 6.0, "minimo": 2.5}) == "6-2.5"
+    s = situacao_peso(7200, 100000, {"maximo": 6, "minimo": 2})
+    assert s["situacao"] == "acima" and abs(s["diferenca"] - 1200) < 1e-9
+    s = situacao_peso(1100, 100000, {"maximo": 6, "minimo": 2})
+    assert s["situacao"] == "abaixo" and abs(s["diferenca"] - 900) < 1e-9
+    assert situacao_peso(1100, 100000, LIMITES_PADRAO)["situacao"] == "dentro"  # mínimo 0 = desligado
+    p = pesos_dos_ativos({"A": 30.0, "B": 70.0, "C": 0.0}, {"maximo": 50, "minimo": 0})
+    assert [l["ticker"] for l in p] == ["B", "A"] and p[0]["situacao"] == "acima"
