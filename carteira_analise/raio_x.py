@@ -119,3 +119,44 @@ def pares_fii(todos: dict | None, ticker: str, maximo: int = MAXIMO_PARES) -> pd
     if not escolhidos["proprio"].any():
         escolhidos = pd.concat([escolhidos.head(maximo - 1), t[t["proprio"]]])
     return escolhidos.reset_index(drop=True) if len(escolhidos) > 1 else None
+
+
+# Sinal de leitura dos indicadores no cabeçalho do Raio-X: "bom" (azul),
+# "ruim" (vermelho) ou None (preto: neutro ou sem referência). Os limiares são
+# os do motor de pontuação (pontuacao.py) e do Guia de Indicadores; não é
+# recomendação, só a leitura de cada número isolado.
+LIMIARES_ACAO = {
+    # nome: (sentido, limiar bom, limiar ruim)
+    "pvp": ("menor", 1.5, 4.0),
+    "roe": ("maior", 0.12, 0.0),
+    "roic": ("maior", 0.15, 0.0),
+    "margem_liquida": ("maior", 0.10, 0.0),
+    "divida_bruta_patrimonio": ("menor", 0.5, 1.5),
+    "liquidez_corrente": ("maior", 1.5, 1.0),
+    "crescimento_receita_5a": ("maior", 0.0, 0.0),
+}
+LIMIARES_FII = {
+    "pvp": ("menor", 1.0, 1.2),
+    "vacancia_media": ("menor", 0.05, 0.10),
+}
+_ZERO_E_AUSENTE = {"divida_bruta_patrimonio", "liquidez_corrente"}  # bancos: o Fundamentus mostra "-"
+
+
+def sinal(nome: str, valor, limiares: dict = LIMIARES_ACAO) -> str | None:
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)) or nome not in limiares:
+        return None
+    if nome in _ZERO_E_AUSENTE and valor == 0:
+        return None
+    sentido, bom, ruim = limiares[nome]
+    if sentido == "menor":
+        return "bom" if valor < bom else "ruim" if valor > ruim else None
+    return "bom" if valor > bom else "ruim" if valor < ruim else None
+
+
+def sinal_pl(pl, leitura: str | None) -> str | None:
+    """P/L: prejuízo é ruim; com lucro, vale a comparação com a referência
+    (segmento, setor ou bolsa): abaixo = bom, acima = ruim."""
+    if pl is not None and not pd.isna(pl) and pl <= 0:
+        return "ruim"
+    txt = (leitura or "").lower()
+    return "bom" if txt.startswith("abaixo") else "ruim" if txt.startswith("acima") else None
