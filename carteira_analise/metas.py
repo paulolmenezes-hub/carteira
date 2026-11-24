@@ -112,7 +112,7 @@ def metas_e_limites(linhas: list[dict], valores_por_classe: dict[str, list[float
     ``linhas``: saída de ``comparar``; ``valores_por_classe``: classe -> valores
     (R$) dos ativos dela. Por classe: n ativos, quantos acima do limite,
     espaço até o limite (quanto ainda cabe nos ativos atuais sem nenhum passar
-    do máximo) e a leitura: "acima_da_meta", "sem_ativos", "cabe" ou
+    do máximo) e a leitura: "na_meta" (dentro da tolerância), "acima_da_meta", "sem_ativos", "cabe" ou
     "nao_cabe" (com quanto falta de espaço). Também devolve os avisos de
     metas e limites que não fecham (texto)."""
     total = sum(v for vs in valores_por_classe.values() for v in vs)
@@ -125,7 +125,9 @@ def metas_e_limites(linhas: list[dict], valores_por_classe: dict[str, list[float
         n = len(vs)
         espaco = sum(max(teto_r - v, 0.0) for v in vs)
         falta = l["falta"]
-        if falta < 1:
+        if l.get("na_meta"):
+            leitura = "na_meta"
+        elif falta < 1:
             leitura = "acima_da_meta"
         elif n == 0:
             leitura = "sem_ativos"
