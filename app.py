@@ -52,9 +52,10 @@ from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.tabela_indicadores import montar_tabelas
 from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_por_ano, proximo_provento, risco_12m,
-                                     selecionar_pares)
+                                     selecionar_pares, sinal, sinal_pl, LIMIARES_FII)
 from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
-                                    dividir_aporte, metas_de_texto, metas_para_texto)
+                                    dividir_aporte, metas_de_texto, metas_para_texto, LIMITES_PADRAO,
+                                    limites_de_texto, limites_para_texto, pesos_dos_ativos)
 from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, por_ano,
                                           rentabilidade_cotas, resultado_em_reais, resumo_periodo, somar,
                                           tir_anual)
@@ -645,9 +646,9 @@ def _renderizar_dashboard_agrupado(linhas_dashboard: list) -> None:
 
 
 st.title("📊 Análise de Carteira — Ações, FIIs e ETFs")
-tab_guia, tab_carteira, tab_visao, tab_dashboard, tab_ativo, tab_metas, tab_ir = st.tabs([
-    "📖 Guia de Indicadores", "📂 Carteira", "🧭 Visão geral", "💼 Dashboard da Carteira", "🔍 Raio-X do ativo",
-    "🎯 Metas", "🧾 Proventos e IR",
+tab_carteira, tab_visao, tab_dashboard, tab_ativo, tab_metas, tab_ir, tab_guia = st.tabs([
+    "📂 Carteira", "🧭 Visão geral", "💼 Dashboard da Carteira", "🔍 Raio-X do ativo", "🎯 Metas",
+    "🧾 Proventos e IR", "📖 Guia de Indicadores",
 ])
 
 with tab_carteira:
@@ -1667,7 +1668,13 @@ def _renderizar_tabela_indicadores(cenarios) -> None:
     tabelas = montar_tabelas(cards, fundamentos, st.session_state.get("carteira_dividendos") or {}, hoje)
     if not tabelas:
         return
-    st.caption("Uma linha por posição aberta; clique no cabeçalho para ordenar. Marque até 4 linhas (inclusive de abas "
+    pesos = _pesos_atuais()
+    if pesos:  # coluna "Peso (%)" logo depois da faixa, em vermelho acima do limite
+        for df in tabelas.values():
+            df.insert(list(df.columns).index("Faixa") + 1 if "Faixa" in df.columns else 1, "Peso (%)",
+                      [pesos[t]["peso"] if t in pesos else None for t in df.index])
+    st.caption("Uma linha por posição aberta. **Para ordenar, clique no título da coluna** (clique de novo para "
+               "inverter). Marque até 4 linhas (inclusive de abas "
                "diferentes) para ver os cards lado a lado e comparar. Números iguais aos dos cards. Preço × teto "
                "negativo = preço abaixo do preço-teto. Meses: os da data-com dos proventos nos últimos 24 meses.")
     abas = st.tabs([f"{g} ({len(df)})" for g, df in tabelas.items()])
@@ -1686,8 +1693,14 @@ def _renderizar_tabela_indicadores(cenarios) -> None:
         formatos = {c: numero_br(casas.get(c, 1)) for c in numericas if c not in _COLUNAS_DINHEIRO}
         formatos.update({c: (lambda v, m=moeda: formatar_valor(v, m) if pd.notna(v) else "—")
                          for c in _COLUNAS_DINHEIRO if c in df.columns})
-        return (df.style.set_properties(**{"background-color": "#ffffff", "color": "#111827"})
+        # negativos em vermelho; "Preço × teto" fica de fora: lá negativo é preço ABAIXO do teto
+        negativas = [c for c in numericas if c not in ("Preço × teto (%)",)]
+        return (df.style.set_properties(**{"background-color": "#ffffff", "color": "#000000"})
+                .map(lambda v: "color:#b91c1c" if isinstance(v, (int, float)) and pd.notna(v) and v < 0 else "",
+                     subset=negativas)
                 .map(estilo_faixa, subset=["Faixa"])
+                .apply(lambda col: ["color:#b91c1c;font-weight:600" if pesos.get(t, {}).get("situacao") == "acima"
+                                    else "" for t in col.index], subset=[c for c in ("Peso (%)",) if c in df.columns])
                 .format(formatos))
 
     selecionados = []
@@ -2157,21 +2170,35 @@ def _tabela_html(cabecalho: list[str], linhas_tab: list[list[str]]) -> str:
     return f"<table style='width:100%;border-collapse:collapse'><tr>{cab}</tr>{corpo}</table>"
 
 
-def _grupos_html(grupos: list[tuple[str, list[tuple[str, str, str]]]]) -> str:
-    """Blocos lado a lado (título + linhas "rótulo ... valor", com nota opcional embaixo)."""
+_COR_SINAL = {"bom": "#1d4ed8", "ruim": "#b91c1c"}
+
+
+def _grupos_html(grupos: list[tuple[str, list[tuple]]], legenda: bool = False) -> str:
+    """Blocos lado a lado (título + linhas "rótulo ... valor", com nota
+    opcional embaixo). Cada item: (rótulo, valor, nota[, sinal]); sinal
+    "bom" pinta o valor de azul, "ruim" de vermelho."""
     blocos = []
     for titulo, itens in grupos:
-        linhas = "".join(
-            "<div style='display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #f1f5f9'>"
-            f"<span style='color:#4b5563;font-size:.84em'>{r}</span>"
-            f"<span style='text-align:right'><b style='font-size:.92em'>{v}</b>"
-            + (f"<div style='font-size:.72em;color:#6b7280'>{n}</div>" if n else "") + "</span></div>"
-            for r, v, n in itens)
+        linhas = ""
+        for item in itens:
+            r, v, n = item[:3]
+            cor = _COR_SINAL.get(item[3] if len(item) > 3 else None, "#111827")
+            linhas += ("<div style='display:flex;justify-content:space-between;gap:10px;padding:5px 0;"
+                       "border-bottom:1px solid #f1f5f9'>"
+                       f"<span style='color:#4b5563;font-size:.84em'>{r}</span>"
+                       f"<span style='text-align:right'><b style='font-size:.92em;color:{cor}'>{v}</b>"
+                       + (f"<div style='font-size:.72em;color:#6b7280'>{n}</div>" if n else "") + "</span></div>")
         blocos.append("<div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:8px 12px'>"
                       f"<div style='font-size:.78em;font-weight:700;color:#1e3a8a;text-transform:uppercase;"
                       f"letter-spacing:.04em;margin-bottom:2px'>{titulo}</div>{linhas}</div>")
-    return ("<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px'>"
-            + "".join(blocos) + "</div>")
+    saida = ("<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px'>"
+             + "".join(blocos) + "</div>")
+    if legenda:
+        saida += ("<div style='font-size:.72em;color:#4b5563;margin-top:6px'>"
+                  f"<b style='color:{_COR_SINAL['bom']}'>azul</b>: leitura favorável · "
+                  f"<b style='color:{_COR_SINAL['ruim']}'>vermelho</b>: ponto de atenção · preto: neutro ou sem "
+                  "referência. Limiares do Guia de Indicadores, olhando cada número isolado; não é recomendação.</div>")
+    return saida
 
 
 def _caixa_branca(titulo: str, corpo: str) -> str:
@@ -2555,21 +2582,99 @@ with tab_visao:
 # =============================================================================
 # ABA — Metas de alocação
 # =============================================================================
-def _valores_por_classe(dados: dict) -> dict[str, float]:
-    """Patrimônio de hoje (último mês) por classe de meta, em reais."""
-    valores = {c: 0.0 for c in CLASSES_META}
+def _valores_por_ativo(dados: dict) -> dict[str, float]:
+    """Patrimônio de hoje (último mês) de cada ativo, em reais (EUA pelo dólar)."""
+    valores = {}
     cambio = dados.get("cambio")
     for t, df in dados["linhas"].items():
         v = float(df["patrimonio"].iloc[-1])
         if v <= 0:
             continue
-        m = dados["meta"][t]
-        if m["mercado"] == "EUA":
+        if dados["meta"][t]["mercado"] == "EUA":
             if cambio is None or not len(cambio):
                 continue
             v *= float(cambio.reindex(df.index).ffill().bfill().iloc[-1])
+        valores[t] = v
+    return valores
+
+
+def _valores_por_classe(dados: dict) -> dict[str, float]:
+    """Patrimônio de hoje (último mês) por classe de meta, em reais."""
+    valores = {c: 0.0 for c in CLASSES_META}
+    for t, v in _valores_por_ativo(dados).items():
+        m = dados["meta"][t]
         valores[classe_do_ativo(m["mercado"], m["tipo"])] += v
     return valores
+
+
+def _limites_salvos() -> dict[str, float]:
+    return limites_de_texto(st.query_params.get("limites")) or dict(LIMITES_PADRAO)
+
+
+def _pesos_atuais() -> dict[str, dict]:
+    """ticker -> {peso, situacao, diferenca, valor}, com os limites salvos.
+    Vazio se a carteira de hoje ainda não foi montada."""
+    dados = st.session_state.get("visao_geral_dados")
+    if not dados:
+        return {}
+    try:
+        return {l["ticker"]: l for l in pesos_dos_ativos(_valores_por_ativo(dados), _limites_salvos())}
+    except Exception:
+        return {}
+
+
+def _renderizar_limites(dados: dict) -> None:
+    st.markdown("#### ⚖️ Limite por ativo")
+    st.caption("Peso máximo de cada ativo na carteira e, se quiser, o mínimo para a posição valer a pena. O painel "
+               "aponta quem passou do limite; não sugere compra nem venda. Fica guardado no endereço da página.")
+    salvos = _limites_salvos()
+    c1, c2, _ = st.columns([1, 1, 2])
+    maximo = c1.number_input("Peso máximo por ativo (%)", min_value=1.0, max_value=100.0, value=float(salvos["maximo"]),
+                             step=1.0, format="%.0f", key="limite_max")
+    minimo = c2.number_input("Peso mínimo (%) · 0 = sem mínimo", min_value=0.0, max_value=50.0,
+                             value=float(salvos["minimo"]), step=0.5, format="%.1f", key="limite_min")
+    if minimo >= maximo:
+        st.warning("O mínimo precisa ser menor que o máximo.")
+        return
+    limites = {"maximo": maximo, "minimo": minimo}
+    st.query_params["limites"] = limites_para_texto(limites)
+    linhas = pesos_dos_ativos(_valores_por_ativo(dados), limites)
+    if not linhas:
+        return
+    fv = lambda v: formatar_valor(v, "R$")
+    pct = lambda v: f"{v:.1f}%".replace(".", ",")
+    acima = [l for l in linhas if l["situacao"] == "acima"]
+    abaixo = [l for l in linhas if l["situacao"] == "abaixo"]
+    maior = linhas[0]
+    plural = lambda n: f"{n} ativo{'s' if n != 1 else ''}"
+    st.html("<div style='display:flex;gap:8px;flex-wrap:wrap'>"
+            + _kpi_vg("Acima do limite", plural(len(acima)), f"peso maior que {maximo:g}%")
+            + _kpi_vg("Abaixo do mínimo", plural(len(abaixo)) if minimo else "—",
+                      f"peso menor que {pct(minimo)}" if minimo else "sem mínimo definido")
+            + _kpi_vg("Maior peso", f"{maior['ticker'].replace('.SA', '')} · {pct(maior['peso'])}", fv(maior["valor"]))
+            + "</div>")
+    escala = max(1.5, max(l["peso"] for l in linhas) / maximo)  # barra: o traço marca o limite
+    largura = 160
+    cores = {"acima": "#b91c1c", "abaixo": "#d9831c", "dentro": "#0f7f73"}
+    tab = []
+    for l in linhas:
+        cor = cores[l["situacao"]]
+        sit = {"acima": f"acima do limite · {fv(l['diferenca'])} além dos {maximo:g}%",
+               "abaixo": f"abaixo do mínimo · faltam {fv(l['diferenca'])}",
+               "dentro": "dentro dos limites"}[l["situacao"]]
+        barra = (f"<div style='position:relative;background:#eef2f7;border-radius:6px;height:8px;width:{largura}px'>"
+                 f"<div style='width:{min(l['peso'] / maximo / escala, 1) * largura:.0f}px;height:8px;border-radius:6px;"
+                 f"background:{cor}'></div><div style='position:absolute;left:{largura / escala:.0f}px;top:-3px;"
+                 f"width:2px;height:14px;background:#111827'></div></div>")
+        m = dados["meta"][l["ticker"]]
+        tab.append([f"<b>{html.escape(l['ticker'].replace('.SA', ''))}</b>", classe_do_ativo(m["mercado"], m["tipo"]),
+                    pct(l["peso"]), fv(l["valor"]), barra, f"<span style='color:{cor};font-weight:600'>{sit}</span>"])
+    st.html(_caixa_branca("Peso de cada ativo (posições abertas)",
+                          _tabela_html(["Ativo", "Classe", "Peso", "Valor", f"Peso × limite (traço = {maximo:g}%)",
+                                        "Situação"], tab)))
+    if acima:
+        st.caption("Ao simular um aporte acima, lembre que " + ", ".join(l["ticker"].replace(".SA", "") for l in acima)
+                   + (" já está" if len(acima) == 1 else " já estão") + " acima do seu limite.")
 
 
 def _renderizar_metas(dados: dict) -> None:
@@ -2647,6 +2752,7 @@ with tab_metas:
                 st.session_state["visao_geral_dados"] = dados_m
             if dados_m:
                 _renderizar_metas(dados_m)
+                _renderizar_limites(dados_m)
         except Exception as e:
             st.error(f"Não foi possível montar as metas ({e}).")
 
@@ -2854,7 +2960,12 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
     nota_teto = ""
     if pt.get("teto"):
         nota_teto = f"preço {_pct_txt(abs(preco / pt['teto'] - 1), 0)} {'abaixo' if preco <= pt['teto'] else 'acima'}"
-    proventos_g = ("Proventos", [("DY 12 meses", _pct_txt(col("DY 12m (%)") / 100) if col("DY 12m (%)") is not None else "—", ""),
+    dy_nivel = next((i.get("nivel") for i in ctx.get("indicadores") or []
+                     if str(i.get("nome", "")).startswith(("Dividend", "Yield"))), None)
+    sinal_dy = {"bom": "bom", "atencao": "ruim"}.get(dy_nivel)
+    sinal_reg = {"Regular": "bom", "Irregular": "ruim"}.get(str(col("Dividendos")))
+    proventos_g = ("Proventos", [("DY 12 meses", _pct_txt(col("DY 12m (%)") / 100) if col("DY 12m (%)") is not None else "—",
+                                  "", sinal_dy),
                                  ("Meses de data-com", txt(col("Meses (data-com)")), "")])
     grupos = []
     if eh_fii:
@@ -2864,35 +2975,44 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
         except Exception:
             pass
         pa = ctx.get("preco_atrativo") or {}
-        grupos.append(("Preço", [("P/VP", _num_txt(col("P/VP"), 2), ""),
+        grupos.append(("Preço", [("P/VP", _num_txt(col("P/VP"), 2), "", sinal("pvp", col("P/VP"), LIMIARES_FII)),
                                  ("P/VP médio 24 meses", _num_txt(col("P/VP médio 24m"), 2), ""),
-                                 ("Preço atrativo?", txt(col("Preço atrativo?")), "")]))
+                                 ("Preço atrativo?", txt(col("Preço atrativo?")), "",
+                                  {"forte": "bom", "sim": "bom", "nao": "ruim"}.get(pa.get("nivel")))]))
         grupos.append(("O fundo", [
             ("Tipo", ("Tijolo" if (ff.qtd_imoveis or 0) > 0 else "Papel (recebíveis)") if ff else "—", ""),
             ("Segmento", html.escape(txt(col("Segmento"))), ""),
             ("Valor de mercado", _mi_txt(getattr(ff, "valor_mercado", None)), ""),
             ("Liquidez diária", _mi_txt(getattr(ff, "liquidez", None)), ""),
             ("Imóveis", str(ff.qtd_imoveis) if ff and ff.qtd_imoveis else "—", ""),
-            ("Vacância média", _pct_txt(getattr(ff, "vacancia_media", None)), ""),
+            ("Vacância média", _pct_txt(getattr(ff, "vacancia_media", None)), "",
+             sinal("vacancia_media", getattr(ff, "vacancia_media", None), LIMIARES_FII)),
             ("Cap rate", _pct_txt(getattr(ff, "cap_rate", None)), "")]))
         nome_g, itens_g = proventos_g
         grupos.append((nome_g, [itens_g[0], ("Yield × média 24 meses",
                                              f"{_pct_txt(pa.get('yield'))} · {_pct_txt(pa.get('yield_medio_24m'))}", ""),
                                 itens_g[1]]))
     elif b3 and tipo == "acao":
-        grupos.append(("Preço", [("P/L", _num_txt(col("P/L")), txt(col("P/L × referência")) if col("P/L × referência") else ""),
-                                 ("P/VP", _num_txt(col("P/VP"), 2), ""),
+        grupos.append(("Preço", [("P/L", _num_txt(col("P/L")), txt(col("P/L × referência")) if col("P/L × referência") else "",
+                                  sinal_pl(col("P/L"), col("P/L × referência"))),
+                                 ("P/VP", _num_txt(col("P/VP"), 2), "", sinal("pvp", col("P/VP"))),
                                  ("EV/EBITDA", _num_txt(fund.get("ev_ebitda") or None), ""),
-                                 ("Preço-teto (Bazin)", fv(pt.get("teto")), nota_teto),
+                                 ("Preço-teto (Bazin)", fv(pt.get("teto")), nota_teto,
+                                  ("bom" if preco <= pt["teto"] else "ruim") if pt.get("teto") else None),
                                  ("Teto pela média 5 anos", fv(pt.get("teto_5a")), "")]))
         grupos.append(("Rentabilidade e saúde", [
-            ("ROE", _pct_txt(fund.get("roe")), ""), ("ROIC", _pct_txt(fund.get("roic") or None), ""),
-            ("Margem líquida", _pct_txt(getattr(fa, "margem_liquida", None)), ""),
-            ("Receita em 5 anos", _pct_txt(getattr(fa, "crescimento_receita_5a", None), 1, True), "ao ano"),
-            ("Dívida bruta / patrimônio", _num_txt(getattr(fa, "divida_bruta_patrimonio", None), 2), ""),
-            ("Liquidez corrente", _num_txt(getattr(fa, "liquidez_corrente", None), 2), "")]))
+            ("ROE", _pct_txt(fund.get("roe")), "", sinal("roe", fund.get("roe"))),
+            ("ROIC", _pct_txt(fund.get("roic") or None), "", sinal("roic", fund.get("roic") or None)),
+            ("Margem líquida", _pct_txt(getattr(fa, "margem_liquida", None)), "",
+             sinal("margem_liquida", getattr(fa, "margem_liquida", None))),
+            ("Receita em 5 anos", _pct_txt(getattr(fa, "crescimento_receita_5a", None), 1, True), "ao ano",
+             sinal("crescimento_receita_5a", getattr(fa, "crescimento_receita_5a", None))),
+            ("Dívida bruta / patrimônio", _num_txt(getattr(fa, "divida_bruta_patrimonio", None), 2), "",
+             sinal("divida_bruta_patrimonio", getattr(fa, "divida_bruta_patrimonio", None))),
+            ("Liquidez corrente", _num_txt(getattr(fa, "liquidez_corrente", None), 2), "",
+             sinal("liquidez_corrente", getattr(fa, "liquidez_corrente", None)))]))
         nome_g, itens_g = proventos_g
-        grupos.append((nome_g, [itens_g[0], ("Regularidade", txt(col("Dividendos")), ""), itens_g[1]]))
+        grupos.append((nome_g, [itens_g[0], ("Regularidade", txt(col("Dividendos")), "", sinal_reg), itens_g[1]]))
     elif df_l is not None:  # ETFs e EUA: o que a tabela do Dashboard tiver
         fora = ("Ativo", "Preço", "Variação s/ PM (%)", "Faixa", "DY 12m (%)", "Meses (data-com)")
         itens = []
@@ -2902,7 +3022,7 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
             v = col(c)
             itens.append((c.replace(" (%)", ""), _num_txt(v, 2 if "P/VP" in c else 1) if isinstance(v, (int, float)) else txt(v), ""))
         grupos += [("Indicadores", itens), proventos_g]
-    linha_html = _grupos_html(grupos)
+    linha_html = _grupos_html(grupos, legenda=bool(grupos))
 
     sit = (card or {}).get("situacao")
     cores_fx = {"realizacao": ("📈 Faixa de realização", "#2f45e0"), "queda": ("📉 Faixa de queda", "#d9831c"),
@@ -2916,13 +3036,24 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
     else:
         selo_fx = ""
     var_pm = f"{_pct_txt(card['variacao'], 1, True)} sobre o seu preço médio" if card else "fora da sua carteira"
+    peso = _pesos_atuais().get(ticker) if card else None
+    selo_peso = ""
+    if peso:
+        lim = _limites_salvos()
+        acima = peso["situacao"] == "acima"
+        selo_peso = (f"<div style='margin-top:4px'><span style='background:{'#fee2e2' if acima else '#f3f4f6'};"
+                     f"color:{'#b91c1c' if acima else '#374151'};border-radius:999px;padding:3px 10px;font-size:.78em;"
+                     f"font-weight:600'>⚖️ peso {_num_txt(peso['peso'], 1)}%"
+                     + (f" · acima do seu limite de {lim['maximo']:g}%" if acima else
+                        f" · abaixo do seu mínimo de {_num_txt(lim['minimo'], 1)}%" if peso["situacao"] == "abaixo" else
+                        f" · limite {lim['maximo']:g}%") + "</span></div>")
     st.html(f"<div style='background:#fff;color:#111827;border-radius:12px;padding:12px 14px'>"
             f"<div style='display:flex;justify-content:space-between;align-items:center;gap:10px'>"
             f"<div><span style='font-size:1.45em;font-weight:800'>{html.escape(papel)}</span> "
             f"<span style='color:#4b5563'>{html.escape(nome)}</span>"
             f"<div style='font-size:.82em;color:#6b7280'>{html.escape(classe)}{(' · ' + html.escape(setor)) if setor else ''}</div></div>"
             f"<div style='text-align:right'><div style='font-size:1.45em;font-weight:800'>{fv(preco)}</div>"
-            f"<div style='font-size:.82em;color:#4b5563'>{var_pm}</div><div style='margin-top:4px'>{selo_fx}</div></div></div>"
+            f"<div style='font-size:.82em;color:#4b5563'>{var_pm}</div><div style='margin-top:4px'>{selo_fx}</div>{selo_peso}</div></div>"
             f"<div style='margin-top:8px'>{linha_html}</div></div>")
 
     # preço
