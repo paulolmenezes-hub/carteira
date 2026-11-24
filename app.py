@@ -2736,7 +2736,8 @@ def _renderizar_metas(dados: dict) -> None:
         k = cap[l["classe"]]
         ativos_txt = (f"{k['n']}" + (f" · <span style='color:#b91c1c'>{k['acima']} acima</span>" if k["acima"] else "")
                       if k["n"] else "—")
-        leitura = {"acima_da_meta": "<span style='color:#4b5563'>classe acima da meta</span>",
+        leitura = {"na_meta": f"<span style='color:#0f7f73'>na meta (±{TOLERANCIA_PP:g} p.p.)</span>",
+                   "acima_da_meta": "<span style='color:#4b5563'>classe acima da meta</span>",
                    "sem_ativos": "<span style='color:#d9831c;font-weight:600'>sem ativos na classe</span>",
                    "cabe": "<span style='color:#0f7f73;font-weight:600'>cabe nos ativos atuais</span>",
                    "nao_cabe": f"<span style='color:#d9831c;font-weight:600'>não cabe: faltam {fv(k['falta_espaco'])} "
