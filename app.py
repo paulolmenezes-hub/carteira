@@ -51,7 +51,7 @@ from carteira_analise.fundamentalistas import classificar_fii, motivo_classifica
 from carteira_analise.oportunidades import BAZIN_YIELD, preco_teto_bazin
 from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.tabela_indicadores import montar_tabelas
-from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_por_ano, proximo_provento, risco_12m,
+from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_por_ano, proximo_provento, risco_12m, tendencia_rompida,
                                      selecionar_pares, sinal, sinal_pl, LIMIARES_FII)
 from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
                                     dividir_aporte, metas_de_texto, metas_para_texto, LIMITES_PADRAO,
@@ -1457,6 +1457,26 @@ def _html_movimento_brusco(mov: dict | None, moeda: str) -> str:
             "ainda não ajustado pela fonte; confira antes de usar os cenários.</div>")
 
 
+def _html_tendencia(t: dict | None, compacto: bool = False) -> str:
+    """Aviso de tendência de médio prazo rompida (raio_x.tendencia_rompida)."""
+    if not t:
+        return ""
+    partes = []
+    if t.get("abaixo_desde") is not None and t["pregoes_abaixo"] >= 20:
+        partes.append(f"preço abaixo da média de 200 dias desde {pd.Timestamp(t['abaixo_desde']):%d/%m/%Y} "
+                      f"({t['pregoes_abaixo']} pregões; hoje {abs(t['distancia']) * 100:.0f}% abaixo dela)")
+    if t.get("cruzamento") is not None:
+        partes.append(f"média de 50 dias cruzou para baixo da de 200 em {pd.Timestamp(t['cruzamento']):%d/%m/%Y}")
+    if not partes:
+        return ""
+    texto = "; ".join(partes)
+    return ("<div style='margin-top:10px;padding:8px 10px;background:#ffffff;color:#374151;"
+            "border-left:5px solid #64748b;border-radius:8px;font-size:.8em;line-height:1.4'>"
+            f"<b>📉 Tendência de médio prazo rompida</b>: {texto}."
+            + ("" if compacto else " Aviso para reavaliar a posição com as suas regras; não é sinal de venda.")
+            + "</div>")
+
+
 def _html_alertas_compras(alertas: dict | None, moeda: str = "R$") -> str:
     """Compras fora da regra: uma linha curta por compra e a regra uma vez só."""
     if not alertas or not alertas.get("compras"):
@@ -1486,6 +1506,7 @@ def _html_card_cenario(card: dict) -> str:
         _html_caixas_posicao(card),
     ]
     partes.append(_html_movimento_brusco(card.get("movimento_brusco"), moeda))
+    partes.append(_html_tendencia(card.get("tendencia"), compacto=True))
     # Evento societário não lançado: o preço médio do card fica errado, então o
     # aviso vem logo abaixo dos preços, em destaque (fundo branco, texto vermelho).
     for aviso in card.get("alertas_evento", []):
@@ -2875,7 +2896,8 @@ def _ops_do_ticker(ticker: str) -> list[dict]:
 _COR_MAXIMA, _COR_MINIMA = "#1d4ed8", "#b91c1c"
 
 
-def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto=None, ops=None, f12=None):
+def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto=None, ops=None, f12=None,
+                    tendencia=None):
     s = historico.dropna()
     idx = pd.DatetimeIndex(s.index)
     s.index = idx.tz_localize(None) if idx.tz is not None else idx
@@ -2921,6 +2943,22 @@ def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto
                                 legend=None),
                 tooltip=[alt.Tooltip("Data:T", format="%d/%m/%Y"), "op:N", alt.Tooltip("qtd:Q", title="quantidade"),
                          alt.Tooltip("preço:Q", format=",.2f")]))
+    if tendencia:  # linha vertical no dia em que a tendência rompeu (o mesmo do aviso acima do gráfico)
+        marcos = []
+        if tendencia.get("abaixo_desde") is not None and tendencia.get("pregoes_abaixo", 0) >= 20:
+            marcos.append((pd.Timestamp(tendencia["abaixo_desde"]), "Abaixo da média de 200 dias"))
+        if tendencia.get("cruzamento") is not None:
+            marcos.append((pd.Timestamp(tendencia["cruzamento"]), "Média de 50 cruzou a de 200"))
+        marcos = [(d.tz_localize(None) if d.tz is not None else d, t) for d, t in marcos]
+        marcos = [(d, t) for d, t in marcos if d >= s.index[0]]
+        if marcos:
+            df_m = pd.DataFrame({"Data": [d for d, _ in marcos], "t": [t for _, t in marcos],
+                                 "y": [float(s.max())] * len(marcos)})
+            camadas.append(alt.Chart(df_m).mark_rule(color="#64748b", strokeDash=[4, 3], strokeWidth=1.4).encode(
+                x="Data:T", tooltip=[alt.Tooltip("t:N", title="Tendência rompida"),
+                                     alt.Tooltip("Data:T", format="%d/%m/%Y")]))
+            camadas.append(alt.Chart(df_m).mark_text(align="left", dx=4, dy=-4, fontSize=10, color="#475569").encode(
+                x="Data:T", y="y:Q", text=alt.value("📉 tendência rompida")))
     if f12:  # máxima (azul) e mínima (vermelha) dos 12 meses, as mesmas dos boxes abaixo
         pontos = []
         for nome, chave_d, chave_v, cor in (("Máxima 12 meses", "data_maxima", "maxima", _COR_MAXIMA),
@@ -3106,13 +3144,17 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
             f"<div style='font-size:.82em;color:#4b5563'>{var_pm}</div><div style='margin-top:4px'>{selo_fx}</div>{selo_peso}</div></div>"
             f"<div style='margin-top:8px'>{linha_html}</div></div>")
 
+    tendencia = tendencia_rompida(historico)
+    st.html(_html_tendencia(tendencia))
+
     # preço
     risco = risco_12m(historico)
     with st.container(key="vgc_rx_preco"):
         _titulo_cartao(f"Preço — {OPCOES_PERIODO.get(st.session_state.get('individual_periodo'), '')}")
         st.altair_chart(_claro(_grafico_raio_x(historico, moeda, pm=card.get("preco_medio") if card else None,
                                                faixas=card.get("faixas") if card else None, teto=pt.get("teto"),
-                                               ops=_ops_do_ticker(ticker) if card else None, f12=f12)),
+                                               ops=_ops_do_ticker(ticker) if card else None, f12=f12,
+                                               tendencia=tendencia)),
                         width="stretch")
         f12 = f12 or {}
         dt = lambda d: pd.Timestamp(d).strftime("%d/%m/%Y") if d is not None and not pd.isna(d) else ""
