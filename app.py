@@ -3506,7 +3506,53 @@ with tab_guia:
         "limiares abaixo são os mesmos usados de verdade no motor de pontuação)."
     )
 
-    with st.expander("📈 Indicadores técnicos (todos os tipos de ativo)", expanded=True):
+    with st.expander("🗺️ O processo do painel: o que, quando e quanto", expanded=True):
+        st.markdown(
+            "O painel organiza as perguntas de quem investe por conta própria. Ele informa; a decisão é sua.\n\n"
+            "| Pergunta | Onde ver |\n"
+            "|---|---|\n"
+            "| **O que** tenho e como está cada ativo? | 💼 Dashboard (tabela de indicadores e cards) e 🔍 Raio-X do ativo |\n"
+            "| **Quando** reavaliar uma posição? | Faixas de preço sobre o seu preço médio (Dashboard e Raio-X) e "
+            "avisos de tendência (Raio-X e cards) |\n"
+            "| **Quanto** ter de cada classe e de cada ativo? | 🎯 Metas: percentual por classe e limite por ativo |\n"
+            "| Como a carteira **evoluiu**? | 🧭 Visão geral: patrimônio, rentabilidade × CDI, proventos |\n"
+            "| O que **declarar**? | 🧾 Proventos e IR: dividendos, JCP e rendimentos por ano de pagamento |\n\n"
+            "Defina as regras antes (metas, limites e faixas) e use o painel para ver quando a carteira se "
+            "afasta delas."
+        )
+
+    with st.expander("🧭 Visão geral: rentabilidade, TIR e CDI"):
+        st.markdown(
+            "**Rentabilidade (método das cotas)**: o ganho de cada mês sobre o dinheiro empregado nele, "
+            "encadeado mês a mês. Aportes e vendas não contam como ganho, por isso dá para comparar com o "
+            "CDI e com outros fundos.\n\n"
+            "**% do CDI**: rentabilidade da carteira dividida pelo CDI do mesmo período. 100% = rendeu igual ao "
+            "CDI.\n\n"
+            "**TIR (taxa interna de retorno)**: a rentabilidade ao ano que leva em conta **quando** e **quanto** "
+            "você aportou ou vendeu. Pesa mais os meses com mais dinheiro investido; pode diferir da rentabilidade "
+            "das cotas.\n\n"
+            "**Resultado em R$**: patrimônio final − patrimônio inicial − aportes + vendas + proventos.\n\n"
+            "**Aportes**: compras do período. Bonificação não é aporte (não sai dinheiro). Posições encerradas "
+            "entram nos meses em que estavam abertas."
+        )
+
+    with st.expander("🎯 Metas e limite por ativo"):
+        st.markdown(
+            "**Meta por classe**: o percentual que você quer em Ações B3, FIIs, ETFs B3 e EUA. Diferença de até "
+            "2 pontos percentuais conta como **na meta**.\n\n"
+            "**Aporte simulado**: divide um valor só entre as classes abaixo da meta, na proporção do que falta "
+            "a cada uma. Não escolhe ativos.\n\n"
+            "**Limite por ativo**: peso máximo de cada ativo na carteira e, se quiser, um mínimo para a posição "
+            "valer a pena. Acima do máximo aparece em vermelho; abaixo do mínimo, em laranja.\n\n"
+            "**Espaço até o limite**: quanto ainda cabe nos ativos que você já tem sem nenhum passar do máximo. "
+            "Se for menor do que falta para a meta da classe, ela só fecha aumentando o limite, revendo a meta ou "
+            "com mais ativos.\n\n"
+            "**Metas e limites não fecham**: aviso quando a conta é impossível, por exemplo meta de 20% numa "
+            "classe com 2 ativos e limite de 6% (máximo possível: 12%).\n\n"
+            "Metas e limites ficam guardados no endereço da página; nada é gravado no servidor."
+        )
+
+    with st.expander("📈 Indicadores técnicos (todos os tipos de ativo)"):
         st.markdown(
             "**MM200 (Média Móvel de 200 dias)** — a média do preço nos últimos 200 "
             "pregões. Preço acima da MM200 costuma indicar tendência de alta no médio "
@@ -3525,7 +3571,42 @@ with tab_guia:
             "ficaram abaixo do piso, e 95% abaixo do topo. Não são o menor e o maior preço "
             "— por isso a cota pode ficar acima do topo usual sem ter batido um recorde; o "
             "maior e o menor preço dos últimos 12 meses aparecem na faixa de 12 meses do card. "
-            "Perto do piso pode ser oportunidade ou queda continuada; perto do topo, o oposto."
+            "Perto do piso pode ser oportunidade ou queda continuada; perto do topo, o oposto.\n\n"
+            "**Mínima, máxima e preço médio de 12 meses** (Raio-X): o menor e o maior fechamento do último ano, "
+            "com a data (bolinha vermelha e azul no gráfico), e a média dos fechamentos, comparada com o preço de "
+            "hoje.\n\n"
+            "**Maior queda em 12 meses**: a maior perda do topo ao fundo no período, com as datas.\n\n"
+            "**Volatilidade**: quanto o preço oscila por dia, convertido para o ano. Quanto maior, mais o preço "
+            "sobe e desce.\n\n"
+            "**Tendência de médio prazo** (Raio-X e cards):\n"
+            "- 📉 **rompida** (vermelho): preço fechando abaixo da MM200 há 20 pregões ou mais, ou MM50 cruzando "
+            "para baixo da MM200 nos últimos 60 pregões;\n"
+            "- 📈 **retomada** (azul): preço de volta acima da MM200 há 20 a 63 pregões, depois de pelo menos 20 "
+            "abaixo, ou MM50 cruzando para cima da MM200 nos últimos 60 pregões.\n\n"
+            "A linha vertical no gráfico marca o dia da virada. É aviso para reavaliar com as suas regras, não "
+            "sinal de compra ou venda."
+        )
+
+    with st.expander("🔍 Raio-X: cores dos indicadores"):
+        st.markdown(
+            "No cabeçalho do Raio-X, **azul** = leitura favorável, **vermelho** = ponto de atenção, preto = neutro "
+            "ou sem referência. Cada número é olhado isolado.\n\n"
+            "| Indicador | Azul | Vermelho |\n"
+            "|---|---|---|\n"
+            "| P/L | abaixo da referência (segmento, setor ou bolsa) | acima da referência ou prejuízo |\n"
+            "| P/VP (ações) | abaixo de 1,5 | acima de 4 |\n"
+            "| P/VP (FIIs) | abaixo de 1,0 | acima de 1,2 |\n"
+            "| ROE | acima de 12% | negativo |\n"
+            "| ROIC | acima de 15% | negativo |\n"
+            "| Margem líquida | acima de 10% | negativa |\n"
+            "| Receita em 5 anos | crescendo | caindo |\n"
+            "| Dívida bruta / patrimônio | abaixo de 0,5 | acima de 1,5 |\n"
+            "| Liquidez corrente | acima de 1,5 | abaixo de 1 |\n"
+            "| Preço-teto (Bazin) | preço abaixo do teto | preço acima do teto |\n"
+            "| Vacância (FIIs) | abaixo de 5% | acima de 10% |\n"
+            "| Regularidade dos proventos | Regular | Irregular |\n\n"
+            "**Comparação com os pares**: empresas ou FIIs do mesmo segmento no Fundamentus com liquidez de "
+            "R$ 1 milhão/dia ou mais, ordenados pela liquidez diária."
         )
 
     with st.expander("🏢 Indicadores fundamentalistas — Ações (B3 e EUA)"):
