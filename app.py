@@ -2872,7 +2872,10 @@ def _ops_do_ticker(ticker: str) -> list[dict]:
     return ops
 
 
-def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto=None, ops=None):
+_COR_MAXIMA, _COR_MINIMA = "#1d4ed8", "#b91c1c"
+
+
+def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto=None, ops=None, f12=None):
     s = historico.dropna()
     idx = pd.DatetimeIndex(s.index)
     s.index = idx.tz_localize(None) if idx.tz is not None else idx
@@ -2918,6 +2921,25 @@ def _grafico_raio_x(historico: pd.Series, moeda: str, pm=None, faixas=None, teto
                                 legend=None),
                 tooltip=[alt.Tooltip("Data:T", format="%d/%m/%Y"), "op:N", alt.Tooltip("qtd:Q", title="quantidade"),
                          alt.Tooltip("preço:Q", format=",.2f")]))
+    if f12:  # máxima (azul) e mínima (vermelha) dos 12 meses, as mesmas dos boxes abaixo
+        pontos = []
+        for nome, chave_d, chave_v, cor in (("Máxima 12 meses", "data_maxima", "maxima", _COR_MAXIMA),
+                                            ("Mínima 12 meses", "data_minima", "minima", _COR_MINIMA)):
+            d = f12.get(chave_d)
+            if d is None or pd.isna(d):
+                continue
+            d = pd.Timestamp(d).tz_localize(None) if pd.Timestamp(d).tz is not None else pd.Timestamp(d)
+            if d < s.index[0]:
+                continue
+            perto = s[s.index <= d]
+            y = float(perto.iloc[-1]) if len(perto) else float(f12[chave_v])
+            pontos.append({"Data": d, "y": y, "valor": float(f12[chave_v]), "nome": nome, "cor": cor})
+        if pontos:
+            camadas.append(alt.Chart(pd.DataFrame(pontos)).mark_circle(size=130, opacity=1, stroke="#ffffff",
+                                                                       strokeWidth=2).encode(
+                x="Data:T", y="y:Q", color=alt.Color("cor:N", scale=None),
+                tooltip=[alt.Tooltip("nome:N", title=""), alt.Tooltip("Data:T", format="%d/%m/%Y"),
+                         alt.Tooltip("valor:Q", format=",.2f", title=moeda)]))
     return alt.layer(*camadas).properties(height=320).resolve_scale(color="independent", shape="independent")
 
 
@@ -3090,7 +3112,8 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
         _titulo_cartao(f"Preço — {OPCOES_PERIODO.get(st.session_state.get('individual_periodo'), '')}")
         st.altair_chart(_claro(_grafico_raio_x(historico, moeda, pm=card.get("preco_medio") if card else None,
                                                faixas=card.get("faixas") if card else None, teto=pt.get("teto"),
-                                               ops=_ops_do_ticker(ticker) if card else None)), width="stretch")
+                                               ops=_ops_do_ticker(ticker) if card else None, f12=f12)),
+                        width="stretch")
         f12 = f12 or {}
         dt = lambda d: pd.Timestamp(d).strftime("%d/%m/%Y") if d is not None and not pd.isna(d) else ""
         em = lambda d: f"em {dt(d)}" if dt(d) else ""
@@ -3101,8 +3124,10 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
         sub_queda = (f"de {pd.Timestamp(topo).strftime('%d/%m/%y')} a {pd.Timestamp(fundo).strftime('%d/%m/%y')}"
                      if topo is not None and fundo is not None else "do topo ao fundo")
         st.html(_linha_kv(
-            _kv("Mínima 12 meses", fv(f12.get("minima")), em(f12.get("data_minima"))),
-            _kv("Máxima 12 meses", fv(f12.get("maxima")), em(f12.get("data_maxima"))),
+            _kv(f"<span style='color:{_COR_MINIMA}'>●</span> Mínima 12 meses", fv(f12.get("minima")),
+                em(f12.get("data_minima")), _COR_MINIMA),
+            _kv(f"<span style='color:{_COR_MAXIMA}'>●</span> Máxima 12 meses", fv(f12.get("maxima")),
+                em(f12.get("data_maxima")), _COR_MAXIMA),
             _kv("Preço médio 12 meses", fv(f12.get("media")), sub_media),
             _kv("Maior queda em 12 meses", _pct_txt((risco or {}).get("maior_queda"), 0), sub_queda),
             _kv("Volatilidade 12 meses", _pct_txt((risco or {}).get("volatilidade"), 0) + " ao ano", "oscilação diária anualizada"),
@@ -3226,10 +3251,21 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
             _kv("Régua de faixas", f"aumentar abaixo de {fv(regua.get('queda'))}",
                 f"realizar a partir de {fv(regua.get('realizacao'))}"),
             _kv("Operações", f"{len(compras)} compra(s) · {len(vendas)} venda(s)",
-                (f"última: {pd.Timestamp(ops[-1]['data']):%d/%m/%Y}" if ops else "")),
-            _kv("Para o IR", "aba 🧾 Proventos e IR", "dividendos, JCP e rendimentos por ano de pagamento"))
+                (f"última: {pd.Timestamp(ops[-1]['data']):%d/%m/%Y}" if ops else "")))
         st.html(_caixa_branca("Na sua carteira", corpo))
     st.caption("Informação para investigar, não recomendação. A decisão é sempre sua.")
+
+
+def _limpar_raio_x(origem: str) -> None:
+    """Trocou o ativo: apaga o raio-X anterior e o outro campo de escolha
+    (lista da carteira × ticker digitado), para não misturar os dois."""
+    if origem == "lista":
+        st.session_state["ticker_individual"] = ""
+    else:
+        st.session_state["rx_lista"] = "—"
+    for chave in ("individual_resultado", "individual_ticker", "individual_contexto", "individual_dividendos",
+                  "individual_faixa_12m", "individual_horario"):
+        st.session_state.pop(chave, None)
 
 
 with tab_ativo:
@@ -3240,10 +3276,11 @@ with tab_ativo:
     col_lista, col_ticker, col_tipo, col_per = st.columns([1.4, 1.4, 1, 1])
     with col_lista:
         escolha_lista = st.selectbox("Ativo da carteira", ["—"] + da_carteira, key="rx_lista",
+                                     on_change=_limpar_raio_x, args=("lista",),
                                      format_func=lambda t: t.replace(".SA", "") if t != "—" else "—")
     with col_ticker:
         ticker_individual = st.text_input("ou digite outro ticker", placeholder="ex: PETR4, MXRF11, AAPL",
-                                          key="ticker_individual")
+                                          key="ticker_individual", on_change=_limpar_raio_x, args=("texto",))
     ticker_normalizado = (normalizar_ticker(ticker_individual)[0] if ticker_individual.strip()
                           else (escolha_lista if escolha_lista != "—" else ""))
     with col_tipo:
