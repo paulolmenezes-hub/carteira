@@ -53,11 +53,12 @@ from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.tabela_indicadores import montar_tabelas
 from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_por_ano, proximo_provento, risco_12m, tendencia_do_ativo,
                                      selecionar_pares, sinal, sinal_pl, LIMIARES_FII)
+from carteira_analise.relatorio_pdf import gerar_relatorio
 from carteira_analise.informe_b3 import ano_do_nome, conciliar, ler_proventos_informe, resumo_conciliacao
 from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
                                     dividir_aporte, metas_de_texto, metas_para_texto, LIMITES_PADRAO,
                                     limites_de_texto, limites_para_texto, metas_e_limites, pesos_dos_ativos)
-from carteira_analise.visao_geral import (cdi_acumulado, linha_do_tempo_ativo, meses_entre, por_ano,
+from carteira_analise.visao_geral import (cdi_acumulado, indice_acumulado, indice_por_ano, linha_do_tempo_ativo, meses_entre, por_ano,
                                           rentabilidade_cotas, resultado_em_reais, resumo_periodo, somar,
                                           tir_anual)
 from carteira_analise.regra_posicao import formatar_valor
@@ -765,6 +766,22 @@ CDI_RESERVA_AA = 0.14  # usado só se a API do Banco Central estiver fora do ar
 @st.cache_data(ttl=12 * 3600, show_spinner=False)
 def _cdi_bcb_em_cache(inicio: str, fim: str):
     return buscar_cdi_diario(inicio, fim)
+
+
+@st.cache_data(ttl=12 * 3600, show_spinner=False)
+def _ibov_cache():
+    s = fonte_dados.baixar_precos("^BVSP", "10y")
+    if s is None or len(s) == 0:
+        raise RuntimeError("Ibovespa indisponível")  # falha não fica no cache
+    return s
+
+
+def _ibov_em_cache():
+    """Fechamentos diários do Ibovespa (Yahoo ^BVSP), ou None."""
+    try:
+        return _ibov_cache()
+    except Exception:
+        return None
 
 
 def _cdi_do_banco_central():
@@ -2324,6 +2341,10 @@ def _renderizar_visao_geral() -> None:
         cdi = cdi_acumulado(serie_cdi, periodo.index)
     except Exception:
         cdi = None
+    # Ibovespa: referência quando o filtro é só ações da B3
+    so_acoes_b3 = all(meta[t]["mercado"] == "B3" and meta[t]["tipo"] == "Ações" for t in escolhidos)
+    serie_ibov = _ibov_em_cache() if so_acoes_b3 else None
+    ibov = indice_acumulado(serie_ibov, periodo.index) if serie_ibov is not None else None
     fv = lambda v: formatar_valor(v, moeda)
     fs = lambda v: ("+" if v > 0 else ("−" if v < 0 else "")) + fv(abs(v))
 
@@ -2348,6 +2369,10 @@ def _renderizar_visao_geral() -> None:
             sub_rent = f"CDI {_pct_vg(c_fim)} · {r['rentabilidade'] / c_fim * 100:.0f}% do CDI"
         else:
             sub_rent = f"CDI {_pct_vg(c_fim)} · {_pp(c_fim - r['rentabilidade'])} abaixo do CDI"
+    if ibov is not None and len(ibov) and pd.notna(ibov.iloc[-1]):
+        d_ib = r["rentabilidade"] - float(ibov.iloc[-1])
+        sub_rent += (f"<br>Ibovespa {_pct_vg(float(ibov.iloc[-1]))} · {_pp(abs(d_ib))} "
+                     f"{'acima' if d_ib >= 0 else 'abaixo'}")
     tir = tir_anual(periodo, inicial)
     if tir is not None:
         sub_rent += f"<br>TIR (pelo dinheiro): {_pct_vg(tir)} ao ano"
@@ -2399,11 +2424,20 @@ def _renderizar_visao_geral() -> None:
     df3 = pd.DataFrame({"Carteira": rent.values}, index=pd.Index(idx, name="Mês"))
     if cdi is not None:
         df3["CDI"] = cdi.values
+    if ibov is not None:
+        df3["Ibovespa"] = ibov.values
     with st.container(key="vgc_rentabilidade"):
-        _titulo_cartao("Rentabilidade da carteira × CDI")
+        _titulo_cartao("Rentabilidade da carteira × CDI" + (" × Ibovespa" if ibov is not None else ""))
         st.altair_chart(_claro(_grafico_linhas(df3, "acumulado no período", ".1%",
-                                               {"Carteira": "#1e3a8a", "CDI": "#d9831c"}, tracejadas=["CDI"])),
+                                               {k: v for k, v in {"Carteira": "#1e3a8a", "CDI": "#d9831c",
+                                                                  "Ibovespa": "#0f7f73"}.items() if k in df3},
+                                               tracejadas=["CDI", "Ibovespa"])),
                         width="stretch")
+        if so_acoes_b3 and ibov is None:
+            st.caption("Ibovespa indisponível agora; tente de novo mais tarde.")
+        elif ibov is not None:
+            st.caption("Ibovespa aparece quando o filtro tem só ações da B3. É um índice de retorno total (considera "
+                       "os proventos reinvestidos), comparável à rentabilidade da carteira.")
     # tabelas por ano: últimos 5 anos completos + o ano atual, independentes do período escolhido
     # (seguem os filtros de mercado, tipo, situação e ativo)
     historico = total.iloc[primeiro:]
@@ -2415,6 +2449,8 @@ def _renderizar_visao_geral() -> None:
         cdi_hist = None
     anos = por_ano(historico, 0.0, cdi_hist)
     anos = anos[anos["ano"] >= ano_atual - 5].reset_index(drop=True)
+    ibov_ano = (indice_por_ano(serie_ibov, [int(a) for a in anos["ano"]], historico.index[-1])
+                if serie_ibov is not None and len(anos) else {})
     if len(anos):
         linhas_tab = []
         for _, a in anos.iterrows():
@@ -2426,10 +2462,15 @@ def _renderizar_visao_geral() -> None:
                 cdi_txt = _pct_vg(a["cdi"])
                 dif_txt = (f"<b style='color:{'#15803d' if d >= 0 else '#b91c1c'}'>"
                            f"{'+' if d >= 0 else '−'}{_pp(d)}</b>")
-            linhas_tab.append([rotulo, _pct_vg(a["rentabilidade"]), cdi_txt, dif_txt, fs(a["resultado"])])
+            linha_ano = [rotulo, _pct_vg(a["rentabilidade"]), cdi_txt, dif_txt]
+            if ibov_ano:
+                ib = ibov_ano.get(int(a["ano"]))
+                linha_ano.append(_pct_vg(ib) if ib is not None else "—")
+            linhas_tab.append(linha_ano + [fs(a["resultado"])])
         st.html(_caixa_branca("Rentabilidade por ano <span style='font-weight:400;font-size:.8em;color:#6b7280'>"
                               "(últimos 5 anos e o atual; não depende do período escolhido)</span>",
-                              _tabela_html(["Ano", "Carteira", "CDI", "Diferença", "Resultado"], linhas_tab[::-1])))
+                              _tabela_html(["Ano", "Carteira", "CDI", "Diferença"] + (["Ibovespa"] if ibov_ano else [])
+                                           + ["Resultado"], linhas_tab[::-1])))
     st.caption("Rentabilidade pelo método das cotas: preço + proventos, sem contar aportes e vendas como ganho "
                "(mede o desempenho dos ativos). TIR: pondera pelo dinheiro investido em cada mês (mede o seu "
                "resultado). Ativos vendidos contam enquanto estavam na carteira; a venda sai como resgate.")
@@ -2485,6 +2526,120 @@ def _renderizar_visao_geral() -> None:
 
     if dados.get("sem_preco"):
         st.caption("Sem cotação, fora da conta: " + ", ".join(t.replace(".SA", "") for t in dados["sem_preco"]) + ".")
+
+    # relatório em PDF: mesmo período e filtros desta aba
+    st.divider()
+    st.markdown("#### 📄 Relatório da carteira")
+    st.caption("Um resumo em PDF para ler e guardar: rentabilidade × CDI, alocação × metas, pontos de atenção pelas "
+               "suas regras, ativos e proventos. Usa o período e os filtros escolhidos acima.")
+    chave_rel = f"{ini}|{fim}|{sorted(escolhidos)}"
+    if st.button("Gerar o relatório", key="rel_gerar"):
+        try:
+            with st.spinner("Montando o PDF..."):
+                st.session_state["rel_pdf"] = (chave_rel, gerar_relatorio(_dados_relatorio(
+                    dados, escolhidos, periodo, inicial, r, rent, cdi, ibov, tir, res, anos, ibov_ano, por_tipo_df,
+                    cambio, i0, i1, ini, fim)))
+        except Exception as e:
+            st.error(f"Não foi possível montar o relatório ({e}).")
+    rel = st.session_state.get("rel_pdf")
+    if rel and rel[0] == chave_rel:
+        st.download_button("⬇️ Baixar relatório (PDF)", rel[1], file_name=f"relatorio_carteira_{fim.replace('/', '-')}.pdf",
+                           mime="application/pdf", key="rel_baixar")
+
+
+def _dados_relatorio(dados, escolhidos, periodo, inicial, r, rent, cdi, ibov, tir, res, anos, ibov_ano, por_tipo_df,
+                     cambio, i0, i1, ini, fim) -> dict:
+    """Junta o que as abas Visão geral, Dashboard, Metas e Proventos mostram, no formato de gerar_relatorio."""
+    linhas, meta = dados["linhas"], dados["meta"]
+    serie = pd.DataFrame({"patrimonio": periodo["patrimonio"].values, "custo": periodo["custo"].values,
+                          "rentabilidade": rent.values}, index=periodo.index)
+    if cdi is not None:
+        serie["cdi"] = cdi.values
+    if ibov is not None:
+        serie["ibov"] = ibov.values
+    anos_l = []
+    for _, a in anos.iloc[::-1].iterrows():
+        anos_l.append({"rotulo": f"{int(a['ano'])}" + (f" ({int(a['meses'])} {'mês' if a['meses'] == 1 else 'meses'})"
+                                                        if a["meses"] < 12 else ""),
+                       "rentabilidade": a["rentabilidade"],
+                       "cdi": None if a["cdi"] is None or pd.isna(a["cdi"]) else a["cdi"],
+                       "ibov": (ibov_ano or {}).get(int(a["ano"])), "resultado": a["resultado"],
+                       "proventos": a["proventos"]})
+    # alocação × metas e limite por ativo (carteira inteira de hoje, como na aba Metas)
+    metas = metas_de_texto(st.query_params.get("metas")) or METAS_PADRAO
+    limites = _limites_salvos()
+    valores_ativo = _valores_por_ativo(dados)
+    por_classe = {c: [] for c in CLASSES_META}
+    for t, v in valores_ativo.items():
+        por_classe[classe_do_ativo(meta[t]["mercado"], meta[t]["tipo"])].append(v)
+    linhas_meta = comparar(_valores_por_classe(dados), metas)
+    cap, _ = metas_e_limites(linhas_meta, por_classe, limites)
+    leitura = {"na_meta": "na meta", "acima_da_meta": "classe acima da meta", "sem_ativos": "sem ativos na classe",
+               "cabe": "cabe nos ativos atuais", "nao_cabe": "não cabe nos ativos atuais"}
+    alocacao = [{"classe": l["classe"], "meta": l["meta"], "hoje": l["hoje"], "falta": l["falta"],
+                 "leitura": leitura[cap[l["classe"]]["leitura"]]} for l in linhas_meta]
+    pesos = {x["ticker"]: x for x in pesos_dos_ativos(valores_ativo, limites)}
+    # ativos abertos (dos filtros) com os dados dos cards do Dashboard
+    cards = {c["ticker"]: c for c in (st.session_state.get("carteira_cenarios") or ([], []))[0]}
+    ativos = []
+    for t in escolhidos:
+        df = linhas[t]
+        q = float(df["quantidade"].iloc[i1])
+        if q <= 1e-9:
+            continue
+        c = cards.get(t, {})
+        moeda = "US$" if meta[t]["mercado"] == "EUA" else "R$"
+        preco = c.get("preco_atual") or (float(df["patrimonio"].iloc[i1]) / q)
+        pm = c.get("preco_medio") or (float(df["custo"].iloc[i1]) / q)
+        var = c.get("variacao") if c.get("variacao") is not None else (preco / pm - 1 if pm else 0.0)
+        faixa = c.get("situacao") if c.get("situacao") in ("realizacao", "queda", "fora") else (
+            "realizacao" if var >= .25 else "queda" if var <= -.15 else "fora")
+        dy = (c["renda_mensal"] * 12 / (preco * q)) if c.get("renda_mensal") and preco and q else None
+        avisos = []
+        pw = pesos.get(t)
+        if pw and pw["situacao"] == "acima":
+            avisos.append(f"peso {pw['peso']:.1f}% acima do limite de {limites['maximo']:g}%".replace(".", ",", 1))
+        tend = c.get("tendencia")
+        if tend:
+            avisos.append("tendência de médio prazo " + ("retomada" if tend.get("sentido") == "alta" else "rompida"))
+        ativos.append({"ticker": t.replace(".SA", ""), "classe": meta[t]["tipo"] + (" EUA" if moeda == "US$" else ""),
+                       "peso": pw["peso"] if pw else 0.0, "preco_medio": pm, "preco": preco, "variacao": var,
+                       "faixa": faixa, "dy": dy, "avisos": avisos, "moeda": moeda})
+    ativos.sort(key=lambda a: -a["peso"])
+    # proventos do período por classe e por ativo (em reais)
+    pm_df = pd.DataFrame({k: v["proventos"].values for k, v in por_tipo_df.items()}, index=periodo.index)
+    prov_ativo = []
+    for t in escolhidos:
+        v = somar(linhas, [t], cambio).iloc[i0:i1 + 1]["proventos"].sum() if cambio else \
+            linhas[t]["proventos"].iloc[i0:i1 + 1].sum()
+        if v > 0.005:
+            prov_ativo.append((t.replace(".SA", ""), float(v)))
+    prov_ativo.sort(key=lambda x: -x[1])
+    rent_f = r["rentabilidade"]
+    cdi_f = float(cdi.iloc[-1]) if cdi is not None and len(cdi) else None
+    ibov_f = float(ibov.iloc[-1]) if ibov is not None and len(ibov) and pd.notna(ibov.iloc[-1]) else None
+    destaques = [f"Patrimônio de {formatar_valor(r['patrimonio_final'], 'R$')}, com resultado de "
+                 f"{'+' if res >= 0 else '−'}{formatar_valor(abs(res), 'R$')} de {ini} a {fim}."]
+    if cdi_f is not None:
+        d_c = rent_f - cdi_f
+        destaques.append(f"Rentabilidade de {_pct_vg(rent_f)}, {_pp(abs(d_c))} {'acima' if d_c >= 0 else 'abaixo'} "
+                         f"do CDI ({_pct_vg(cdi_f)})" + (f"; Ibovespa {_pct_vg(ibov_f)}" if ibov_f is not None else "")
+                         + ".")
+    n_r = sum(1 for a in ativos if a["faixa"] == "realizacao")
+    n_q = sum(1 for a in ativos if a["faixa"] == "queda")
+    destaques.append(f"{n_r} ativo(s) na faixa de realização e {n_q} na faixa de queda.")
+    fora_meta = [a["classe"] for a in alocacao if a["leitura"] not in ("na meta",)]
+    if ativos:
+        destaques.append((f"Fora da meta: {', '.join(fora_meta)}" if fora_meta else "Todas as classes na meta")
+                         + f"; maior peso: {ativos[0]['ticker']} ({ativos[0]['peso']:.1f}%).".replace(".", ",", 1))
+    return {"data": datetime.now(ZoneInfo("America/Sao_Paulo")).date(), "periodo": f"{ini} a {fim}",
+            "periodo_fim": f"em {fim}",
+            "resumo": {"patrimonio": r["patrimonio_final"], "aportes_liq": r["aportes"] - r["vendas"],
+                       "proventos": r["proventos"], "resultado": res, "rentabilidade": rent_f, "cdi": cdi_f,
+                       "ibov": ibov_f, "tir": tir},
+            "serie": serie, "anos": anos_l, "alocacao": alocacao, "limites": limites, "ativos": ativos,
+            "proventos_mes": pm_df if pm_df.to_numpy().sum() > 0 else None, "proventos_ativos": prov_ativo,
+            "destaques": destaques}
 
 @st.cache_data(ttl=12 * 3600, show_spinner=False)
 def _proventos_detalhe_em_cache(ticker: str):
