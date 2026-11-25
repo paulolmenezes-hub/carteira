@@ -242,3 +242,32 @@ def por_ano(df: pd.DataFrame, patrimonio_inicial: float = 0.0,
                        "proventos_mes": float(parte["proventos"].sum()) / len(parte)})
         v0 = float(parte["patrimonio"].iloc[-1])
     return pd.DataFrame(linhas)
+
+
+def indice_acumulado(serie: pd.Series | None, meses: pd.PeriodIndex) -> pd.Series | None:
+    """Variação acumulada de um índice (0,10 = +10%) no fim de cada mês,
+    a partir do fechamento do mês ANTERIOR ao primeiro (mesma base da
+    rentabilidade da carteira). None se faltar a base."""
+    if serie is None or len(serie) == 0 or len(meses) == 0:
+        return None
+    base = preco_no_mes(serie, meses[0] - 1)
+    if base is None or base <= 0:
+        return None
+    valores = [preco_no_mes(serie, m) for m in meses]
+    return pd.Series([v / base - 1 if v is not None else float("nan") for v in valores], index=meses)
+
+
+def indice_por_ano(serie: pd.Series | None, anos: list[int], ultimo_mes: pd.Period | None = None) -> dict[int, float]:
+    """Variação do índice em cada ano (do fim do ano anterior ao fim do ano,
+    ou até ``ultimo_mes`` no ano corrente)."""
+    saida = {}
+    if serie is None or len(serie) == 0:
+        return saida
+    for a in anos:
+        fim = pd.Period(f"{a}-12", "M")
+        if ultimo_mes is not None and fim > ultimo_mes:
+            fim = ultimo_mes
+        base, valor = preco_no_mes(serie, pd.Period(f"{a - 1}-12", "M")), preco_no_mes(serie, fim)
+        if base and valor:
+            saida[a] = valor / base - 1
+    return saida
