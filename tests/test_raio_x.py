@@ -69,3 +69,20 @@ def test_sinais_dos_indicadores():
     assert sinal_pl(8.5, "em linha com o segmento (8,4)") is None
     assert sinal_pl(6.1, "abaixo do segmento (7,6)") == "bom" and sinal_pl(45.8, "acima do setor") == "ruim"
     assert sinal_pl(-3.0, None) == "ruim"
+
+
+def test_datas_minima_maxima_media_e_queda():
+    import pandas as pd
+    from carteira_analise.contexto import faixa_12m
+    from carteira_analise.raio_x import risco_12m
+    d = pd.bdate_range("2025-11-03", periods=260)
+    valores = [50.0] * 260
+    valores[40] = 60.0   # máxima (topo)
+    valores[100] = 30.0  # mínima (fundo)
+    s = pd.Series(valores, index=d)
+    f = faixa_12m(s)
+    assert f["data_minima"] == d[100] and f["data_maxima"] == d[40]
+    assert abs(f["media"] - s[s.index > s.index[-1] - pd.Timedelta(days=365)].mean()) < 1e-9
+    assert abs(f["preco_x_media"] - (50 / f["media"] - 1)) < 1e-12
+    r = risco_12m(s)
+    assert r["data_topo"] == d[40] and r["data_fundo"] == d[100] and abs(r["maior_queda"] + 0.5) < 1e-9
