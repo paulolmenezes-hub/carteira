@@ -53,6 +53,7 @@ from carteira_analise.posicoes import fundamentos_de_resultado
 from carteira_analise.tabela_indicadores import montar_tabelas
 from carteira_analise.raio_x import (pares_fii, posicao_entre_pares, proventos_por_ano, proximo_provento, risco_12m, tendencia_do_ativo,
                                      selecionar_pares, sinal, sinal_pl, LIMIARES_FII)
+from carteira_analise.informe_b3 import ano_do_nome, conciliar, ler_proventos_informe, resumo_conciliacao
 from carteira_analise.metas import (CLASSES as CLASSES_META, METAS_PADRAO, TOLERANCIA_PP, classe_do_ativo, comparar,
                                     dividir_aporte, metas_de_texto, metas_para_texto, LIMITES_PADRAO,
                                     limites_de_texto, limites_para_texto, metas_e_limites, pesos_dos_ativos)
@@ -2499,6 +2500,71 @@ def _proventos_fii_detalhe_em_cache(ticker: str):
     return buscar_proventos_fii_detalhe(ticker)
 
 
+_NOME_CATEGORIA_INFORME = {"dividendos": "Dividendos", "jcp": "JCP líquido", "rendimentos": "Rendimentos FII",
+                           "amortizacao": "Amortização FII", "atualizacao": "Atualização monetária",
+                           "restituicao": "Restituição de capital", "outro": "Outro evento"}
+
+
+def _renderizar_conferencia_informe(tab: pd.DataFrame, ano: int, tickers_planilha: set[str], fiis: set[str]) -> None:
+    """Compara a tabela do ano com o relatório consolidado anual da B3 enviado pelo usuário."""
+    st.markdown("#### 🔎 Conferir com o informe da B3")
+    st.caption("Baixe na Área do Investidor da B3 (Relatórios → Consolidado → Anual, em Excel) e envie aqui. O "
+               "painel compara ativo por ativo e aponta onde está cada diferença. O arquivo fica só nesta sessão do "
+               "navegador; nada é gravado no servidor.")
+    arquivo = st.file_uploader("Relatório consolidado anual da B3 (.xlsx)", type=["xlsx"], key="ir_informe")
+    if arquivo is None:
+        return
+    try:
+        informe = ler_proventos_informe(pd.read_excel(arquivo, sheet_name=None))
+    except Exception as e:
+        st.error(f"Não foi possível ler o arquivo ({e}).")
+        return
+    if informe is None or informe.empty:
+        st.warning("O arquivo não tem a aba 'Proventos Recebidos' do relatório consolidado da B3.")
+        return
+    ano_arq = ano_do_nome(arquivo.name)
+    if ano_arq and ano_arq != ano:
+        st.warning(f"O arquivo parece ser de {ano_arq} e a tabela acima é de {ano}: escolha o mesmo ano.")
+    c = conciliar(informe, tab, tickers_planilha, fiis)
+    resumo = resumo_conciliacao(c)
+    fv = lambda v: formatar_valor(v, "R$")
+    caixas = []
+    for cat, t in resumo["totais"].items():
+        dif = t["painel"] - t["b3_planilha"]
+        fora = t["b3"] - t["b3_planilha"]
+        caixas.append(_kpi_vg(_NOME_CATEGORIA_INFORME[cat], f"{fv(t['painel'])} × {fv(t['b3'])}",
+                              "painel × informe · só ativos da planilha: "
+                              + ("bate" if abs(dif) < 1 else f"{'+' if dif > 0 else '−'}{fv(abs(dif))}")
+                              + (f" · fora da planilha: {fv(fora)}" if fora >= 0.01 else "")))
+    st.html("<div style='display:flex;gap:8px;flex-wrap:wrap'>" + "".join(caixas) + "</div>")
+    cont = resumo["contagem"]
+    st.caption(f"{cont.get('ok', 0)} linha(s) batem · {cont.get('diferente', 0)} com diferença · "
+               f"{cont.get('fora', 0)} de ativos fora da planilha · {cont.get('informativo', 0)} informativa(s). "
+               "Bate = diferença de até R$ 1 ou 1%.")
+    cores = {"diferente": "#d9831c", "fora": "#b91c1c", "informativo": "#4b5563", "ok": "#0f7f73"}
+    ordem = {"diferente": 0, "fora": 1, "informativo": 2, "ok": 3}
+    c = c.assign(_o=c["situacao"].map(ordem), _a=c["diferenca"].abs()).sort_values(["_o", "_a"], ascending=[True, False])
+
+    def linhas(parte):
+        nw = lambda t: f"<span style='white-space:nowrap'>{t}</span>"
+        return [[f"<b>{html.escape(r.ticker)}</b>", nw(_NOME_CATEGORIA_INFORME.get(r.categoria, r.categoria)),
+                 nw(fv(r.b3)), nw(fv(r.painel)) if r.situacao != "informativo" else "—",
+                 nw(f"<b style='color:{cores[r.situacao]}'>{'+' if r.diferenca > 0 else '−' if r.diferenca < 0 else ''}"
+                    f"{fv(abs(r.diferenca))}</b>") if r.situacao not in ("ok", "informativo") else "—",
+                 f"<span style='color:{cores[r.situacao]}'>{html.escape(r.diagnostico)}</span>"]
+                for r in parte.itertuples()]
+    cab = ["Ativo", "Tipo", "Informe B3", "Painel", "Diferença", "O que pode ser"]
+    pendentes = c[c["situacao"] != "ok"]
+    if len(pendentes):
+        st.html(_caixa_branca(f"Diferenças em {ano}", _tabela_html(cab, linhas(pendentes))))
+    else:
+        st.success("Tudo bate com o informe da B3.")
+    ok = c[c["situacao"] == "ok"]
+    if len(ok):
+        with st.expander(f"Linhas que batem ({len(ok)})"):
+            st.html(_tabela_html(cab, linhas(ok)))
+
+
 def _renderizar_proventos_ir(dados: dict) -> None:
     """Dividendos e JCP (ações) e rendimentos (FIIs) da B3 por ano de
     pagamento, para conferir a declaração do IR."""
@@ -2574,6 +2640,7 @@ def _renderizar_proventos_ir(dados: dict) -> None:
                                 "liquido": "Líquido"}).to_excel(w, sheet_name="Detalhe", index=False)
         st.download_button(f"⬇️ Baixar {ano} em Excel", planilha_ir.getvalue(), file_name=f"proventos_ir_{ano}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        _renderizar_conferencia_informe(tab, ano, {nome(t) for t in b3}, {nome(t) for t in fiis})
     pend = a_receber(recebidos, hoje)
     if pend is not None and len(pend):
         tipo_txt = {"jcp": "JCP", "dividendo": "Dividendo", "rendimento": "Rendimento", "amortizacao": "Amortização",
