@@ -3091,9 +3091,20 @@ def _renderizar_raio_x(ticker: str, tipo: str, resultado, ctx: dict | None, divi
         st.altair_chart(_claro(_grafico_raio_x(historico, moeda, pm=card.get("preco_medio") if card else None,
                                                faixas=card.get("faixas") if card else None, teto=pt.get("teto"),
                                                ops=_ops_do_ticker(ticker) if card else None)), width="stretch")
+        f12 = f12 or {}
+        dt = lambda d: pd.Timestamp(d).strftime("%d/%m/%Y") if d is not None and not pd.isna(d) else ""
+        em = lambda d: f"em {dt(d)}" if dt(d) else ""
+        pxm = f12.get("preco_x_media")
+        sub_media = ("" if pxm is None else "preço de hoje na média" if abs(pxm) < 0.005 else
+                     f"preço de hoje {_pct_txt(abs(pxm), 0)} {'acima' if pxm > 0 else 'abaixo'}")
+        topo, fundo = (risco or {}).get("data_topo"), (risco or {}).get("data_fundo")
+        sub_queda = (f"de {pd.Timestamp(topo).strftime('%d/%m/%y')} a {pd.Timestamp(fundo).strftime('%d/%m/%y')}"
+                     if topo is not None and fundo is not None else "do topo ao fundo")
         st.html(_linha_kv(
-            _kv("Mínima 12 meses", fv((f12 or {}).get("minima"))), _kv("Máxima 12 meses", fv((f12 or {}).get("maxima"))),
-            _kv("Maior queda em 12 meses", _pct_txt((risco or {}).get("maior_queda"), 0), "do topo ao fundo"),
+            _kv("Mínima 12 meses", fv(f12.get("minima")), em(f12.get("data_minima"))),
+            _kv("Máxima 12 meses", fv(f12.get("maxima")), em(f12.get("data_maxima"))),
+            _kv("Preço médio 12 meses", fv(f12.get("media")), sub_media),
+            _kv("Maior queda em 12 meses", _pct_txt((risco or {}).get("maior_queda"), 0), sub_queda),
             _kv("Volatilidade 12 meses", _pct_txt((risco or {}).get("volatilidade"), 0) + " ao ano", "oscilação diária anualizada"),
             _html_movimento_brusco(movimento_brusco_recente(historico), moeda) and _kv(
                 "Movimento recente", "queda ou alta brusca", "veja o aviso no card do Dashboard")))
