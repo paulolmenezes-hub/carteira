@@ -164,3 +164,46 @@ def sinal_pl(pl, leitura: str | None) -> str | None:
         return "ruim"
     txt = (leitura or "").lower()
     return "bom" if txt.startswith("abaixo") else "ruim" if txt.startswith("acima") else None
+
+
+# Aviso de tendência de médio prazo rompida: informação para reavaliar a
+# posição, não sinal de venda.
+PREGOES_ABAIXO_MM200 = 20
+JANELA_CRUZAMENTO = 60  # pregões: cruzamento da MM50 abaixo da MM200 conta como recente
+
+
+def tendencia_rompida(precos: pd.Series | None) -> dict | None:
+    """Devolve o aviso se, no fim da série, (a) o preço fecha abaixo da média
+    de 200 dias há ``PREGOES_ABAIXO_MM200`` pregões seguidos ou mais, e/ou (b)
+    a média de 50 dias cruzou para baixo da de 200 nos últimos
+    ``JANELA_CRUZAMENTO`` pregões e continua abaixo. None se nada disso.
+
+    Chaves: ``abaixo_desde`` (1º pregão da sequência abaixo da MM200),
+    ``pregoes_abaixo``, ``cruzamento`` (data do cruzamento, ou None),
+    ``preco``, ``mm200`` e ``distancia`` (preço / MM200 − 1)."""
+    if precos is None or len(precos) < 220:
+        return None
+    s = _sem_fuso(precos).dropna()
+    mm200, mm50 = s.rolling(200).mean(), s.rolling(50).mean()
+    validos = mm200.notna()
+    s, mm200, mm50 = s[validos], mm200[validos], mm50[validos]
+    if s.empty:
+        return None
+    abaixo = (s < mm200).to_numpy()
+    n = 0
+    for v in abaixo[::-1]:
+        if not v:
+            break
+        n += 1
+    cruzamento = None
+    acima_antes = (mm50 >= mm200).to_numpy()
+    if not acima_antes[-1]:
+        for i in range(len(acima_antes) - 1, max(len(acima_antes) - JANELA_CRUZAMENTO, 0) - 1, -1):
+            if i > 0 and acima_antes[i - 1] and not acima_antes[i]:
+                cruzamento = s.index[i]
+                break
+    if n < PREGOES_ABAIXO_MM200 and cruzamento is None:
+        return None
+    return {"abaixo_desde": s.index[-n] if n else None, "pregoes_abaixo": n, "cruzamento": cruzamento,
+            "preco": float(s.iloc[-1]), "mm200": float(mm200.iloc[-1]),
+            "distancia": float(s.iloc[-1] / mm200.iloc[-1] - 1)}
