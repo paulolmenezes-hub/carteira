@@ -104,3 +104,19 @@ def test_tendencia_rompida():
     # só 5 pregões abaixo e sem cruzamento: sem aviso
     valores = list(np.linspace(30, 60, 395)) + [40.0] * 5
     assert tendencia_rompida(pd.Series(valores, index=d)) is None
+
+
+def test_tendencia_retomada():
+    import numpy as np
+    import pandas as pd
+    from carteira_analise.raio_x import tendencia_retomada, tendencia_rompida
+    d = pd.bdate_range("2025-01-01", periods=400)
+    # alta contínua: é a tendência normal, sem aviso de virada
+    assert tendencia_retomada(pd.Series(np.linspace(30, 60, 400), index=d)) is None
+    # cai por 300 pregões e volta a subir forte nos últimos 100
+    valores = list(np.linspace(60, 30, 300)) + list(np.linspace(30, 55, 100))
+    s = pd.Series(valores, index=d)
+    t = tendencia_retomada(s.iloc[:360])
+    assert t is not None and t["distancia"] > 0
+    assert (t["pregoes_acima"] >= 20 and t["acima_desde"] is not None) or t["cruzamento"] is not None
+    assert tendencia_rompida(s.iloc[:360]) is None  # já voltou para cima da média
