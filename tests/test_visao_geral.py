@@ -147,3 +147,14 @@ def test_por_ano_encadeia_patrimonio_e_soma_proventos():
     assert list(t["ano"]) == [2024, 2025]
     assert t["rentabilidade"].iloc[0] == pytest.approx(0.11) and t["rentabilidade"].iloc[1] == pytest.approx(0.10)
     assert t["resultado"].iloc[0] == pytest.approx(110.0) and t["proventos"].sum() == 10
+
+
+def test_indice_acumulado_e_por_ano():
+    import pandas as pd
+    from carteira_analise.visao_geral import indice_acumulado, indice_por_ano, meses_entre
+    s = pd.Series([100.0, 110.0, 121.0, 99.0], index=pd.to_datetime(["2024-12-30", "2025-01-31", "2025-02-28",
+                                                                     "2025-03-31"]))
+    acc = indice_acumulado(s, meses_entre("2025-01", "2025-03"))
+    assert [round(v, 4) for v in acc] == [0.10, 0.21, -0.01]
+    assert indice_acumulado(s, meses_entre("2024-12", "2025-01")) is None  # sem base em nov/2024
+    assert round(indice_por_ano(s, [2025], pd.Period("2025-03", "M"))[2025], 4) == -0.01
