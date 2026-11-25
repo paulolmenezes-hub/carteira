@@ -2274,6 +2274,51 @@ _CSS_CARTOES = ("<style>div[class*='st-key-vgc_']{background:#ffffff;border-radi
                 "color:#111827}</style>")
 
 
+def _valores_por_ativo(dados: dict) -> dict[str, float]:
+    """Patrimônio de hoje (último mês) de cada ativo, em reais (EUA pelo dólar)."""
+    valores = {}
+    cambio = dados.get("cambio")
+    for t, df in dados["linhas"].items():
+        v = float(df["patrimonio"].iloc[-1])
+        if v <= 0:
+            continue
+        if dados["meta"][t]["mercado"] == "EUA":
+            if cambio is None or not len(cambio):
+                continue
+            v *= float(cambio.reindex(df.index).ffill().bfill().iloc[-1])
+        valores[t] = v
+    return valores
+
+
+def _valores_por_classe(dados: dict) -> dict[str, float]:
+    """Patrimônio de hoje (último mês) por classe de meta, em reais."""
+    valores = {c: 0.0 for c in CLASSES_META}
+    for t, v in _valores_por_ativo(dados).items():
+        m = dados["meta"][t]
+        valores[classe_do_ativo(m["mercado"], m["tipo"])] += v
+    return valores
+
+
+def _limites_salvos() -> dict[str, float]:
+    """Limites dos campos da aba Metas (se já mexidos nesta sessão) ou do endereço da página."""
+    mx, mn = st.session_state.get("limite_max"), st.session_state.get("limite_min")
+    if mx is not None and mn is not None and mn < mx:
+        return {"maximo": float(mx), "minimo": float(mn)}
+    return limites_de_texto(st.query_params.get("limites")) or dict(LIMITES_PADRAO)
+
+
+def _pesos_atuais() -> dict[str, dict]:
+    """ticker -> {peso, situacao, diferenca, valor}, com os limites salvos.
+    Vazio se a carteira de hoje ainda não foi montada."""
+    dados = st.session_state.get("visao_geral_dados")
+    if not dados:
+        return {}
+    try:
+        return {l["ticker"]: l for l in pesos_dos_ativos(_valores_por_ativo(dados), _limites_salvos())}
+    except Exception:
+        return {}
+
+
 def _renderizar_visao_geral() -> None:
     dados = st.session_state.get("visao_geral_dados")
     if dados is None:
@@ -2334,6 +2379,7 @@ def _renderizar_visao_geral() -> None:
     rent = rentabilidade_cotas(periodo, inicial)
     st.caption(f"Período: {ini} a {fim} · valores em {moeda}"
                + (" (EUA convertidos pelo dólar de cada mês)" if cambio else ""))
+    area_relatorio = st.container()  # botão do PDF aqui em cima; preenchido no fim, quando os números estão prontos
 
     cdi, serie_cdi = None, None
     try:
@@ -2527,24 +2573,25 @@ def _renderizar_visao_geral() -> None:
     if dados.get("sem_preco"):
         st.caption("Sem cotação, fora da conta: " + ", ".join(t.replace(".SA", "") for t in dados["sem_preco"]) + ".")
 
-    # relatório em PDF: mesmo período e filtros desta aba
-    st.divider()
-    st.markdown("#### 📄 Relatório da carteira")
-    st.caption("Um resumo em PDF para ler e guardar: rentabilidade × CDI, alocação × metas, pontos de atenção pelas "
-               "suas regras, ativos e proventos. Usa o período e os filtros escolhidos acima.")
+    # relatório em PDF (botão no topo da aba): mesmo período e filtros desta aba
     chave_rel = f"{ini}|{fim}|{sorted(escolhidos)}"
-    if st.button("Gerar o relatório", key="rel_gerar"):
-        try:
-            with st.spinner("Montando o PDF..."):
-                st.session_state["rel_pdf"] = (chave_rel, gerar_relatorio(_dados_relatorio(
-                    dados, escolhidos, periodo, inicial, r, rent, cdi, ibov, tir, res, anos, ibov_ano, por_tipo_df,
-                    cambio, i0, i1, ini, fim)))
-        except Exception as e:
-            st.error(f"Não foi possível montar o relatório ({e}).")
-    rel = st.session_state.get("rel_pdf")
-    if rel and rel[0] == chave_rel:
-        st.download_button("⬇️ Baixar relatório (PDF)", rel[1], file_name=f"relatorio_carteira_{fim.replace('/', '-')}.pdf",
-                           mime="application/pdf", key="rel_baixar")
+    with area_relatorio:
+        b1, b2, b3 = st.columns([1.3, 1.5, 5])
+        if b1.button("📄 Gerar relatório em PDF", key="rel_gerar"):
+            try:
+                with st.spinner("Montando o PDF..."):
+                    st.session_state["rel_pdf"] = (chave_rel, gerar_relatorio(_dados_relatorio(
+                        dados, escolhidos, periodo, inicial, r, rent, cdi, ibov, tir, res, anos, ibov_ano,
+                        por_tipo_df, cambio, i0, i1, ini, fim)))
+            except Exception as e:
+                st.error(f"Não foi possível montar o relatório ({e}).")
+        rel = st.session_state.get("rel_pdf")
+        if rel and rel[0] == chave_rel:
+            b2.download_button("⬇️ Baixar relatório (PDF)", rel[1],
+                               file_name=f"relatorio_carteira_{fim.replace('/', '-')}.pdf", mime="application/pdf",
+                               key="rel_baixar")
+        b3.caption("Resumo para ler e guardar: rentabilidade × CDI, alocação × metas, pontos de atenção pelas suas "
+                   "regras, ativos e proventos, com o período e os filtros acima.")
 
 
 def _dados_relatorio(dados, escolhidos, periodo, inicial, r, rent, cdi, ibov, tir, res, anos, ibov_ano, por_tipo_df,
@@ -2833,51 +2880,6 @@ with tab_visao:
 # =============================================================================
 # ABA — Metas de alocação
 # =============================================================================
-def _valores_por_ativo(dados: dict) -> dict[str, float]:
-    """Patrimônio de hoje (último mês) de cada ativo, em reais (EUA pelo dólar)."""
-    valores = {}
-    cambio = dados.get("cambio")
-    for t, df in dados["linhas"].items():
-        v = float(df["patrimonio"].iloc[-1])
-        if v <= 0:
-            continue
-        if dados["meta"][t]["mercado"] == "EUA":
-            if cambio is None or not len(cambio):
-                continue
-            v *= float(cambio.reindex(df.index).ffill().bfill().iloc[-1])
-        valores[t] = v
-    return valores
-
-
-def _valores_por_classe(dados: dict) -> dict[str, float]:
-    """Patrimônio de hoje (último mês) por classe de meta, em reais."""
-    valores = {c: 0.0 for c in CLASSES_META}
-    for t, v in _valores_por_ativo(dados).items():
-        m = dados["meta"][t]
-        valores[classe_do_ativo(m["mercado"], m["tipo"])] += v
-    return valores
-
-
-def _limites_salvos() -> dict[str, float]:
-    """Limites dos campos da aba Metas (se já mexidos nesta sessão) ou do endereço da página."""
-    mx, mn = st.session_state.get("limite_max"), st.session_state.get("limite_min")
-    if mx is not None and mn is not None and mn < mx:
-        return {"maximo": float(mx), "minimo": float(mn)}
-    return limites_de_texto(st.query_params.get("limites")) or dict(LIMITES_PADRAO)
-
-
-def _pesos_atuais() -> dict[str, dict]:
-    """ticker -> {peso, situacao, diferenca, valor}, com os limites salvos.
-    Vazio se a carteira de hoje ainda não foi montada."""
-    dados = st.session_state.get("visao_geral_dados")
-    if not dados:
-        return {}
-    try:
-        return {l["ticker"]: l for l in pesos_dos_ativos(_valores_por_ativo(dados), _limites_salvos())}
-    except Exception:
-        return {}
-
-
 def _renderizar_limites(dados: dict) -> None:
     st.markdown("#### ⚖️ Limite por ativo")
     st.caption("Peso máximo de cada ativo na carteira e, se quiser, o mínimo para a posição valer a pena. O painel "
