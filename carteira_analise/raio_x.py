@@ -207,3 +207,57 @@ def tendencia_rompida(precos: pd.Series | None) -> dict | None:
     return {"abaixo_desde": s.index[-n] if n else None, "pregoes_abaixo": n, "cruzamento": cruzamento,
             "preco": float(s.iloc[-1]), "mm200": float(mm200.iloc[-1]),
             "distancia": float(s.iloc[-1] / mm200.iloc[-1] - 1)}
+
+
+JANELA_RETOMADA = 63  # pregões (~3 meses): depois disso a alta já é a tendência normal, sem aviso
+
+
+def _sequencia_final(flags) -> int:
+    n = 0
+    for v in flags[::-1]:
+        if not v:
+            break
+        n += 1
+    return n
+
+
+def tendencia_retomada(precos: pd.Series | None) -> dict | None:
+    """O espelho de ``tendencia_rompida``: avisa a VIRADA para cima, não o
+    estado de alta. (a) O preço fecha acima da média de 200 dias há 20 a 63
+    pregões seguidos, depois de pelo menos 20 abaixo; e/ou (b) a média de 50
+    dias cruzou para cima da de 200 nos últimos ``JANELA_CRUZAMENTO`` pregões
+    e continua acima. Mesmas chaves, com ``acima_desde`` e ``pregoes_acima``."""
+    if precos is None or len(precos) < 220:
+        return None
+    s = _sem_fuso(precos).dropna()
+    mm200, mm50 = s.rolling(200).mean(), s.rolling(50).mean()
+    validos = mm200.notna()
+    s, mm200, mm50 = s[validos], mm200[validos], mm50[validos]
+    if s.empty:
+        return None
+    acima = (s > mm200).to_numpy()
+    n = _sequencia_final(acima)
+    antes = _sequencia_final(~acima[:len(acima) - n]) if n < len(acima) else 0
+    virou = PREGOES_ABAIXO_MM200 <= n <= JANELA_RETOMADA and antes >= PREGOES_ABAIXO_MM200
+    cruzamento = None
+    abaixo_antes = (mm50 <= mm200).to_numpy()
+    if not abaixo_antes[-1]:
+        for i in range(len(abaixo_antes) - 1, max(len(abaixo_antes) - JANELA_CRUZAMENTO, 0) - 1, -1):
+            if i > 0 and abaixo_antes[i - 1] and not abaixo_antes[i]:
+                cruzamento = s.index[i]
+                break
+    if not virou and cruzamento is None:
+        return None
+    return {"acima_desde": s.index[-n] if virou else None, "pregoes_acima": n if virou else 0,
+            "cruzamento": cruzamento, "preco": float(s.iloc[-1]), "mm200": float(mm200.iloc[-1]),
+            "distancia": float(s.iloc[-1] / mm200.iloc[-1] - 1)}
+
+
+def tendencia_do_ativo(precos: pd.Series | None) -> dict | None:
+    """Rompimento (``sentido`` "baixa") ou retomada ("alta") da tendência de
+    médio prazo; None se nenhum dos dois."""
+    t = tendencia_rompida(precos)
+    if t:
+        return {**t, "sentido": "baixa"}
+    t = tendencia_retomada(precos)
+    return {**t, "sentido": "alta"} if t else None

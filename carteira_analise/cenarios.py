@@ -29,7 +29,7 @@ from .posicoes import (
     renda_12m_por_cota,
 )
 from .contexto import faixa_12m, regua_faixas
-from .raio_x import tendencia_rompida
+from .raio_x import tendencia_do_ativo
 from .tecnicos import limpar_outliers_precos, movimento_brusco_recente
 from .regra_posicao import (
     CONFIG_REGRA_PADRAO,
@@ -535,7 +535,7 @@ def gerar_cenarios(df_resumo, df_operacoes, fonte, tipos: dict[str, str] | None 
             "retrospecto": None,
             "alertas_compras": compras_fora_da_regra(ops, precos, data_ref, moeda),
             "movimento_brusco": movimento_brusco_recente(precos),
-            "tendencia": tendencia_rompida(precos),
+            "tendencia": tendencia_do_ativo(precos),
         }
         if tipo == "fii":
             if renda_cota:
