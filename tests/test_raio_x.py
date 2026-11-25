@@ -86,3 +86,21 @@ def test_datas_minima_maxima_media_e_queda():
     assert abs(f["preco_x_media"] - (50 / f["media"] - 1)) < 1e-12
     r = risco_12m(s)
     assert r["data_topo"] == d[40] and r["data_fundo"] == d[100] and abs(r["maior_queda"] + 0.5) < 1e-9
+
+
+def test_tendencia_rompida():
+    import numpy as np
+    import pandas as pd
+    from carteira_analise.raio_x import tendencia_rompida
+    d = pd.bdate_range("2025-01-01", periods=400)
+    subindo = pd.Series(np.linspace(30, 60, 400), index=d)
+    assert tendencia_rompida(subindo) is None
+    assert tendencia_rompida(subindo.iloc[:100]) is None  # série curta
+    # sobe 350 pregões e cai forte nos últimos 50: preço abaixo da MM200 há vários pregões
+    valores = list(np.linspace(30, 60, 350)) + list(np.linspace(60, 35, 50))
+    t = tendencia_rompida(pd.Series(valores, index=d))
+    assert t is not None and t["pregoes_abaixo"] >= 20 and t["distancia"] < 0
+    assert t["abaixo_desde"] == d[400 - t["pregoes_abaixo"]]
+    # só 5 pregões abaixo e sem cruzamento: sem aviso
+    valores = list(np.linspace(30, 60, 395)) + [40.0] * 5
+    assert tendencia_rompida(pd.Series(valores, index=d)) is None
