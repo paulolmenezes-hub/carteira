@@ -111,8 +111,9 @@ def cdi_liquido_12m(cdi_diario: pd.Series | None, ir: float = 0.175) -> float | 
 
 
 def faixa_12m(precos: pd.Series) -> dict | None:
-    """Mínima e máxima dos últimos 12 meses, o preço de hoje e a posição dele
-    entre as duas (0 = na mínima, 1 = na máxima)."""
+    """Mínima e máxima dos últimos 12 meses (com as datas), a média dos
+    fechamentos, o preço de hoje e a posição dele entre as duas (0 = na
+    mínima, 1 = na máxima)."""
     p = _sem_fuso(precos).dropna()
     if p.empty:
         return None
@@ -120,8 +121,11 @@ def faixa_12m(precos: pd.Series) -> dict | None:
     minima, maxima, preco = float(janela.min()), float(janela.max()), float(p.iloc[-1])
     if minima <= 0 or maxima <= 0:
         return None
+    media = float(janela.mean())
     return {
         "minima": minima, "maxima": maxima, "preco": preco,
+        "data_minima": janela.idxmin(), "data_maxima": janela.idxmax(),
+        "media": media, "preco_x_media": preco / media - 1 if media > 0 else None,
         "abaixo_da_maxima": max(0.0, 1 - preco / maxima),
         "acima_da_minima": max(0.0, preco / minima - 1),
         "posicao": _interpolar(preco, minima, maxima) if maxima > minima else 0.5,

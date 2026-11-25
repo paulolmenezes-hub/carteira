@@ -18,17 +18,21 @@ def _sem_fuso(s: pd.Series) -> pd.Series:
 
 
 def risco_12m(precos: pd.Series | None) -> dict | None:
-    """Maior queda (do topo ao fundo) e volatilidade anualizada nos últimos
-    12 meses, a partir dos fechamentos diários."""
+    """Maior queda (do topo ao fundo, com as datas) e volatilidade anualizada
+    nos últimos 12 meses, a partir dos fechamentos diários."""
     if precos is None or len(precos) < 30:
         return None
     s = _sem_fuso(precos)
     s = s[s.index >= s.index[-1] - pd.DateOffset(months=12)]
     if len(s) < 30:
         return None
-    queda = float((s / s.cummax() - 1).min())
+    recuo = s / s.cummax() - 1
+    queda = float(recuo.min())
+    fundo = recuo.idxmin()
+    topo = s[s.index <= fundo].idxmax()
     vol = float(s.pct_change().dropna().std() * math.sqrt(252))
-    return {"maior_queda": queda, "volatilidade": vol}
+    return {"maior_queda": queda, "volatilidade": vol,
+            "data_topo": topo if queda < 0 else None, "data_fundo": fundo if queda < 0 else None}
 
 
 def selecionar_pares(tabela: pd.DataFrame | None, papel: str, maximo: int = MAXIMO_PARES) -> pd.DataFrame | None:
