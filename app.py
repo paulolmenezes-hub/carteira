@@ -1436,9 +1436,11 @@ def _html_caixas_posicao(card: dict) -> str:
         def com_sinal(v, texto):
             return ("+" if v > 0 else ("−" if v < 0 else "")) + texto
         desde = f"desde {card['desde']:%d/%m/%Y}" if card.get("desde") else "desde o início da posição"
+        quatro = abs(realizado) >= 0.005  # com vendas: 4 caixas em 2 × 2, para os valores não serem cortados
         linha += (f"<div style='font-size:.74em;margin-top:8px;opacity:.95'>Desde o início da posição ({desde.replace('desde ', '')}): "
                   "preço, vendas e proventos</div>"
-                  "<div style='display:flex;gap:8px;margin-top:4px'>"
+                  f"<div style='display:grid;grid-template-columns:repeat({2 if quatro else 3},minmax(0,1fr));"
+                  "gap:8px;margin-top:4px'>"
                   + caixa(nome, formatar_valor(card["renda_recebida"], moeda), "#15803d"
                           if card["renda_recebida"] > 0 else "#111827")
                   + (caixa("Ganho nas vendas" if realizado > 0 else "Perda nas vendas",
@@ -2397,7 +2399,8 @@ def _renderizar_visao_geral() -> None:
     # patrimônio: de onde veio a diferença
     aportes_liq = r["aportes"] - r["vendas"]
     dif = r["patrimonio_final"] - r["patrimonio_inicial"]
-    sub_pat = f"{fs(dif)} no período = aportes {fs(aportes_liq)} e preço/câmbio {fs(dif - aportes_liq)}"
+    sub_pat = (f"{fs(dif)} no período = aportes {fs(aportes_liq)} e variação das cotações"
+               f"{' e do dólar' if cambio else ''} {fs(dif - aportes_liq)}")
     # resultado em dinheiro, com abertas e encerradas
     res = resultado_em_reais(periodo, inicial)
     partes = []
